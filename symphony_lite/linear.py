@@ -276,7 +276,7 @@ class LinearClient:
             labels { nodes { name } }
             branchName
             project { id name }
-            comments(first: 50) {
+            comments(first: 50, orderBy: createdAt) {
               nodes {
                 id
                 body
@@ -326,7 +326,7 @@ class LinearClient:
         query = """
         query($id: String!) {
           issue(id: $id) {
-            comments(first: 100) {
+            comments(first: 100, orderBy: createdAt) {
               nodes {
                 id
                 body
@@ -351,6 +351,12 @@ class LinearClient:
             )
             for c in raw.get("comments", {}).get("nodes", [])
         ]
+
+        # Linear's comments connection defaults to descending (newest first).
+        # We specify orderBy: createdAt for explicitness, but still reverse
+        # here to guarantee chronological (oldest-first) regardless of the
+        # actual delivery order.
+        all_comments.reverse()
 
         if comment_id is None:
             return all_comments

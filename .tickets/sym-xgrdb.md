@@ -1,6 +1,6 @@
 ---
 id: sym-xgrdb
-status: open
+status: closed
 deps: []
 links: []
 created: 2026-05-12T19:39:17Z

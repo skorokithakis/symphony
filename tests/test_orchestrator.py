@@ -493,6 +493,58 @@ class TestStartupRecovery:
         assert ("ticket-1", "Needs Input") in linear.calls.get("transition_to_state", [])
         assert orchestrator._state.get("ticket-1").status == TicketStatus.needs_input
 
+    def test_bootstrapping_with_metadata_edits_comment(
+        self, orchestrator: Orchestrator, linear: FakeLinearClient,
+    ) -> None:
+        """Bootstrapping + metadata_comment_id → edit_comment called, state removed."""
+        ts = TicketState(
+            ticket_id="ticket-1", ticket_identifier="TEAM-1",
+            repo_url="https://x", workspace_path="/tmp/x", branch="main",
+            status=TicketStatus.bootstrapping,
+            metadata_comment_id="cmt-meta-1",
+        )
+        orchestrator._state.upsert(ts)
+        orchestrator._recover_state()
+        assert orchestrator._state.get("ticket-1") is None
+        edit_calls = linear.calls.get("edit_comment", [])
+        assert len(edit_calls) == 1
+        assert edit_calls[0] == (
+            "cmt-meta-1",
+            "**Symphony**: Restarted before setup completed. "
+            "Picking this ticket up again on the next poll.",
+        )
+
+    def test_bootstrapping_without_metadata_no_linear_call(
+        self, orchestrator: Orchestrator, linear: FakeLinearClient,
+    ) -> None:
+        """Bootstrapping without metadata_comment_id → no Linear call, state removed."""
+        ts = TicketState(
+            ticket_id="ticket-1", ticket_identifier="TEAM-1",
+            repo_url="https://x", workspace_path="/tmp/x", branch="main",
+            status=TicketStatus.bootstrapping,
+            metadata_comment_id=None,
+        )
+        orchestrator._state.upsert(ts)
+        orchestrator._recover_state()
+        assert orchestrator._state.get("ticket-1") is None
+        assert "edit_comment" not in linear.calls
+
+    def test_bootstrapping_edit_comment_failure_handled(
+        self, orchestrator: Orchestrator, linear: FakeLinearClient,
+    ) -> None:
+        """edit_comment failure during bootstrapping recovery is logged but does not crash."""
+        ts = TicketState(
+            ticket_id="ticket-1", ticket_identifier="TEAM-1",
+            repo_url="https://x", workspace_path="/tmp/x", branch="main",
+            status=TicketStatus.bootstrapping,
+            metadata_comment_id="cmt-meta-1",
+        )
+        orchestrator._state.upsert(ts)
+        linear.set_response("edit_comment", LinearError("edit failed"))
+        orchestrator._recover_state()
+        # Must not have crashed, and state must still be removed.
+        assert orchestrator._state.get("ticket-1") is None
+
 
 # ---------------------------------------------------------------------------
 # Cancellation (B1 race protection + S1 registration race)

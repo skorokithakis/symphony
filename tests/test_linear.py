@@ -391,9 +391,10 @@ class TestListCommentsSince:
         return c
 
     def test_returns_all_when_comment_id_is_none(self) -> None:
+        # Simulate Linear's descending (newest-first) response order.
         nodes = [
-            self._make_comment("cmt-1", "First"),
             self._make_comment("cmt-2", "Second", "usr-human"),
+            self._make_comment("cmt-1", "First"),
         ]
         raw = self._comments_issue_raw(nodes)
         transport = _make_transport(lambda req: _json_response(raw))
@@ -404,10 +405,11 @@ class TestListCommentsSince:
         assert comments[1].id == "cmt-2"
 
     def test_returns_after_given_comment_id(self) -> None:
+        # Simulate Linear's descending (newest-first) response order.
         nodes = [
-            self._make_comment("cmt-1", "First"),
-            self._make_comment("cmt-2", "Second"),
             self._make_comment("cmt-3", "Third"),
+            self._make_comment("cmt-2", "Second"),
+            self._make_comment("cmt-1", "First"),
         ]
         raw = self._comments_issue_raw(nodes)
         transport = _make_transport(lambda req: _json_response(raw))
@@ -417,9 +419,10 @@ class TestListCommentsSince:
         assert comments[0].id == "cmt-3"
 
     def test_returns_empty_when_last_comment_matches(self) -> None:
+        # Simulate Linear's descending (newest-first) response order.
         nodes = [
-            self._make_comment("cmt-1", "First"),
             self._make_comment("cmt-2", "Second"),
+            self._make_comment("cmt-1", "First"),
         ]
         raw = self._comments_issue_raw(nodes)
         transport = _make_transport(lambda req: _json_response(raw))
@@ -429,15 +432,47 @@ class TestListCommentsSince:
 
     def test_not_found_returns_empty_when_id_missing(self) -> None:
         """When the reference comment_id isn't found, return an empty list."""
+        # Simulate Linear's descending (newest-first) response order.
         nodes = [
-            self._make_comment("cmt-1", "First"),
             self._make_comment("cmt-2", "Second"),
+            self._make_comment("cmt-1", "First"),
         ]
         raw = self._comments_issue_raw(nodes)
         transport = _make_transport(lambda req: _json_response(raw))
         client = _client(transport)
         comments = client.list_comments_since("abc-123", "deleted-cmt")
         assert comments == []
+
+    def test_realistic_linear_order_returns_newer_only(self) -> None:
+        """Simulate the real Linear response (newest-first) and verify that
+        list_comments_since returns only comments *newer* than last_seen,
+        in ascending (oldest-first) chronological order."""
+        # Linear returns comments newest-first.  last_seen is cmt-3.
+        nodes = [
+            self._make_comment("cmt-6", "Sixth"),   # newest
+            self._make_comment("cmt-5", "Fifth"),
+            self._make_comment("cmt-4", "Fourth"),
+            self._make_comment("cmt-3", "Third"),    # last_seen
+            self._make_comment("cmt-2", "Second"),
+            self._make_comment("cmt-1", "First"),    # oldest
+        ]
+        raw = self._comments_issue_raw(nodes)
+        transport = _make_transport(lambda req: _json_response(raw))
+        client = _client(transport)
+
+        comments = client.list_comments_since("abc-123", "cmt-3")
+        # Should return only cmt-4, cmt-5, cmt-6 in ascending order.
+        assert len(comments) == 3
+        assert comments[0].id == "cmt-4"
+        assert comments[1].id == "cmt-5"
+        assert comments[2].id == "cmt-6"
+
+        # Verify chronological order by createdAt.
+        for i in range(len(comments) - 1):
+            assert comments[i].created_at <= comments[i + 1].created_at, (
+                f"Comments not in chronological order: "
+                f"{comments[i].created_at} > {comments[i + 1].created_at}"
+            )
 
     def test_issue_not_found_raises(self) -> None:
         transport = _make_transport(

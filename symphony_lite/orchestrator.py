@@ -38,6 +38,10 @@ logger = logging.getLogger(__name__)
 
 _TERMINAL_LINEAR_STATES = {"Done", "Cancelled", "Canceled", "Duplicate"}
 _SHUTDOWN_GRACE_SECONDS = 5
+_RESTART_NOTICE_BODY = (
+    "**Symphony**: Restarted before setup completed. "
+    "Picking this ticket up again on the next poll."
+)
 
 # ---------------------------------------------------------------------------
 # Helpers
@@ -141,6 +145,20 @@ class Orchestrator:
         for ticket_state in list(self._state.tickets):
             if ticket_state.status == TicketStatus.bootstrapping:
                 logger.info("Recovery: dropping bootstrapping %s", ticket_state.ticket_id)
+                if ticket_state.metadata_comment_id:
+                    # A metadata comment was already posted; edit it rather
+                    # than leave it looking like a normal run.
+                    try:
+                        self._linear.edit_comment(
+                            ticket_state.metadata_comment_id,
+                            _RESTART_NOTICE_BODY,
+                        )
+                    except Exception:
+                        logger.exception(
+                            "Failed to edit metadata comment %s during recovery of %s",
+                            ticket_state.metadata_comment_id,
+                            ticket_state.ticket_id,
+                        )
                 self._state.remove(ticket_state.ticket_id)
             elif ticket_state.status == TicketStatus.working:
                 logger.info("Recovery: found orphaned working %s", ticket_state.ticket_id)
