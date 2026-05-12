@@ -1,0 +1,33 @@
+[build-system]
+requires = ["hatchling"]
+build-backend = "hatchling.build"
+
+[project]
+name = "symphony-lite"
+version = "0.1.0"
+description = "AI-powered ticket orchestration daemon"
+# readme not yet published
+license = {text = "MIT"}
+requires-python = ">=3.11"
+dependencies = [
+    "pyyaml>=6.0",
+    "pydantic>=2.0",
+    "httpx>=0.24",
+]
+
+[project.scripts]
+symphony-lite = "symphony_lite.cli:main"
+
+[project.optional-dependencies]
+dev = [
+    "pytest>=7.0",
+]
+
+[tool.hatch.build.targets.wheel]
+packages = ["symphony_lite"]
+
+[tool.pytest.ini_options]
+testpaths = ["tests"]
+markers = [
+    "integration: integration tests that require external dependencies (e.g. bwrap)",
+]
