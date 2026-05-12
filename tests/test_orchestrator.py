@@ -458,6 +458,24 @@ class TestTick:
             orchestrator._tick(); time.sleep(0.2)
         m.assert_called_once()
 
+    def test_deleted_ticket_removes_workspace(
+        self, orchestrator: Orchestrator, linear: FakeLinearClient, tmp_path: Path,
+    ) -> None:
+        """Ticket gone from Linear (404) → state removed AND workspace removed."""
+        ws_root = tmp_path / "workspaces"
+        ws_dir = ws_root / "TEAM-1"
+        ws_dir.mkdir(parents=True)
+        (ws_dir / "sentinel").write_text("x")
+
+        self._add_state(orchestrator, workspace_path=str(ws_dir))
+        linear.set_response("list_triggered_issues", [])
+        linear.set_response("get_issue", LinearNotFoundError("gone"))
+
+        orchestrator._tick(); time.sleep(0.2)
+
+        assert orchestrator._state.get("ticket-1") is None
+        assert not ws_dir.exists()
+
 
 # ---------------------------------------------------------------------------
 # Startup recovery

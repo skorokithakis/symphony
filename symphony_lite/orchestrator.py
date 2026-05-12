@@ -243,7 +243,12 @@ class Orchestrator:
                 except LinearNotFoundError:
                     logger.warning("Ticket %s not found — removing", tid)
                     self._cancel_ticket(tid)
+                    identifier = ticket_state.ticket_identifier
                     self._state.remove(tid)
+                    try:
+                        remove(identifier, str(self._workspace))
+                    except Exception:
+                        logger.exception("Failed to remove workspace for %s", tid)
                     self._state.save()
                     continue
                 except LinearError:
@@ -252,6 +257,11 @@ class Orchestrator:
 
                 label_present = self._config.linear.trigger_label in current.labels
                 if not label_present:
+                    # Label removal is reversible — the user may re-add it later
+                    # and expect to resume.  Leave the workspace in place so a
+                    # re-trigger reuses the cloned repo and any local changes.
+                    # Deletion (LinearNotFoundError above) and terminal states
+                    # below are permanent, so those paths do remove the workspace.
                     logger.info("Label removed from %s – cleaning up", tid)
                     self._cancel_ticket(tid)
                     self._state.remove(tid)
