@@ -120,6 +120,7 @@ def run_initial(
     timeout_seconds: int,
     on_subprocess: Callable[[subprocess.Popen[bytes]], None],
     hide_paths: list[str] | None = None,
+    extra_rw_paths: list[str] | None = None,
 ) -> tuple[str, str]:
     """Launch OpenCode for a new session with *prompt* and return the session
     id and final assistant message.
@@ -139,6 +140,8 @@ def run_initial(
             the process for external cancellation.
         hide_paths: Paths to conceal inside the sandbox.  Defaults to empty
             list (no extra hiding).
+        extra_rw_paths: Additional host paths to bind read-write inside the
+            sandbox.  Defaults to empty list.
 
     Returns:
         A tuple of ``(session_id, final_message)``.
@@ -167,6 +170,7 @@ def run_initial(
         timeout_seconds=timeout_seconds,
         on_subprocess=on_subprocess,
         hide_paths=hide_paths or [],
+        extra_rw_paths=extra_rw_paths or [],
     )
 
 
@@ -178,6 +182,7 @@ def run_resume(
     timeout_seconds: int,
     on_subprocess: Callable[[subprocess.Popen[bytes]], None],
     hide_paths: list[str] | None = None,
+    extra_rw_paths: list[str] | None = None,
 ) -> str:
     """Resume an existing OpenCode session with a follow-up *message*.
 
@@ -193,6 +198,8 @@ def run_resume(
         on_subprocess: Called with the Popen handle immediately after launch.
         hide_paths: Paths to conceal inside the sandbox.  Defaults to empty
             list (no extra hiding).
+        extra_rw_paths: Additional host paths to bind read-write inside the
+            sandbox.  Defaults to empty list.
 
     Returns:
         The final assistant message for the turn.
@@ -222,6 +229,7 @@ def run_resume(
         timeout_seconds=timeout_seconds,
         on_subprocess=on_subprocess,
         hide_paths=hide_paths or [],
+        extra_rw_paths=extra_rw_paths or [],
     )
     return final_message
 
@@ -237,6 +245,7 @@ def _execute(
     timeout_seconds: int,
     on_subprocess: Callable[[subprocess.Popen[bytes]], None],
     hide_paths: list[str] | None = None,
+    extra_rw_paths: list[str] | None = None,
 ) -> tuple[str, str]:
     """Launch *cmd* inside the sandbox and parse the JSON event stream.
 
@@ -263,6 +272,7 @@ def _execute(
         },
         stdout=subprocess.PIPE,
         stderr=subprocess.PIPE,
+        extra_rw_paths=extra_rw_paths or [],
     )
 
     # Let the caller register the Popen handle immediately.

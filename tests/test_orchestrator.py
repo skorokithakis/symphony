@@ -45,7 +45,7 @@ def _make_config(tmp_path: Path, **overrides: Any) -> AppConfig:
             "bot_user_email": "bot@example.com",
         },
         "opencode": {"model": "test/model"},
-        "sandbox": {"hide_paths": ["/fake/secret"]},
+        "sandbox": {"hide_paths": ["/fake/secret"], "extra_rw_paths": ["/fake/rw"]},
         "poll_interval_seconds": 1,
         "turn_timeout_seconds": 30,
     }
@@ -710,6 +710,52 @@ class TestHidePaths:
             orchestrator._resume_pipeline(ts)
         _, kwargs = m_oc.call_args
         assert kwargs.get("hide_paths") == ["/fake/secret"]
+
+
+# ---------------------------------------------------------------------------
+# Extra RW paths (mirrors HidePaths but for extra_rw_paths)
+# ---------------------------------------------------------------------------
+
+
+class TestExtraRWPaths:
+    def test_extra_rw_passed_to_prepare(self, orchestrator: Orchestrator, linear: FakeLinearClient) -> None:
+        """prepare() is called with sandbox_extra_rw_paths from config."""
+        linear.set_response("get_project", Project(
+            id="proj-1", name="Test",
+            links=[ProjectLink(label="Repo", url="https://github.com/org/repo.git")]))
+        linear.set_response("get_issue", _make_issue(description="Fix"))
+        with (
+            mock.patch("symphony_lite.orchestrator.prepare", return_value="/tmp/ws/TEAM-1") as m_prep,
+            mock.patch("symphony_lite.orchestrator.run_initial", return_value=("ses", "msg")),
+        ):
+            orchestrator._new_ticket_pipeline(_make_issue())
+        _, kwargs = m_prep.call_args
+        assert kwargs.get("sandbox_extra_rw_paths") == ["/fake/rw"]
+
+    def test_extra_rw_passed_to_run_initial(self, orchestrator: Orchestrator, linear: FakeLinearClient) -> None:
+        linear.set_response("get_project", Project(
+            id="proj-1", name="Test",
+            links=[ProjectLink(label="Repo", url="https://github.com/org/repo.git")]))
+        linear.set_response("get_issue", _make_issue(description="Fix"))
+        with (
+            mock.patch("symphony_lite.orchestrator.prepare", return_value="/tmp/ws/TEAM-1"),
+            mock.patch("symphony_lite.orchestrator.run_initial", return_value=("ses", "msg")) as m_oc,
+        ):
+            orchestrator._new_ticket_pipeline(_make_issue())
+        _, kwargs = m_oc.call_args
+        assert kwargs.get("extra_rw_paths") == ["/fake/rw"]
+
+    def test_extra_rw_passed_to_run_resume(self, orchestrator: Orchestrator, linear: FakeLinearClient) -> None:
+        ts = TicketState(ticket_id="ticket-1", ticket_identifier="TEAM-1",
+                         repo_url="https://x", workspace_path="/tmp/x", branch="main",
+                         status=TicketStatus.needs_input, session_id="ses-abc",
+                         last_seen_comment_id="cmt-seen-1")
+        orchestrator._state.upsert(ts)
+        linear.set_response("list_comments_since", [_make_comment("c1", "Go")])
+        with mock.patch("symphony_lite.orchestrator.run_resume", return_value="Done!") as m_oc:
+            orchestrator._resume_pipeline(ts)
+        _, kwargs = m_oc.call_args
+        assert kwargs.get("extra_rw_paths") == ["/fake/rw"]
 
 
 # ---------------------------------------------------------------------------

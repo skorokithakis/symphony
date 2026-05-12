@@ -79,6 +79,10 @@ class _SandboxConfig(BaseModel):
         default_factory=lambda: list(DEFAULT_HIDE_PATHS),
         description="Paths to conceal inside the sandbox",
     )
+    extra_rw_paths: list[str] = Field(
+        default_factory=list,
+        description="Additional host paths to bind read-write inside the sandbox",
+    )
 
 
 class _OpenCodeConfig(BaseModel):

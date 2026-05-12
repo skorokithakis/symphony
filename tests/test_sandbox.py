@@ -15,7 +15,6 @@ from __future__ import annotations
 import os
 import shutil
 import subprocess
-import tempfile
 from pathlib import Path
 
 import pytest
@@ -432,3 +431,37 @@ class TestRunInSandbox:
         finally:
             if old_home:
                 os.environ["HOME"] = old_home
+
+    def test_extra_rw_paths_writable(self, tmp_path: Path) -> None:
+        """Verify that extra_rw_paths are writable inside the sandbox."""
+        _require_bwrap()
+
+        extra_dir = tmp_path / "extra_rw"
+        extra_dir.mkdir()
+        test_file = extra_dir / "test.txt"
+
+        workspace = tmp_path / "workspace"
+        workspace.mkdir()
+
+        proc = run_in_sandbox(
+            cmd=[
+                "bash",
+                "-c",
+                f'touch "{test_file}" && echo "WRITABLE" || echo "NOT_WRITABLE"',
+            ],
+            workspace_path=str(workspace),
+            hide_paths=[],
+            env={"HOME": str(Path.home())},
+            stdout=subprocess.PIPE,
+            stderr=subprocess.PIPE,
+            extra_rw_paths=[str(extra_dir)],
+        )
+
+        stdout, stderr = proc.communicate(timeout=30)
+        output = stdout.decode(errors="replace").strip()
+
+        assert proc.returncode == 0, (
+            f"Sandbox failed: stderr={stderr.decode(errors='replace')}"
+        )
+        assert "WRITABLE" in output, f"Expected WRITABLE, got: {output}"
+        assert test_file.exists(), f"File not created: {test_file}"

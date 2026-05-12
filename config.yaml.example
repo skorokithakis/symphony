@@ -1,0 +1,51 @@
+# config.yaml.example — fully annotated example for symphony-lite.
+# Copy this to your workspace directory as config.yaml and adjust to taste.
+
+linear:
+  # REQUIRED. Linear Personal API key from the bot account.
+  # Use ${LINEAR_API_KEY} to read from the environment (or set LINEAR_API_KEY
+  # env var — the daemon falls back to it if this field is missing or empty).
+  api_key: ${LINEAR_API_KEY}
+
+  # Name of the label that triggers the bot (default: agent).
+  trigger_label: agent
+
+  # Linear workflow state set while the AI is working (default: In Progress).
+  in_progress_state: In Progress
+
+  # Linear workflow state set while waiting for human reply (default: Needs Input).
+  needs_input_state: Needs Input
+
+  # REQUIRED. Email address of the bot user in Linear.
+  bot_user_email: yourname+symphony@gmail.com
+
+sandbox:
+  # Paths to conceal inside the sandbox (defaults shown below).
+  # Directories are overlaid with an empty tmpfs; files and sockets are
+  # replaced with /dev/null.  ~ and symlinks are expanded.
+  hide_paths:
+    - ~/.ssh
+    - ~/.gnupg
+    - ~/.aws
+    - ~/.config/gcloud
+    - ~/.netrc
+    - ~/.docker
+    - /run/docker.sock
+
+  # Additional host paths to bind read-write inside the sandbox.
+  # These use --bind (not --bind-try), so missing paths cause a fatal error.
+  # Applied before hide_paths, so hide still wins on collision.
+  # WARNING: Listed paths bypass the read-only host root mount.
+  # extra_rw_paths:
+  #   - ~/projects/shared-tools
+
+opencode:
+  # Optional. Model in provider/model format. If omitted, OpenCode uses
+  # whatever model its own config selects.
+  model: anthropic/claude-sonnet-4
+
+# Seconds between Linear poll cycles (default: 30, minimum: 1).
+poll_interval_seconds: 30
+
+# Max seconds per AI turn before the process is killed (default: 1800).
+turn_timeout_seconds: 1800

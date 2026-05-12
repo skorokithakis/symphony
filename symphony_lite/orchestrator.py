@@ -424,6 +424,7 @@ class Orchestrator:
                 workspace_root=str(self._workspace),
                 sandbox_hide_paths=self._config.sandbox.hide_paths,
                 on_subprocess=lambda proc: self._register_subprocess(tid, proc),
+                sandbox_extra_rw_paths=self._config.sandbox.extra_rw_paths,
             )
         except (WorkspaceError, FileNotFoundError) as exc:
             logger.error("Workspace preparation failed for %s: %s", tid, exc)
@@ -493,6 +494,7 @@ class Orchestrator:
                 timeout_seconds=self._config.turn_timeout_seconds,
                 on_subprocess=lambda proc: self._register_subprocess(tid, proc),
                 hide_paths=self._config.sandbox.hide_paths,
+                extra_rw_paths=self._config.sandbox.extra_rw_paths,
             )
         except OpenCodeTimeout:
             logger.error("OpenCode turn timed out for %s", tid)
@@ -625,6 +627,7 @@ class Orchestrator:
                 timeout_seconds=self._config.turn_timeout_seconds,
                 on_subprocess=lambda proc: self._register_subprocess(tid, proc),
                 hide_paths=self._config.sandbox.hide_paths,  # B3
+                extra_rw_paths=self._config.sandbox.extra_rw_paths,
             )
         except OpenCodeTimeout:
             logger.error("OpenCode resume timed out for %s", tid)

@@ -129,6 +129,13 @@ sandbox:
     - ~/.docker
     - /run/docker.sock
 
+  # Additional host paths to bind read-write inside the sandbox.
+  # These use --bind (not --bind-try), so missing paths cause a fatal error.
+  # Applied before hide_paths, so hide still wins on collision.
+  # WARNING: Listed paths bypass the read-only host root mount.
+  # extra_rw_paths:
+  #   - ~/projects/shared-tools
+
 opencode:
   # Optional. Model in provider/model format. If omitted, OpenCode uses
   # whatever model its own config selects.
@@ -140,6 +147,8 @@ poll_interval_seconds: 30
 # Max seconds per AI turn before the process is killed (default: 1800).
 turn_timeout_seconds: 1800
 ```
+A standalone copy of this annotated example is available at
+`config.yaml.example` in the repo root.
 
 ### Minimal config
 

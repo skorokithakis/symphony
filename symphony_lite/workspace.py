@@ -140,6 +140,7 @@ def _run_setup_script(
     workspace_path: str,
     hide_paths: list[str],
     on_subprocess: Callable[[subprocess.Popen[bytes]], None] | None = None,
+    extra_rw_paths: list[str] | None = None,
 ) -> None:
     """Run ``.symphony/setup`` inside the sandbox.
 
@@ -148,6 +149,8 @@ def _run_setup_script(
         hide_paths: Paths to conceal inside the sandbox.
         on_subprocess: Optional callback invoked with the Popen handle
             immediately after launch, for external cancellation.
+        extra_rw_paths: Additional host paths to bind read-write inside the
+            sandbox.
 
     Raises:
         SetupFailed: If the script exits with a non-zero code or times out.
@@ -168,6 +171,7 @@ def _run_setup_script(
         },
         stdout=subprocess.PIPE,
         stderr=subprocess.PIPE,
+        extra_rw_paths=extra_rw_paths or [],
     )
 
     if on_subprocess is not None:
@@ -270,6 +274,7 @@ def prepare(
     workspace_root: str,
     sandbox_hide_paths: list[str],
     on_subprocess: Callable[[subprocess.Popen[bytes]], None] | None = None,
+    sandbox_extra_rw_paths: list[str] | None = None,
 ) -> str:
     """Prepare a workspace for *ticket_identifier*.
 
@@ -292,6 +297,8 @@ def prepare(
             the setup script.
         on_subprocess: Optional callback invoked with the Popen handle of the
             setup script (if any), for external cancellation.
+        sandbox_extra_rw_paths: Additional host paths to bind read-write inside
+            the sandbox when running the setup script.
 
     Returns:
         The real path to the prepared workspace.
@@ -339,7 +346,8 @@ def prepare(
     _git_switch_branch(branch_name, real_path)
 
     # 5. Run setup script if present
-    _run_setup_script(real_path, sandbox_hide_paths, on_subprocess=on_subprocess)
+    _run_setup_script(real_path, sandbox_hide_paths, on_subprocess=on_subprocess,
+                      extra_rw_paths=sandbox_extra_rw_paths)
 
     return real_path
 

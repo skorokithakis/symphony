@@ -32,6 +32,7 @@ def run_in_sandbox(
     stdin: Any = None,
     stdout: int = subprocess.PIPE,
     stderr: int = subprocess.PIPE,
+    extra_rw_paths: list[str] | None = None,
 ) -> subprocess.Popen[bytes]:
     """Run *cmd* inside a bwrap sandbox and return the :class:`~subprocess.Popen` handle.
 
@@ -55,6 +56,9 @@ def run_in_sandbox(
             :data:`subprocess.PIPE`).
         stderr: Passed through to :class:`subprocess.Popen` (default
             :data:`subprocess.PIPE`).
+        extra_rw_paths: Additional host paths to bind read-write inside the
+            sandbox using ``--bind`` (not ``--bind-try``).  Applied before
+            *hide_paths* so hide wins on collision.  ``~`` is expanded.
 
     Returns:
         A :class:`subprocess.Popen` instance for the bwrap process.  The
@@ -108,7 +112,14 @@ def run_in_sandbox(
     bwrap_args.extend(["--bind-try", opencode_legacy, opencode_legacy])
     bwrap_args.extend(["--bind-try", opencode_xdg, opencode_xdg])
 
-    # 5. Conceal sensitive paths
+    # 5. Extra read-write paths (applied before hide_paths so hide wins on
+    #    collision — later bwrap mounts override earlier ones).
+    if extra_rw_paths:
+        for raw_path in extra_rw_paths:
+            path = _expand(raw_path)
+            bwrap_args.extend(["--bind", path, path])
+
+    # 6. Conceal sensitive paths
     for raw_path in hide_paths:
         path = _expand(raw_path)
         if os.path.isdir(path):
@@ -123,7 +134,7 @@ def run_in_sandbox(
             bwrap_args.extend(["--ro-bind", "/dev/null", path])
         # else: path does not exist on the host → nothing to conceal.
 
-    # 6. Essential pseudo-filesystems
+    # 7. Essential pseudo-filesystems
     bwrap_args.extend(["--dev", "/dev"])
     bwrap_args.extend(["--proc", "/proc"])
 

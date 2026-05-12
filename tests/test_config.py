@@ -248,3 +248,41 @@ class TestLoadConfig:
 
         with pytest.raises(ValueError, match="Config validation failed"):
             load_config(tmp_path)
+
+    def test_default_extra_rw_paths(self, tmp_path: Path) -> None:
+        """extra_rw_paths defaults to an empty list."""
+        cfg = {
+            "linear": {
+                "api_key": "test-key",
+                "bot_user_email": "bot@example.com",
+            },
+            "opencode": {
+                "model": "anthropic/claude-sonnet-4",
+            },
+        }
+        _write_yaml(tmp_path / "config.yaml", cfg)
+
+        config = load_config(tmp_path)
+        assert config.sandbox.extra_rw_paths == []
+
+    def test_custom_extra_rw_paths_with_tilde(self, tmp_path: Path) -> None:
+        """extra_rw_paths supports tilde expansion."""
+        cfg = {
+            "linear": {
+                "api_key": "key",
+                "bot_user_email": "bot@example.com",
+            },
+            "opencode": {
+                "model": "anthropic/claude-sonnet-4",
+            },
+            "sandbox": {
+                "extra_rw_paths": ["~/projects/shared", "/opt/tools"],
+            },
+        }
+        _write_yaml(tmp_path / "config.yaml", cfg)
+
+        config = load_config(tmp_path)
+        assert config.sandbox.extra_rw_paths == [
+            str(Path.home() / "projects" / "shared"),
+            "/opt/tools",
+        ]
