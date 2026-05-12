@@ -22,11 +22,11 @@ def _build_parser() -> argparse.ArgumentParser:
         description="AI-powered ticket orchestration daemon",
     )
     parser.add_argument(
-        "--config",
+        "--workspace",
         type=str,
         default=None,
-        help="Path to config file (default: ~/.config/symphony-lite/config.yaml, "
-        "overridable via $SYMPHONY_CONFIG)",
+        help="Path to workspace directory (default: current working directory). "
+        "Expects config.yaml and state.json inside this directory.",
     )
     parser.add_argument(
         "--debug",
@@ -48,24 +48,33 @@ def main(argv: list[str] | None = None) -> None:
 
     setup_logging(debug=args.debug)
 
+    workspace = Path(args.workspace).expanduser().resolve() if args.workspace else Path.cwd().resolve()
+
     try:
-        config_path = Path(args.config) if args.config else None
-        config: AppConfig = load_config(config_path)
-    except (FileNotFoundError, ValueError) as exc:
+        config: AppConfig = load_config(workspace)
+    except FileNotFoundError:
+        config_path = workspace / "config.yaml"
+        print(
+            f"Config file not found: {config_path}\n"
+            f"Create a config.yaml file in {workspace} with the required settings.",
+            file=sys.stderr,
+        )
+        sys.exit(1)
+    except ValueError as exc:
         logger.error("Config error: %s", exc)
         sys.exit(1)
 
     if args.validate_config:
         logger.info("Config is valid.")
-        logger.info("  workspace_root = %s", config.workspace_root)
+        logger.info("  workspace       = %s", workspace)
         logger.info("  poll_interval   = %s s", config.poll_interval_seconds)
         logger.info("  model           = %s", config.opencode.model)
         return
 
     # Load state and create the Linear client.
-    state = load_state()
+    state = load_state(workspace)
     linear = LinearClient(api_key=config.linear.api_key)
 
     # Create and run the orchestrator daemon.
-    orchestrator = Orchestrator(config=config, state=state, linear=linear)
+    orchestrator = Orchestrator(config=config, state=state, linear=linear, workspace=workspace)
     orchestrator.run()

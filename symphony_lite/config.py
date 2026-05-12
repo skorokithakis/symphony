@@ -1,8 +1,7 @@
 """Typed configuration loader for symphony-lite.
 
-Reads YAML from ``~/.config/symphony-lite/config.yaml`` (overridable via
-``$SYMPHONY_CONFIG``), validates with Pydantic v2, and expands ``~`` / ``$VAR``
-references in string values.
+Reads YAML from ``<workspace_dir>/config.yaml``, validates with Pydantic v2,
+and expands ``~`` / ``$VAR`` references in string values.
 """
 
 from __future__ import annotations
@@ -13,14 +12,12 @@ from pathlib import Path
 from typing import Any
 
 import yaml
-from pydantic import BaseModel, Field, ValidationError
+from pydantic import BaseModel, ConfigDict, Field, ValidationError, model_validator
 
 
 # ---------------------------------------------------------------------------
 # Defaults
 # ---------------------------------------------------------------------------
-
-DEFAULT_CONFIG_PATH = Path.home() / ".config" / "symphony-lite" / "config.yaml"
 
 DEFAULT_HIDE_PATHS: list[str] = [
     "~/.ssh",
@@ -48,7 +45,7 @@ def _expand(value: str) -> str:
         value = str(Path(value).expanduser())
     # Env-var expansion
     def _sub(m: re.Match[str]) -> str:
-        return os.environ.get(m.group(1), m.group(0))
+        return os.environ.get(m.group(1), "")
 
     return _VAR_RE.sub(_sub, value)
 
@@ -95,15 +92,25 @@ class _OpenCodeConfig(BaseModel):
 class AppConfig(BaseModel):
     """Top-level application configuration."""
 
+    model_config = ConfigDict(extra="forbid")
+
     linear: _LinearConfig
     sandbox: _SandboxConfig = Field(default_factory=_SandboxConfig)
-    opencode: _OpenCodeConfig
-    workspace_root: Path = Field(
-        default_factory=lambda: Path("~/symphony/ws").expanduser(),
-        description="Root directory for per-ticket workspaces",
-    )
+    opencode: _OpenCodeConfig = Field(default_factory=_OpenCodeConfig)
     poll_interval_seconds: int = Field(30, gt=0, description="Seconds between Linear poll cycles")
     turn_timeout_seconds: int = Field(1800, gt=0, description="Max seconds per AI turn")
+
+    @model_validator(mode="before")
+    @classmethod
+    def _drop_null_subconfigs(cls, data: Any) -> Any:
+        # YAML keys with empty values (e.g. `opencode:` on its own line) parse
+        # as ``None``. For sub-config fields that have a default, treat ``None``
+        # as "use the default" rather than failing validation.
+        if isinstance(data, dict):
+            for key in ("sandbox", "opencode"):
+                if key in data and data[key] is None:
+                    del data[key]
+        return data
 
 
 # ---------------------------------------------------------------------------
@@ -111,18 +118,12 @@ class AppConfig(BaseModel):
 # ---------------------------------------------------------------------------
 
 
-def _resolve_config_path() -> Path:
-    env = os.environ.get("SYMPHONY_CONFIG")
-    return Path(env).expanduser() if env else DEFAULT_CONFIG_PATH
-
-
-def load_config(path: Path | None = None) -> AppConfig:
+def load_config(workspace_dir: Path) -> AppConfig:
     """Load, expand, and validate the application configuration.
 
     Args:
-        path: Optional explicit path to the config file.  When ``None`` the
-            default path is used (``~/.config/symphony-lite/config.yaml``),
-            which can be overridden via ``$SYMPHONY_CONFIG``.
+        workspace_dir: Path to the workspace directory containing
+            ``config.yaml``.
 
     Returns:
         A fully-validated ``AppConfig`` instance.
@@ -131,11 +132,13 @@ def load_config(path: Path | None = None) -> AppConfig:
         FileNotFoundError: The config file does not exist.
         ValueError: The config file contains invalid YAML or fails validation.
     """
-    if path is None:
-        path = _resolve_config_path()
+    path = workspace_dir / "config.yaml"
 
     if not path.exists():
-        raise FileNotFoundError(f"Config file not found: {path}")
+        raise FileNotFoundError(
+            f"Config file not found: {path}. "
+            f"Create a config.yaml file in {workspace_dir} with the required settings."
+        )
 
     try:
         raw = yaml.safe_load(path.read_text())
@@ -146,6 +149,21 @@ def load_config(path: Path | None = None) -> AppConfig:
         raise ValueError(f"Config file is empty: {path}")
 
     expanded = _expand_values(raw)
+
+    # LINEAR_API_KEY environment variable fallback: if linear.api_key is
+    # missing or empty in the YAML, fall back to the LINEAR_API_KEY env var.
+    if isinstance(expanded, dict):
+        linear = expanded.setdefault("linear", {})
+        if isinstance(linear, dict) and not linear.get("api_key", ""):
+            env_key = os.environ.get("LINEAR_API_KEY", "")
+            if env_key:
+                linear["api_key"] = env_key
+            else:
+                raise ValueError(
+                    f"Linear API key not set. Provide it in {path} "
+                    f"(linear.api_key) or via the LINEAR_API_KEY "
+                    f"environment variable."
+                )
 
     try:
         return AppConfig.model_validate(expanded)

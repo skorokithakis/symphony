@@ -92,7 +92,7 @@ def sample_project_raw() -> dict[str, Any]:
     return {
         "id": "proj-1",
         "name": "Backend",
-        "links": {
+        "externalLinks": {
             "nodes": [
                 {"label": "GitHub", "url": "https://github.com/org/repo"},
                 {"label": "Docs", "url": "https://docs.example.com"},
@@ -344,7 +344,7 @@ class TestGetProject:
                 "project": {
                     "id": "proj-2",
                     "name": "Empty",
-                    "links": {"nodes": []},
+                    "externalLinks": {"nodes": []},
                 }
             }
         }
@@ -526,14 +526,14 @@ class TestTransitionToState:
         def handler(req: httpx.Request) -> httpx.Response:
             requests_seen.append(req)
             body = req.read().decode()
-            if "workflowStates" in body:
+            if "states" in body:
                 # Step 1: lookup
                 return _json_response(
                     {
                         "data": {
                             "issue": {
                                 "team": {
-                                    "workflowStates": {
+                                    "states": {
                                         "nodes": [
                                             {"id": "st-backlog", "name": "Backlog"},
                                             {"id": "st-ip", "name": "In Progress"},
@@ -564,7 +564,7 @@ class TestTransitionToState:
                     "data": {
                         "issue": {
                             "team": {
-                                "workflowStates": {
+                                "states": {
                                     "nodes": [
                                         {"id": "st-1", "name": "Backlog"},
                                     ]
@@ -604,13 +604,13 @@ class TestTransitionToState:
         def handler(req: httpx.Request) -> httpx.Response:
             requests_seen.append(req)
             body = req.read().decode()
-            if "workflowStates" in body:
+            if "states" in body:
                 return _json_response(
                     {
                         "data": {
                             "issue": {
                                 "team": {
-                                    "workflowStates": {
+                                    "states": {
                                         "nodes": [
                                             {"id": "st-done", "name": "Done"},
                                         ]

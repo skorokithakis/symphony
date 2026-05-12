@@ -229,6 +229,6 @@ class TestConcurrentWrites:
 
 class TestLoadState:
     def test_returns_manager(self) -> None:
-        mgr = load_state(Path("/nonexistent/state.json"))
+        mgr = load_state(Path("/nonexistent"))
         assert isinstance(mgr, StateManager)
         assert mgr.tickets == []

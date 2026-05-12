@@ -45,7 +45,6 @@ def _make_config(tmp_path: Path, **overrides: Any) -> AppConfig:
         },
         "opencode": {"model": "test/model"},
         "sandbox": {"hide_paths": ["/fake/secret"]},
-        "workspace_root": str(tmp_path / "workspaces"),
         "poll_interval_seconds": 1,
         "turn_timeout_seconds": 30,
     }
@@ -162,8 +161,8 @@ def linear() -> FakeLinearClient:
 
 
 @pytest.fixture
-def orchestrator(tmp_config: AppConfig, state_mgr: StateManager, linear: FakeLinearClient) -> Orchestrator:
-    return Orchestrator(config=tmp_config, state=state_mgr, linear=linear)  # type: ignore[arg-type]
+def orchestrator(tmp_config: AppConfig, state_mgr: StateManager, linear: FakeLinearClient, tmp_path: Path) -> Orchestrator:
+    return Orchestrator(config=tmp_config, state=state_mgr, linear=linear, workspace=tmp_path / "workspaces")  # type: ignore[arg-type]
 
 
 # ---------------------------------------------------------------------------
@@ -650,7 +649,7 @@ class TestIntegration:
             id="proj-1", name="Test", links=[ProjectLink(label="Repo", url=str(source_repo))]))
 
         config = _make_config(tmp_path, **{"linear": {"api_key": "test"}})
-        orch = Orchestrator(config=config, state=state_mgr, linear=linear)  # type: ignore[arg-type]
+        orch = Orchestrator(config=config, state=state_mgr, linear=linear, workspace=ws_root)  # type: ignore[arg-type]
 
         with mock.patch("symphony_lite.orchestrator.run_initial", return_value=("ses-int", "Done.")):
             orch._new_ticket_pipeline(_make_issue())

@@ -35,8 +35,11 @@ class TestExpand:
         monkeypatch.setenv("MY_VAR", "hello")
         assert _expand("${MY_VAR}/world") == "hello/world"
 
-    def test_unset_var_preserved(self) -> None:
-        assert _expand("$NO_SUCH_VAR") == "$NO_SUCH_VAR"
+    def test_unset_var_becomes_empty(self) -> None:
+        assert _expand("$NO_SUCH_VAR") == ""
+
+    def test_unset_var_in_path_keeps_surrounding_text(self) -> None:
+        assert _expand("$NO_SUCH_VAR/something") == "/something"
 
     def test_literal_string_no_expansion(self) -> None:
         assert _expand("just a string") == "just a string"
@@ -47,11 +50,11 @@ class TestExpandValues:
         monkeypatch.setenv("KEY", "secret")
         data = {
             "linear": {"api_key": "$KEY"},
-            "workspace_root": "~/ws",
+            "opencode": {"model": "~/model"},
         }
         result = _expand_values(data)
         assert result["linear"]["api_key"] == "secret"
-        assert result["workspace_root"] == str(Path.home() / "ws")
+        assert result["opencode"]["model"] == str(Path.home() / "model")
 
     def test_list_recursion(self) -> None:
         data = ["~/a", "~/b"]
@@ -80,10 +83,9 @@ class TestLoadConfig:
                 "model": "anthropic/claude-sonnet-4",
             },
         }
-        path = tmp_path / "config.yaml"
-        _write_yaml(path, cfg)
+        _write_yaml(tmp_path / "config.yaml", cfg)
 
-        config = load_config(path)
+        config = load_config(tmp_path)
         assert isinstance(config, AppConfig)
         assert config.linear.api_key == "test-key"
         assert config.linear.trigger_label == "agent"  # default
@@ -94,15 +96,14 @@ class TestLoadConfig:
     def test_missing_required_field_raises(self, tmp_path: Path) -> None:
         cfg = {
             "linear": {
-                "bot_user_email": "bot@example.com",
+                "api_key": "test-key",
+                # missing bot_user_email
             },
-            # missing opencode section entirely
         }
-        path = tmp_path / "config.yaml"
-        _write_yaml(path, cfg)
+        _write_yaml(tmp_path / "config.yaml", cfg)
 
         with pytest.raises(ValueError, match="Config validation failed"):
-            load_config(path)
+            load_config(tmp_path)
 
     def test_env_var_in_api_key(self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
         monkeypatch.setenv("LINEAR_KEY", "my-secret-token")
@@ -115,38 +116,19 @@ class TestLoadConfig:
                 "model": "anthropic/claude-sonnet-4",
             },
         }
-        path = tmp_path / "config.yaml"
-        _write_yaml(path, cfg)
+        _write_yaml(tmp_path / "config.yaml", cfg)
 
-        config = load_config(path)
+        config = load_config(tmp_path)
         assert config.linear.api_key == "my-secret-token"
 
-    def test_workspace_root_expansion(self, tmp_path: Path) -> None:
-        cfg = {
-            "linear": {
-                "api_key": "key",
-                "bot_user_email": "bot@example.com",
-            },
-            "opencode": {
-                "model": "anthropic/claude-sonnet-4",
-            },
-            "workspace_root": "~/myprojects",
-        }
-        path = tmp_path / "config.yaml"
-        _write_yaml(path, cfg)
-
-        config = load_config(path)
-        assert config.workspace_root == Path.home() / "myprojects"
-
-    def test_nonexistent_file_raises(self) -> None:
+    def test_missing_config_file_raises(self) -> None:
         with pytest.raises(FileNotFoundError, match="Config file not found"):
-            load_config(Path("/nonexistent/config.yaml"))
+            load_config(Path("/nonexistent"))
 
     def test_empty_file_raises(self, tmp_path: Path) -> None:
-        path = tmp_path / "empty.yaml"
-        path.write_text("")
+        (tmp_path / "config.yaml").write_text("")
         with pytest.raises(ValueError, match="empty"):
-            load_config(path)
+            load_config(tmp_path)
 
     def test_custom_hide_paths(self, tmp_path: Path) -> None:
         cfg = {
@@ -161,13 +143,81 @@ class TestLoadConfig:
                 "hide_paths": ["/secret", "~/private"],
             },
         }
-        path = tmp_path / "config.yaml"
-        _write_yaml(path, cfg)
+        _write_yaml(tmp_path / "config.yaml", cfg)
 
-        config = load_config(path)
+        config = load_config(tmp_path)
         assert config.sandbox.hide_paths == ["/secret", str(Path.home() / "private")]
 
-    def test_symphony_config_env_override(self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+    def test_linear_api_key_env_fallback(self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+        """If linear.api_key is missing from YAML, LINEAR_API_KEY env var is used."""
+        monkeypatch.setenv("LINEAR_API_KEY", "env-provided-key")
+        cfg = {
+            "linear": {
+                "bot_user_email": "bot@example.com",
+            },
+            "opencode": {
+                "model": "anthropic/claude-sonnet-4",
+            },
+        }
+        _write_yaml(tmp_path / "config.yaml", cfg)
+
+        config = load_config(tmp_path)
+        assert config.linear.api_key == "env-provided-key"
+
+    def test_linear_api_key_empty_string_fallback(
+        self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch,
+    ) -> None:
+        """If linear.api_key is an empty string, fall back to LINEAR_API_KEY."""
+        monkeypatch.setenv("LINEAR_API_KEY", "env-provided-key")
+        cfg = {
+            "linear": {
+                "api_key": "",
+                "bot_user_email": "bot@example.com",
+            },
+            "opencode": {
+                "model": "anthropic/claude-sonnet-4",
+            },
+        }
+        _write_yaml(tmp_path / "config.yaml", cfg)
+
+        config = load_config(tmp_path)
+        assert config.linear.api_key == "env-provided-key"
+
+    def test_linear_api_key_neither_set_raises(self, tmp_path: Path) -> None:
+        """If neither YAML nor env var provides the key, raise a ValueError."""
+        cfg = {
+            "linear": {
+                "bot_user_email": "bot@example.com",
+            },
+            "opencode": {
+                "model": "anthropic/claude-sonnet-4",
+            },
+        }
+        _write_yaml(tmp_path / "config.yaml", cfg)
+
+        with pytest.raises(ValueError, match="LINEAR_API_KEY"):
+            load_config(tmp_path)
+
+    def test_unresolved_api_key_env_var_triggers_fallback_error(
+        self, tmp_path: Path,
+    ) -> None:
+        """api_key: ${LINEAR_API_KEY} with unset env var → empty string → fallback error."""
+        cfg = {
+            "linear": {
+                "api_key": "${LINEAR_API_KEY}",
+                "bot_user_email": "bot@example.com",
+            },
+            "opencode": {
+                "model": "anthropic/claude-sonnet-4",
+            },
+        }
+        _write_yaml(tmp_path / "config.yaml", cfg)
+
+        with pytest.raises(ValueError, match="LINEAR_API_KEY"):
+            load_config(tmp_path)
+
+    def test_unknown_field_workspace_root_raises(self, tmp_path: Path) -> None:
+        """Config containing the dead field workspace_root fails validation."""
         cfg = {
             "linear": {
                 "api_key": "key",
@@ -176,13 +226,12 @@ class TestLoadConfig:
             "opencode": {
                 "model": "anthropic/claude-sonnet-4",
             },
+            "workspace_root": "~/anything",
         }
-        path = tmp_path / "custom.yaml"
-        _write_yaml(path, cfg)
-        monkeypatch.setenv("SYMPHONY_CONFIG", str(path))
+        _write_yaml(tmp_path / "config.yaml", cfg)
 
-        config = load_config()
-        assert config.linear.api_key == "key"
+        with pytest.raises(ValueError, match="workspace_root"):
+            load_config(tmp_path)
 
     def test_poll_interval_must_be_positive(self, tmp_path: Path) -> None:
         cfg = {
@@ -195,8 +244,7 @@ class TestLoadConfig:
             },
             "poll_interval_seconds": 0,
         }
-        path = tmp_path / "config.yaml"
-        _write_yaml(path, cfg)
+        _write_yaml(tmp_path / "config.yaml", cfg)
 
         with pytest.raises(ValueError, match="Config validation failed"):
-            load_config(path)
+            load_config(tmp_path)

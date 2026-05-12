@@ -67,7 +67,7 @@ find the repo URL.
 
 ### 2. Attach a Repo link
 
-Open the project, go to **Links**, and add a link with:
+Open the project, go to **Resources**, and add a link with:
 - **Label**: `Repo` (case-insensitive; must be exactly this or `repo` or `REPO`)
 - **URL**: the git clone URL (e.g. `git@github.com:you/your-project.git` or
   `https://github.com/you/your-project.git`)
@@ -89,17 +89,19 @@ script has a 5-minute timeout.
 
 ## Configuration
 
-Create `~/.config/symphony-lite/config.yaml` (or set `$SYMPHONY_CONFIG` to
-point elsewhere). The daemon refuses to start without a valid config.
+Create `config.yaml` in your workspace directory (the current working
+directory by default, or the path passed to `--workspace`). The daemon refuses
+to start without a valid config.
 
 Full annotated example:
 
 ```yaml
-# ~/.config/symphony-lite/config.yaml
+# config.yaml (placed in the workspace directory)
 
 linear:
   # REQUIRED. Linear Personal API key from the bot account.
-  # Use ${LINEAR_API_KEY} to read from the environment, or paste it directly.
+  # Use ${LINEAR_API_KEY} to read from the environment (or set LINEAR_API_KEY
+  # env var — the daemon falls back to it if this field is missing or empty).
   api_key: ${LINEAR_API_KEY}
 
   # Name of the label that triggers the bot (default: agent).
@@ -132,9 +134,6 @@ opencode:
   # whatever model its own config selects.
   model: anthropic/claude-sonnet-4
 
-# Root directory for per-ticket workspaces (default: ~/symphony/ws).
-workspace_root: ~/symphony/ws
-
 # Seconds between Linear poll cycles (default: 30, minimum: 1).
 poll_interval_seconds: 30
 
@@ -154,6 +153,10 @@ linear:
 
 All other fields use the defaults shown above. If you don't set
 `opencode.model`, OpenCode picks the model from its own configuration.
+
+You can also set the `LINEAR_API_KEY` environment variable and omit
+`linear.api_key` from the config file entirely — the daemon uses the env var
+as a fallback.
 
 ### Validate
 
@@ -185,7 +188,7 @@ Flags:
 | Flag | Effect |
 |------|--------|
 | `--debug` | Enable DEBUG-level logging |
-| `--config <path>` | Override config file path |
+| `--workspace <path>` | Override workspace directory (default: current working directory) |
 | `--validate-config` | Load and validate config, then exit |
 
 Logs go to **stderr**.
@@ -195,7 +198,7 @@ Logs go to **stderr**.
 On launch the daemon recovers any orphaned tickets (daemon restarted while a
 ticket was `working`). It posts a recovery comment and sets the ticket to
 `Needs Input` so you know it's waiting. State is persisted at
-`~/.local/share/symphony-lite/state.json`.
+`<workspace>/state.json`.
 
 ### Graceful shutdown
 
@@ -211,7 +214,7 @@ tickets that have the trigger label and are in an active state. For each new
 ticket it:
 
 1. Looks up the project's `Repo` link to find the git URL.
-2. Clones/updates the repo into `workspace_root/<sanitized-identifier>`.
+2. Clones/updates the repo into `<workspace>/<sanitized-identifier>`.
 3. Switches to the ticket's branch (or creates a new one).
 4. Runs `.symphony/setup` inside the sandbox if present.
 5. Launches `opencode run` inside the sandbox with the ticket title and
@@ -277,7 +280,7 @@ The daemon posts a metadata comment on every ticket it processes, formatted as:
 
 ```
 **Symphony**
-- workspace: `~/symphony/ws/TEAM-42`
+- workspace: `<workspace>/TEAM-42`
 - session: `ses_abc123`
 ```
 
@@ -286,16 +289,15 @@ session id.
 
 ### Inspect a workspace
 
-Workspaces live under `workspace_root` (default `~/symphony/ws`). Each
-subdirectory is named after the sanitised ticket identifier (e.g.
-`TEAM-42` → `TEAM-42`, `SCR-123` → `SCR-123`). You can `cd` into the
-workspace and inspect the repo, the agent's changes, or run OpenCode commands
-manually.
+Workspaces live inside your workspace directory. Each subdirectory is named
+after the sanitised ticket identifier (e.g. `TEAM-42`, `SCR-123`). You can
+`cd` into the workspace and inspect the repo, the agent's changes, or run
+OpenCode commands manually.
 
 ### Resume a session manually
 
 ```bash
-cd ~/symphony/ws/TEAM-42
+cd <workspace>/TEAM-42
 opencode run --session ses_abc123 -- "Hello, what's the status?"
 ```
 
@@ -309,7 +311,7 @@ manual invocations.
 ### Check daemon state
 
 ```bash
-cat ~/.local/share/symphony-lite/state.json | python -m json.tool
+cat <workspace>/state.json | python -m json.tool
 ```
 
 Shows every tracked ticket, its status, workspace path, branch, and session id.

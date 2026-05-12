@@ -1,6 +1,6 @@
 """Per-ticket state persistence with atomic writes and thread-safe access.
 
-State is stored in ``~/.local/share/symphony-lite/state.json``.
+State is stored in ``<workspace_dir>/state.json``.
 """
 
 from __future__ import annotations
@@ -15,13 +15,6 @@ from pathlib import Path
 from typing import Any
 
 from pydantic import BaseModel, Field
-
-
-# ---------------------------------------------------------------------------
-# Default paths
-# ---------------------------------------------------------------------------
-
-DEFAULT_STATE_PATH = Path.home() / ".local" / "share" / "symphony-lite" / "state.json"
 
 
 # ---------------------------------------------------------------------------
@@ -97,8 +90,8 @@ class StateManager:
     # separate instances in different threads are safe.
     _lock = threading.Lock()
 
-    def __init__(self, path: Path | None = None) -> None:
-        self._path = path or DEFAULT_STATE_PATH
+    def __init__(self, path: Path) -> None:
+        self._path = path
         self._store: StateStore = StateStore()
 
     # ------------------------------------------------------------------
@@ -187,11 +180,13 @@ class StateManager:
 # ---------------------------------------------------------------------------
 
 
-def load_state(path: Path | None = None) -> StateManager:
+def load_state(workspace_dir: Path) -> StateManager:
     """Create a StateManager and load existing state from disk.
+
+    Reads/writes ``<workspace_dir>/state.json``.
 
     Returns the manager ready to use.
     """
-    mgr = StateManager(path)
+    mgr = StateManager(workspace_dir / "state.json")
     mgr.load()
     return mgr

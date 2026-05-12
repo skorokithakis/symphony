@@ -300,7 +300,7 @@ class LinearClient:
           project(id: $id) {
             id
             name
-            links { nodes { label url } }
+            externalLinks { nodes { label url } }
           }
         }
         """
@@ -403,15 +403,15 @@ class LinearClient:
     def edit_comment(self, comment_id: str, body: str) -> None:
         """Update the body of an existing comment."""
         mutation = """
-        mutation($input: CommentUpdateInput!) {
-          commentUpdate(input: $input) {
+        mutation($id: String!, $input: CommentUpdateInput!) {
+          commentUpdate(id: $id, input: $input) {
             success
           }
         }
         """
         data = self._query(
             mutation,
-            {"input": {"id": comment_id, "body": body}},
+            {"id": comment_id, "input": {"body": body}},
         )
         payload = data["commentUpdate"]
         if not payload.get("success"):
@@ -453,7 +453,7 @@ class LinearClient:
         query($id: String!) {
           issue(id: $id) {
             team {
-              workflowStates {
+              states {
                 nodes {
                   id
                   name
@@ -472,7 +472,7 @@ class LinearClient:
         if team is None:
             raise LinearError(f"Issue {issue_id} has no team")
 
-        states: list[dict[str, str]] = team.get("workflowStates", {}).get("nodes", [])
+        states: list[dict[str, str]] = team.get("states", {}).get("nodes", [])
         for s in states:
             if s.get("name") == state_name:
                 return s["id"]
@@ -541,7 +541,7 @@ def _parse_project(raw: dict[str, Any]) -> Project:
         name=raw["name"],
         links=[
             ProjectLink(label=link["label"], url=link["url"])
-            for link in raw.get("links", {}).get("nodes", [])
+            for link in raw.get("externalLinks", {}).get("nodes", [])
         ],
     )
 

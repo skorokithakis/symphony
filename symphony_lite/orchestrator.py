@@ -9,6 +9,7 @@ import threading
 import time
 from concurrent.futures import Future, ThreadPoolExecutor
 from datetime import datetime, timezone
+from pathlib import Path
 from typing import Any
 
 from symphony_lite.config import AppConfig
@@ -90,10 +91,11 @@ def _format_comments_message(comments: list[Comment]) -> str:
 
 
 class Orchestrator:
-    def __init__(self, config: AppConfig, state: StateManager, linear: LinearClient) -> None:
+    def __init__(self, config: AppConfig, state: StateManager, linear: LinearClient, workspace: Path) -> None:
         self._config = config
         self._state = state
         self._linear = linear
+        self._workspace = workspace
 
         self._executor = ThreadPoolExecutor(max_workers=5)
 
@@ -243,7 +245,7 @@ class Orchestrator:
                     identifier = ticket_state.ticket_identifier
                     self._state.remove(tid)
                     try:
-                        remove(identifier, str(self._config.workspace_root))
+                        remove(identifier, str(self._workspace))
                     except Exception:
                         logger.exception("Failed to remove workspace for %s", tid)
                     self._state.save()
@@ -256,7 +258,7 @@ class Orchestrator:
                     identifier = ticket_state.ticket_identifier
                     self._state.remove(tid)
                     try:
-                        remove(identifier, str(self._config.workspace_root))
+                        remove(identifier, str(self._workspace))
                     except Exception:
                         logger.exception("Failed to remove workspace for %s", tid)
                     self._state.save()
@@ -407,7 +409,7 @@ class Orchestrator:
                 ticket_identifier=issue.identifier,
                 repo_url=repo_url,
                 branch_name=issue.branch_name,
-                workspace_root=str(self._config.workspace_root),
+                workspace_root=str(self._workspace),
                 sandbox_hide_paths=self._config.sandbox.hide_paths,
                 on_subprocess=lambda proc: self._register_subprocess(tid, proc),
             )
@@ -561,7 +563,7 @@ class Orchestrator:
 
     def _resume_pipeline(self, ticket_state: TicketState) -> None:
         tid = ticket_state.ticket_id
-        logger.info("Resume pipeline starting for %s", tid)
+        logger.debug("Resume pipeline tick for %s", tid)
 
         bot_user_id = self._get_bot_user_id()
         if bot_user_id is None:  # S2: transient failure
@@ -584,6 +586,8 @@ class Orchestrator:
         if self._is_cancelled(tid):
             return
 
+        logger.info("Resume pipeline starting for %s (%d new human comment(s))",
+                    tid, len(human_comments))
         message = _format_comments_message(human_comments)
 
         try:
