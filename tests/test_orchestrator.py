@@ -5,6 +5,7 @@ from __future__ import annotations
 import subprocess
 import threading
 import time
+from datetime import datetime, timezone
 from pathlib import Path
 from typing import Any
 from unittest import mock
@@ -470,6 +471,87 @@ class TestTick:
         self._add_state(orchestrator, workspace_path=str(ws_dir))
         linear.set_response("list_triggered_issues", [])
         linear.set_response("get_issue", LinearNotFoundError("gone"))
+
+        orchestrator._tick(); time.sleep(0.2)
+
+        assert orchestrator._state.get("ticket-1") is None
+        assert not ws_dir.exists()
+
+    def test_label_removed_removes_workspace(
+        self, orchestrator: Orchestrator, linear: FakeLinearClient, tmp_path: Path,
+    ) -> None:
+        """Trigger label removed → workspace AND state entry deleted."""
+        ws_root = tmp_path / "workspaces"
+        ws_dir = ws_root / "TEAM-1"
+        ws_dir.mkdir(parents=True)
+        (ws_dir / "sentinel").write_text("x")
+
+        self._add_state(orchestrator, workspace_path=str(ws_dir))
+        linear.set_response("list_triggered_issues", [])
+        # Returns issue WITHOUT the trigger label
+        linear.set_response("get_issue", _make_issue(labels=[]))
+
+        orchestrator._tick(); time.sleep(0.2)
+
+        assert orchestrator._state.get("ticket-1") is None
+        assert not ws_dir.exists()
+
+    def test_archived_ticket_cleaned_up(
+        self, orchestrator: Orchestrator, linear: FakeLinearClient, tmp_path: Path,
+    ) -> None:
+        """Archived ticket → state removed AND workspace removed."""
+        ws_root = tmp_path / "workspaces"
+        ws_dir = ws_root / "TEAM-1"
+        ws_dir.mkdir(parents=True)
+        (ws_dir / "sentinel").write_text("x")
+
+        self._add_state(orchestrator, workspace_path=str(ws_dir))
+        linear.set_response("list_triggered_issues", [])
+        linear.set_response("get_issue", _make_issue(
+            archivedAt=datetime(2025, 1, 1, tzinfo=timezone.utc),
+        ))
+
+        orchestrator._tick(); time.sleep(0.2)
+
+        assert orchestrator._state.get("ticket-1") is None
+        assert not ws_dir.exists()
+
+    def test_non_active_non_terminal_state_cleaned_up(
+        self, orchestrator: Orchestrator, linear: FakeLinearClient, tmp_path: Path,
+    ) -> None:
+        """Ticket in non-active, non-terminal state (Backlog) with label still on → cleanup."""
+        ws_root = tmp_path / "workspaces"
+        ws_dir = ws_root / "TEAM-1"
+        ws_dir.mkdir(parents=True)
+        (ws_dir / "sentinel").write_text("x")
+
+        self._add_state(orchestrator, workspace_path=str(ws_dir))
+        linear.set_response("list_triggered_issues", [])
+        linear.set_response("get_issue", _make_issue(
+            state="Backlog",
+            labels=["agent"],  # trigger label still present
+        ))
+
+        orchestrator._tick(); time.sleep(0.2)
+
+        assert orchestrator._state.get("ticket-1") is None
+        assert not ws_dir.exists()
+
+    def test_terminal_state_cleaned_up(
+        self, orchestrator: Orchestrator, linear: FakeLinearClient, tmp_path: Path,
+    ) -> None:
+        """Ticket in terminal state (Done) → state removed AND workspace removed."""
+        ws_root = tmp_path / "workspaces"
+        ws_dir = ws_root / "TEAM-1"
+        ws_dir.mkdir(parents=True)
+        (ws_dir / "sentinel").write_text("x")
+
+        self._add_state(orchestrator, workspace_path=str(ws_dir))
+        linear.set_response("list_triggered_issues", [])
+        linear.set_response("get_issue", _make_issue(
+            state="Done",
+            labels=["agent"],
+        ))
 
         orchestrator._tick(); time.sleep(0.2)
 

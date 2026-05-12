@@ -7,6 +7,7 @@ in threads so blocking is fine.
 from __future__ import annotations
 
 import logging
+from datetime import datetime
 from typing import Any
 
 import httpx
@@ -86,6 +87,7 @@ class Issue(BaseModel):
     branch_name: str | None = Field(None, alias="branchName")
     project: Project | None = None
     comments: list[Comment] = Field(default_factory=list)
+    archived_at: datetime | None = Field(None, alias="archivedAt")
 
 
 # ---------------------------------------------------------------------------
@@ -272,6 +274,7 @@ class LinearClient:
             identifier
             title
             description
+            archivedAt
             state { name }
             labels { nodes { name } }
             branchName
@@ -510,6 +513,7 @@ def _parse_issue_summary(raw: dict[str, Any]) -> Issue:
             if raw.get("project")
             else None
         ),
+        archivedAt=raw.get("archivedAt"),
     )
 
 
@@ -528,6 +532,7 @@ def _parse_issue_full(raw: dict[str, Any]) -> Issue:
             if raw.get("project")
             else None
         ),
+        archivedAt=raw.get("archivedAt"),
         comments=[
             Comment(
                 id=c["id"],

@@ -314,6 +314,27 @@ class TestGetIssue:
         with pytest.raises(LinearNotFoundError, match="not found"):
             client.get_issue("bad-id")
 
+    def test_parses_archived_at(self) -> None:
+        raw: dict[str, Any] = {
+            "id": "abc-123",
+            "identifier": "TEAM-42",
+            "title": "Fix the thing",
+            "archivedAt": "2025-01-01T00:00:00.000Z",
+            "state": {"name": "Done"},
+            "labels": {"nodes": []},
+            "branchName": None,
+            "project": None,
+            "comments": {"nodes": []},
+        }
+        transport = _make_transport(
+            lambda req: _json_response({"data": {"issue": raw}})
+        )
+        client = _client(transport)
+        issue = client.get_issue("abc-123")
+
+        assert issue.archived_at is not None
+        assert issue.archived_at.year == 2025
+
 
 # ---------------------------------------------------------------------------
 # get_project

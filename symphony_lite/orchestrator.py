@@ -36,7 +36,6 @@ logger = logging.getLogger(__name__)
 # Constants
 # ---------------------------------------------------------------------------
 
-_TERMINAL_LINEAR_STATES = {"Done", "Cancelled", "Canceled", "Duplicate"}
 _SHUTDOWN_GRACE_SECONDS = 5
 _RESTART_NOTICE_BODY = (
     "**Symphony**: Restarted before setup completed. "
@@ -204,7 +203,6 @@ class Orchestrator:
     def _tick(self) -> None:
         logger.debug("Poll tick starting")
         issues = self._fetch_triggered_issues()
-        known_ids = {t.ticket_id for t in self._state.tickets}
 
         # --- Step 2: new tickets + setup-error / failed-no-session retries ---
         for issue in issues:
@@ -232,65 +230,51 @@ class Orchestrator:
             # Genuinely new ticket.
             self._schedule_task(issue.id, self._new_ticket_pipeline, issue)
 
-        # --- Step 3: label removal / terminal cleanup ---
+        # --- Step 3: cleanup tickets that are no longer triggered ---
+        # Build a lookup from the trigger list.  Tickets that appear there
+        # already have the label, are in an active state, and are not archived
+        # (Linear excludes archived by default), so they are still triggered
+        # and we can skip the per-ticket get_issue call for them.
+        issues_by_id = {i.id: i for i in issues}
+
         for ticket_state in list(self._state.tickets):
             tid = ticket_state.ticket_id
-            matching = [i for i in issues if i.id == tid]
 
-            if not matching:
+            if tid in issues_by_id:
+                continue
+
+            try:
+                current = self._linear.get_issue(tid)
+            except LinearNotFoundError:
+                logger.info("Ticket %s not found — cleaning up", tid)
+                self._cancel_ticket(tid)
+                identifier = ticket_state.ticket_identifier
+                self._state.remove(tid)
                 try:
-                    current = self._linear.get_issue(tid)
-                except LinearNotFoundError:
-                    logger.warning("Ticket %s not found — removing", tid)
-                    self._cancel_ticket(tid)
-                    identifier = ticket_state.ticket_identifier
-                    self._state.remove(tid)
-                    try:
-                        remove(identifier, str(self._workspace))
-                    except Exception:
-                        logger.exception("Failed to remove workspace for %s", tid)
-                    self._state.save()
-                    continue
-                except LinearError:
-                    logger.exception("Linear error fetching %s — skipping cleanup", tid)
-                    continue
+                    remove(identifier, str(self._workspace))
+                except Exception:
+                    logger.exception("Failed to remove workspace for %s", tid)
+                self._state.save()
+                continue
+            except LinearError:
+                logger.exception("Linear error fetching %s — skipping cleanup", tid)
+                continue
 
-                label_present = self._config.linear.trigger_label in current.labels
-                if not label_present:
-                    # Label removal is reversible — the user may re-add it later
-                    # and expect to resume.  Leave the workspace in place so a
-                    # re-trigger reuses the cloned repo and any local changes.
-                    # Deletion (LinearNotFoundError above) and terminal states
-                    # below are permanent, so those paths do remove the workspace.
-                    logger.info("Label removed from %s – cleaning up", tid)
-                    self._cancel_ticket(tid)
-                    self._state.remove(tid)
-                    self._state.save()
-                    continue
-                if current.state in _TERMINAL_LINEAR_STATES:
-                    logger.info("Ticket %s terminal (%s) – cleaning up", tid, current.state)
-                    self._cancel_ticket(tid)
-                    identifier = ticket_state.ticket_identifier
-                    self._state.remove(tid)
-                    try:
-                        remove(identifier, str(self._workspace))
-                    except Exception:
-                        logger.exception("Failed to remove workspace for %s", tid)
-                    self._state.save()
-                    continue
-            else:
-                current = matching[0]
-                if current.state in _TERMINAL_LINEAR_STATES:
-                    logger.info("Ticket %s terminal (%s) – cleaning up", tid, current.state)
-                    self._cancel_ticket(tid)
-                    identifier = ticket_state.ticket_identifier
-                    self._state.remove(tid)
-                    try:
-                        remove(identifier, str(self._workspace))
-                    except Exception:
-                        logger.exception("Failed to remove workspace for %s", tid)
-                    self._state.save()
-                    continue
+            if self._is_still_triggered(current):
+                continue
+
+            logger.info(
+                "Ticket %s no longer triggered (state=%s labels=%s archived=%s) — cleaning up",
+                tid, current.state, current.labels, current.archived_at is not None,
+            )
+            self._cancel_ticket(tid)
+            identifier = ticket_state.ticket_identifier
+            self._state.remove(tid)
+            try:
+                remove(identifier, str(self._workspace))
+            except Exception:
+                logger.exception("Failed to remove workspace for %s", tid)
+            self._state.save()
 
         # --- Step 4: per-status tasks ---
         for ticket_state in self._state.tickets:
@@ -833,3 +817,19 @@ class Orchestrator:
         except Exception:
             logger.exception("Failed to fetch triggered issues")
             return []
+
+    def _is_still_triggered(self, issue: Issue) -> bool:
+        """Return True if *issue* should remain tracked and not be cleaned up.
+
+        An issue is triggered when all of these hold:
+        - the trigger label is present
+        - the Linear state is one of the configured active states
+        - the issue is not archived
+        """
+        cfg = self._config.linear
+        active_states = {cfg.in_progress_state, cfg.needs_input_state}
+        return (
+            cfg.trigger_label in issue.labels
+            and issue.state in active_states
+            and issue.archived_at is None
+        )

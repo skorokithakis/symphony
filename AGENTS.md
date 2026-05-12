@@ -45,15 +45,15 @@ symphony_lite/
   workspace.py      prepare() / remove(): clone, branch switch, .symphony/setup; path-containment check
   orchestrator.py   The brain: poll loop, per-ticket pipelines, ThreadPoolExecutor, cancellation
   logging.py        stderr logging setup
-tests/              pytest, 154 tests, mostly unit with mocks; integration tests marked `integration`
+tests/              pytest, mostly unit with mocks; integration tests marked `integration` (shell out to `bwrap`/`git` — they never call the real `opencode` binary or any LLM)
 ```
 
 The flow worth knowing: `orchestrator._tick()` is called every
 `poll_interval_seconds`. It fans out work via `_schedule_task()` onto a
 5-worker `ThreadPoolExecutor`, with per-ticket serialization (a ticket only
 gets one task in flight at a time). Subprocesses are tracked in
-`_subprocesses` so they can be killed when a ticket is cancelled (label
-removed, ticket moved to terminal state, daemon shutting down).
+`_subprocesses` so they can be killed when a ticket is cleaned up (daemon
+shutting down, or the ticket is no longer triggered — see `_is_still_triggered`).
 
 ## Key invariants and gotchas
 
@@ -68,6 +68,12 @@ removed, ticket moved to terminal state, daemon shutting down).
   cached on the Linear client). New "human" comments = comments whose
   `user_id != bot_user_id`. The `bot_user_email` in the config exists for
   documentation; the actual matching is by id.
+- **State entry exists ⟺ workspace exists.** `orchestrator._tick` step 3
+  fires cleanup (cancel subprocesses, remove state entry, remove workspace)
+  whenever a tracked ticket is no longer *triggered* — i.e. the trigger label
+  is absent, the Linear state is no longer an active state, the ticket is
+  archived, or the ticket was deleted. A re-trigger of the same ticket after
+  cleanup is handled as a fresh `_new_ticket_pipeline` that reclones from scratch.
 - **Path containment is a security invariant.** `workspace._check_containment`
   uses `os.path.realpath` on both sides; never bypass it.
 - **State writes are atomic** (`tempfile` + `os.replace`). Don't rewrite
@@ -102,7 +108,10 @@ update this file.
 Tests heavily use `unittest.mock`. Look at `tests/test_orchestrator.py` for
 the patterns — fake `LinearClient`, mocked `run_initial`/`run_resume`,
 `tmp_path` fixtures for state files. Integration tests under the
-`integration` marker actually shell out (require `bwrap`).
+`integration` marker shell out to `bwrap` and `git`; they do **not** invoke
+the real `opencode` binary or any LLM. Don't add tests that do — they're
+flaky (model nondeterminism), costly (API calls), and exercise OpenCode's
+behaviour, not ours. The NDJSON parser is unit-tested against a fixture.
 
 ## Conventions
 
