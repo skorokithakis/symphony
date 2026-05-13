@@ -1,4 +1,4 @@
-"""CLI entry-point for ``symphony-lite``."""
+"""CLI entry-point for ``symphony-linear``."""
 
 from __future__ import annotations
 
@@ -18,7 +18,7 @@ logger = get_logger(__name__)
 
 def _build_parser() -> argparse.ArgumentParser:
     parser = argparse.ArgumentParser(
-        prog="symphony",
+        prog="symphony-linear",
         description="AI-powered ticket orchestration daemon",
     )
     parser.add_argument(
@@ -42,7 +42,7 @@ def _build_parser() -> argparse.ArgumentParser:
 
 
 def main(argv: list[str] | None = None) -> None:
-    """Entry point for the ``symphony-lite`` CLI."""
+    """Entry point for the ``symphony-linear`` CLI."""
     parser = _build_parser()
     args = parser.parse_args(argv)
 

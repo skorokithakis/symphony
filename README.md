@@ -35,7 +35,7 @@ input, runs another turn, and posts the result.
 pip install .
 ```
 
-The package name is `symphony-linear`. The CLI entry point is `symphony`.
+The package name is `symphony-linear`. The CLI entry point is `symphony-linear`.
 
 ---
 
@@ -226,7 +226,7 @@ as a fallback.
 ### Validate
 
 ```bash
-symphony --validate-config
+symphony-linear --validate-config
 ```
 
 Exits 0 if the config is valid, prints a summary, and stops. Use this to check
@@ -237,15 +237,15 @@ your config before launching the daemon.
 ## Running
 
 ```bash
-symphony
+symphony-linear
 ```
 
 Runs in the foreground. Start it in tmux, screen, or nohup:
 
 ```bash
-tmux new -s symphony 'symphony'
+tmux new -s symphony 'symphony-linear'
 # or
-nohup symphony > /dev/null 2>&1 &
+nohup symphony-linear > /dev/null 2>&1 &
 ```
 
 Flags:
