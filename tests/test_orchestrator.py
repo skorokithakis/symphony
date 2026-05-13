@@ -252,8 +252,12 @@ class TestNewTicketPipeline:
     ) -> None:
         with (
             mock.patch("symphony_linear.orchestrator.clone_workspace") as mock_clone,
-            mock.patch("symphony_linear.orchestrator.finalize_workspace") as mock_finalize,
-            mock.patch("symphony_linear.orchestrator.load_project_config") as mock_load_config,
+            mock.patch(
+                "symphony_linear.orchestrator.finalize_workspace"
+            ) as mock_finalize,
+            mock.patch(
+                "symphony_linear.orchestrator.load_project_config"
+            ) as mock_load_config,
             mock.patch("symphony_linear.orchestrator.run_initial") as mock_run_initial,
         ):
             issue = self._setup_mocks(
@@ -550,7 +554,7 @@ class TestNewTicketProjectConfig:
             mock.patch(
                 "symphony_linear.orchestrator.clone_workspace",
                 return_value="/tmp/ws/TEAM-1",
-            ) as mock_clone,
+            ),
             mock.patch(
                 "symphony_linear.orchestrator.finalize_workspace",
             ) as mock_finalize,
@@ -705,7 +709,9 @@ class TestNewTicketProjectConfig:
                 ],
             ),
         )
-        linear.set_response("get_issue", _make_issue(description="Fix", branchName=None))
+        linear.set_response(
+            "get_issue", _make_issue(description="Fix", branchName=None)
+        )
         with (
             mock.patch(
                 "symphony_linear.orchestrator.clone_workspace",
@@ -765,7 +771,10 @@ class TestResumePipeline:
         orchestrator._state.upsert(ts)
         linear.set_response("list_comments_since", [_make_comment("c1", "Fix please")])
         with (
-            mock.patch("symphony_linear.orchestrator.load_project_config", return_value=ProjectConfig()),
+            mock.patch(
+                "symphony_linear.orchestrator.load_project_config",
+                return_value=ProjectConfig(),
+            ),
             mock.patch("symphony_linear.orchestrator.run_resume", return_value="Done!"),
         ):
             orchestrator._resume_pipeline(ts)
@@ -815,7 +824,8 @@ class TestResumePipeline:
                 return_value=ProjectConfig(),
             ),
             mock.patch(
-                "symphony_linear.orchestrator.run_resume", side_effect=OpenCodeTimeout("t")
+                "symphony_linear.orchestrator.run_resume",
+                side_effect=OpenCodeTimeout("t"),
             ),
         ):
             orchestrator._resume_pipeline(ts)
@@ -835,7 +845,8 @@ class TestResumePipeline:
                 return_value=ProjectConfig(),
             ),
             mock.patch(
-                "symphony_linear.orchestrator.run_resume", side_effect=OpenCodeError("e")
+                "symphony_linear.orchestrator.run_resume",
+                side_effect=OpenCodeError("e"),
             ),
         ):
             orchestrator._resume_pipeline(ts)
@@ -958,9 +969,7 @@ class TestResumeProjectConfig:
         # Linear transition_to_state must NOT have been called for this ticket.
         transition_calls = linear.calls.get("transition_to_state", [])
         in_progress_transitions = [
-            (tid, state)
-            for tid, state in transition_calls
-            if tid == "ticket-1"
+            (tid, state) for tid, state in transition_calls if tid == "ticket-1"
         ]
         assert in_progress_transitions == [], (
             f"Expected no transition for ticket-1, got: {in_progress_transitions}"
@@ -1831,7 +1840,7 @@ class TestExtraRWPaths:
             mock.patch(
                 "symphony_linear.orchestrator.clone_workspace",
                 return_value="/tmp/ws/TEAM-1",
-            ) as m_clone,
+            ),
             mock.patch(
                 "symphony_linear.orchestrator.finalize_workspace",
             ) as m_finalize,
@@ -2847,7 +2856,8 @@ class TestFix2CancelledAgentGuards:
                 return_value=ProjectConfig(),
             ),
             mock.patch(
-                "symphony_linear.orchestrator.run_resume", side_effect=cancel_then_return
+                "symphony_linear.orchestrator.run_resume",
+                side_effect=cancel_then_return,
             ),
         ):
             orchestrator._resume_pipeline(ts)
@@ -3183,7 +3193,8 @@ class TestCorrection3:
                 return_value=ProjectConfig(),
             ),
             mock.patch(
-                "symphony_linear.orchestrator.run_resume", side_effect=cancel_then_return
+                "symphony_linear.orchestrator.run_resume",
+                side_effect=cancel_then_return,
             ),
         ):
             orchestrator._resume_pipeline(ts)
@@ -3268,7 +3279,8 @@ class TestIntegration:
         )  # type: ignore[arg-type]
 
         with mock.patch(
-            "symphony_linear.orchestrator.run_initial", return_value=("ses-int", "Done.")
+            "symphony_linear.orchestrator.run_initial",
+            return_value=("ses-int", "Done."),
         ):
             orch._new_ticket_pipeline(_make_issue())
 
@@ -3288,7 +3300,10 @@ class TestIntegration:
 
 class TestMaybeRewriteToSSH:
     def test_bare_browser_url_rewritten(self) -> None:
-        assert _maybe_rewrite_to_ssh("https://github.com/owner/repo") == "git@github.com:owner/repo.git"
+        assert (
+            _maybe_rewrite_to_ssh("https://github.com/owner/repo")
+            == "git@github.com:owner/repo.git"
+        )
 
     def test_dot_git_url_unchanged(self) -> None:
         url = "https://github.com/owner/repo.git"
@@ -3307,26 +3322,44 @@ class TestMaybeRewriteToSSH:
         assert _maybe_rewrite_to_ssh(url) == url
 
     def test_trailing_slash_rewritten(self) -> None:
-        assert _maybe_rewrite_to_ssh("https://github.com/owner/repo/") == "git@github.com:owner/repo.git"
+        assert (
+            _maybe_rewrite_to_ssh("https://github.com/owner/repo/")
+            == "git@github.com:owner/repo.git"
+        )
 
     def test_uppercase_host_rewritten(self) -> None:
-        assert _maybe_rewrite_to_ssh("https://GITHUB.COM/owner/repo") == "git@github.com:owner/repo.git"
+        assert (
+            _maybe_rewrite_to_ssh("https://GITHUB.COM/owner/repo")
+            == "git@github.com:owner/repo.git"
+        )
 
     def test_url_with_query_stripped_and_rewritten(self) -> None:
-        assert _maybe_rewrite_to_ssh("https://github.com/owner/repo?tab=readme") == "git@github.com:owner/repo.git"
+        assert (
+            _maybe_rewrite_to_ssh("https://github.com/owner/repo?tab=readme")
+            == "git@github.com:owner/repo.git"
+        )
 
     def test_url_with_fragment_stripped_and_rewritten(self) -> None:
-        assert _maybe_rewrite_to_ssh("https://github.com/owner/repo#readme") == "git@github.com:owner/repo.git"
+        assert (
+            _maybe_rewrite_to_ssh("https://github.com/owner/repo#readme")
+            == "git@github.com:owner/repo.git"
+        )
 
     def test_url_with_query_and_fragment_stripped_and_rewritten(self) -> None:
-        assert _maybe_rewrite_to_ssh("https://github.com/owner/repo?tab=readme#section") == "git@github.com:owner/repo.git"
+        assert (
+            _maybe_rewrite_to_ssh("https://github.com/owner/repo?tab=readme#section")
+            == "git@github.com:owner/repo.git"
+        )
 
     def test_local_path_unchanged(self) -> None:
         url = "/home/user/repo"
         assert _maybe_rewrite_to_ssh(url) == url
 
     def test_preserves_owner_repo_casing(self) -> None:
-        assert _maybe_rewrite_to_ssh("https://github.com/MyOrg/MyRepo") == "git@github.com:MyOrg/MyRepo.git"
+        assert (
+            _maybe_rewrite_to_ssh("https://github.com/MyOrg/MyRepo")
+            == "git@github.com:MyOrg/MyRepo.git"
+        )
 
     def test_dot_git_with_query_unchanged(self) -> None:
         """HTTPS URL ending in .git (after stripping query) should pass through unchanged."""
@@ -3340,7 +3373,10 @@ class TestMaybeRewriteToSSH:
 
     def test_uppercase_scheme_rewritten(self) -> None:
         """HTTPS:// scheme (case-insensitive) should be rewritten."""
-        assert _maybe_rewrite_to_ssh("HTTPS://github.com/owner/repo") == "git@github.com:owner/repo.git"
+        assert (
+            _maybe_rewrite_to_ssh("HTTPS://github.com/owner/repo")
+            == "git@github.com:owner/repo.git"
+        )
 
     def test_userinfo_url_unchanged(self) -> None:
         """URL with userinfo should pass through unchanged."""

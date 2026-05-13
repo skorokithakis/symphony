@@ -77,7 +77,6 @@ class TestLoadConfig:
                 "api_key": "test-key",
                 "bot_user_email": "bot@example.com",
             },
-
         }
         _write_yaml(tmp_path / "config.yaml", cfg)
 
@@ -124,7 +123,6 @@ class TestLoadConfig:
                 "api_key": "$LINEAR_KEY",
                 "bot_user_email": "bot@example.com",
             },
-
         }
         _write_yaml(tmp_path / "config.yaml", cfg)
 
@@ -146,7 +144,6 @@ class TestLoadConfig:
                 "api_key": "key",
                 "bot_user_email": "bot@example.com",
             },
-
             "sandbox": {
                 "hide_paths": ["/secret", "~/private"],
             },
@@ -165,7 +162,6 @@ class TestLoadConfig:
             "linear": {
                 "bot_user_email": "bot@example.com",
             },
-
         }
         _write_yaml(tmp_path / "config.yaml", cfg)
 
@@ -184,7 +180,6 @@ class TestLoadConfig:
                 "api_key": "",
                 "bot_user_email": "bot@example.com",
             },
-
         }
         _write_yaml(tmp_path / "config.yaml", cfg)
 
@@ -197,7 +192,6 @@ class TestLoadConfig:
             "linear": {
                 "bot_user_email": "bot@example.com",
             },
-
         }
         _write_yaml(tmp_path / "config.yaml", cfg)
 
@@ -214,7 +208,6 @@ class TestLoadConfig:
                 "api_key": "${LINEAR_API_KEY}",
                 "bot_user_email": "bot@example.com",
             },
-
         }
         _write_yaml(tmp_path / "config.yaml", cfg)
 
@@ -228,7 +221,6 @@ class TestLoadConfig:
                 "api_key": "key",
                 "bot_user_email": "bot@example.com",
             },
-
             "workspace_root": "~/anything",
         }
         _write_yaml(tmp_path / "config.yaml", cfg)
@@ -242,7 +234,6 @@ class TestLoadConfig:
                 "api_key": "key",
                 "bot_user_email": "bot@example.com",
             },
-
             "poll_interval_seconds": 0,
         }
         _write_yaml(tmp_path / "config.yaml", cfg)
@@ -257,7 +248,6 @@ class TestLoadConfig:
                 "api_key": "test-key",
                 "bot_user_email": "bot@example.com",
             },
-
         }
         _write_yaml(tmp_path / "config.yaml", cfg)
 
@@ -271,7 +261,6 @@ class TestLoadConfig:
                 "api_key": "key",
                 "bot_user_email": "bot@example.com",
             },
-
             "sandbox": {
                 "extra_rw_paths": ["~/projects/shared", "/opt/tools"],
             },

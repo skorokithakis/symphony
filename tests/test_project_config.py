@@ -2,7 +2,6 @@
 
 from __future__ import annotations
 
-import os
 import shutil
 import subprocess
 from pathlib import Path
@@ -261,9 +260,7 @@ def test_error_message_includes_file_path(tmp_path: Path) -> None:
 class TestLoadProjectConfigFromOrigin:
     """load_project_config reads from origin/HEAD via git show."""
 
-    def test_origin_differs_from_disk_origin_wins(
-        self, tmp_path: Path
-    ) -> None:
+    def test_origin_differs_from_disk_origin_wins(self, tmp_path: Path) -> None:
         """When the origin version differs from disk, origin is used."""
         _require_git()
 
@@ -310,9 +307,7 @@ class TestLoadProjectConfigFromOrigin:
         assert result.auto_branch is True
         assert result.turn_timeout_seconds is None  # not version C from disk
 
-    def test_file_missing_in_origin_returns_empty(
-        self, tmp_path: Path
-    ) -> None:
+    def test_file_missing_in_origin_returns_empty(self, tmp_path: Path) -> None:
         """When origin/HEAD exists but file is missing there, return empty config."""
         _require_git()
 
@@ -336,9 +331,7 @@ class TestLoadProjectConfigFromOrigin:
         result = load_project_config(str(workspace))
         assert result.auto_branch is None  # empty — local file ignored
 
-    def test_origin_head_unresolvable_falls_back_to_disk(
-        self, tmp_path: Path
-    ) -> None:
+    def test_origin_head_unresolvable_falls_back_to_disk(self, tmp_path: Path) -> None:
         """When origin/HEAD is not resolvable, falls back to working-tree file."""
         _require_git()
 
@@ -372,9 +365,7 @@ class TestLoadProjectConfigFromOrigin:
         result = load_project_config(str(workspace))
         assert result.auto_branch is True
 
-    def test_not_a_git_repo_falls_back_to_disk(
-        self, tmp_path: Path
-    ) -> None:
+    def test_not_a_git_repo_falls_back_to_disk(self, tmp_path: Path) -> None:
         """When workspace is not a git repo, falls back to working-tree file."""
         # Just a plain directory with a config file.
         workspace = tmp_path / "not-a-repo"
@@ -407,9 +398,7 @@ class TestLoadProjectConfigFromOrigin:
         assert result.auto_branch is None
         assert result.turn_timeout_seconds is None
 
-    def test_origin_fetch_failure_falls_back_to_disk(
-        self, tmp_path: Path
-    ) -> None:
+    def test_origin_fetch_failure_falls_back_to_disk(self, tmp_path: Path) -> None:
         """When git fetch fails (e.g. offline), falls back to working-tree file."""
         _require_git()
 

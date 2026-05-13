@@ -1206,9 +1206,7 @@ class Orchestrator:
         try:
             project_config = load_project_config(ticket_state.workspace_path)
         except ProjectConfigError as exc:
-            logger.error(
-                "Project config invalid for %s on resume: %s", tid, exc
-            )
+            logger.error("Project config invalid for %s on resume: %s", tid, exc)
             err_comment = self._post_comment_safe(
                 tid,
                 f"**Symphony error**: Invalid project config:\n```\n{exc}\n```",

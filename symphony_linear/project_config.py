@@ -79,10 +79,7 @@ def _parse_yaml_config(raw: str, source: str) -> ProjectConfig:
         for err in exc.errors():
             loc = " -> ".join(str(p) for p in err["loc"])
             lines.append(f"  {loc}: {err['msg']}")
-        msg = (
-            f"Project config validation failed for {source}:\n"
-            + "\n".join(lines)
-        )
+        msg = f"Project config validation failed for {source}:\n" + "\n".join(lines)
         raise ProjectConfigError(msg) from exc
 
 
