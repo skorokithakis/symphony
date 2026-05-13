@@ -319,6 +319,11 @@ def _execute(
         stdout_text = stdout_bytes.decode(errors="replace")
         stderr_tail = stderr_bytes.decode(errors="replace") if stderr_bytes else ""
 
+        # Raw OpenCode output; only useful when diagnosing parse/protocol issues.
+        logger.debug("=== raw OpenCode stdout ===\n%s\n=== end stdout ===", stdout_text)
+        if stderr_tail:
+            logger.debug("=== raw OpenCode stderr ===\n%s\n=== end stderr ===", stderr_tail)
+
         # ------------------------------------------------------------------
         # Parse NDJSON events.
         # ------------------------------------------------------------------

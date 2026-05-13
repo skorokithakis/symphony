@@ -1,10 +1,13 @@
 # Symphony
 
-AI-powered ticket orchestration daemon. Polls Linear for tickets labelled
-`agent`, clones the linked repo into a per-ticket workspace, runs OpenCode in a
-bubblewrap sandbox, and posts the AI's output back as a Linear comment. It
-repeats: when you comment on the ticket, the daemon resumes the session with
-your message as input, runs another turn, and posts the result.
+Stop staring at a CLI, waiting for your LLM. Manage tasks on a Kanban-style board,
+working on multiple tasks in parallel, with each LLM message appearing as a comment.
+
+Symphony is an AI-powered ticket orchestration daemon. Polls Linear for tickets labelled
+`agent`, clones the linked repo into a per-ticket workspace, runs OpenCode in
+a bubblewrap sandbox, and posts the AI's output back as a Linear comment. It repeats:
+when you comment on the ticket, the daemon resumes the session with your message as
+input, runs another turn, and posts the result.
 
 ---
 
