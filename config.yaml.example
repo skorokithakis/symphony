@@ -16,15 +16,15 @@ linear:
   # Linear workflow state set while waiting for human reply (default: Needs Input).
   needs_input_state: Needs Input
 
-  # REQUIRED. Email address of the bot user in Linear.
-  bot_user_email: yourname+symphony@gmail.com
-
   # Optional. Linear workflow state that enables manual QA. When a ticket
   # enters this state, the daemon runs the repo's .symphony/serve script
   # inside the sandbox. Only one serve runs globally; moving a different
   # ticket into this state bumps the previous one back to needs_input_state.
   # Omit to disable the feature entirely.
   # qa_state: QA
+
+  # REQUIRED. Email address of the bot user in Linear.
+  bot_user_email: yourname+symphony@gmail.com
 
 sandbox:
   # Paths to conceal inside the sandbox (defaults shown below).

@@ -452,12 +452,12 @@ class Orchestrator:
 
         ts = self._state.get(winner_id)
         if ts is None:
-            logger.warning("QA winner %s has no state entry — cannot start serve", winner_id)
+            self._bail_qa_no_workspace(winner_id, "has no state entry")
             return
 
         workspace_path = ts.workspace_path
         if not workspace_path:
-            logger.warning("QA winner %s has empty workspace_path — cannot start serve", winner_id)
+            self._bail_qa_no_workspace(winner_id, "has empty workspace_path")
             return
 
         # Cancel any in-flight agent task for the winner before starting the serve.
@@ -505,6 +505,32 @@ class Orchestrator:
             name=f"serve-watchdog-{winner.identifier}",
         )
         t.start()
+
+    def _bail_qa_no_workspace(self, ticket_id: str, log_reason: str) -> None:
+        """Transition QA ticket to needs_input and post a comment when workspace is missing.
+
+        Transition first (the atomic de-dup).  Only post the comment if the
+        transition succeeds, to avoid comment spam when the transition is flaky.
+        """
+        logger.warning("QA winner %s %s — cannot start serve", ticket_id, log_reason)
+        try:
+            self._linear.transition_to_state(
+                ticket_id, self._config.linear.needs_input_state
+            )
+        except LinearError:
+            logger.exception(
+                "Failed to transition QA winner %s to needs_input (%s)",
+                ticket_id, log_reason,
+            )
+            return
+        self._post_comment_safe(
+            ticket_id,
+            f"**Symphony**: Can't start QA — no workspace exists for this ticket. "
+            f"This usually happens after the ticket was moved out of an active state "
+            f"(e.g. to Done), which cleans up the workspace. "
+            f"Transitioning back to `{self._config.linear.needs_input_state}`; "
+            f"re-trigger the agent to reclone, then move to QA again.",
+        )
 
     def _serve_watchdog(self, av: _ActiveServe) -> None:
         """Watch the serve process for the first 10 seconds.

@@ -375,13 +375,10 @@ def prepare(
         branch_name = f"{_DEFAULT_BRANCH_PREFIX}{ticket_identifier.lower()}"
 
     # 3. Clone if the workspace does not exist; fetch if it does.
+    # Note: clone has no -b — it checks out the remote's default branch.
+    # The target branch is selected in step 4.
     if not os.path.isdir(real_path):
-        logger.info(
-            "Cloning %s into %s (branch: %s)",
-            repo_url,
-            real_path,
-            branch_name,
-        )
+        logger.info("Cloning %s into %s", repo_url, real_path)
         _run_git(
             ["clone", repo_url, real_path],
             description="clone",
@@ -396,6 +393,7 @@ def prepare(
         )
 
     # 4. Switch to (or create) the target branch.
+    logger.info("Switching to branch '%s' in %s", branch_name, real_path)
     _git_switch_branch(branch_name, real_path)
 
     # 5. Run setup script if present

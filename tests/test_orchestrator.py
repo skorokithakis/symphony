@@ -1288,6 +1288,89 @@ class TestReconcileServe:
         post_calls = linear.calls.get("post_comment", [])
         assert any("QA serve failed to start" in body for _, body in post_calls)
 
+    def test_winner_has_no_state_entry_transitions_then_posts_comment(
+        self, tmp_path: Path, state_mgr: StateManager, linear: FakeLinearClient,
+    ) -> None:
+        """QA winner with no state entry → transitioned to needs_input, then comment posted."""
+        config = _make_qa_config(tmp_path)
+        orch = Orchestrator(config=config, state=state_mgr, linear=linear, workspace=tmp_path / "ws")  # type: ignore[arg-type]
+        # Deliberately do NOT call _add_ticket_state — state entry is missing.
+
+        issue = _make_qa_issue()
+        with mock.patch("symphony_lite.orchestrator.start_serve") as m_serve:
+            orch._reconcile_serve([issue], {issue.id: issue})
+
+        m_serve.assert_not_called()
+        assert orch._active_serve is None
+        transition_calls = linear.calls.get("transition_to_state", [])
+        assert any(
+            tid == "ticket-1" and state == "Needs Input"
+            for tid, state in transition_calls
+        ), f"Expected transition for ticket-1 to Needs Input, got {transition_calls}"
+        post_calls = linear.calls.get("post_comment", [])
+        assert any(
+            "Can't start QA" in body and "no workspace exists" in body
+            for _, body in post_calls
+        ), f"Expected comment with 'Can't start QA' and 'no workspace exists', got {post_calls}"
+        assert any(
+            "ticket-1" == tid for tid, _ in post_calls
+        ), f"Expected post_comment for ticket-1, got {post_calls}"
+
+    def test_winner_has_empty_workspace_path_transitions_then_posts_comment(
+        self, tmp_path: Path, state_mgr: StateManager, linear: FakeLinearClient,
+    ) -> None:
+        """QA winner with empty workspace_path → transitioned to needs_input, then comment posted."""
+        config = _make_qa_config(tmp_path)
+        orch = Orchestrator(config=config, state=state_mgr, linear=linear, workspace=tmp_path / "ws")  # type: ignore[arg-type]
+        _add_ticket_state(orch, workspace_path="")  # state exists but workspace_path is empty
+
+        issue = _make_qa_issue()
+        with mock.patch("symphony_lite.orchestrator.start_serve") as m_serve:
+            orch._reconcile_serve([issue], {issue.id: issue})
+
+        m_serve.assert_not_called()
+        assert orch._active_serve is None
+        transition_calls = linear.calls.get("transition_to_state", [])
+        assert any(
+            tid == "ticket-1" and state == "Needs Input"
+            for tid, state in transition_calls
+        ), f"Expected transition for ticket-1 to Needs Input, got {transition_calls}"
+        post_calls = linear.calls.get("post_comment", [])
+        assert any(
+            "Can't start QA" in body and "no workspace exists" in body
+            for _, body in post_calls
+        ), f"Expected comment with 'Can't start QA' and 'no workspace exists', got {post_calls}"
+        assert any(
+            "ticket-1" == tid for tid, _ in post_calls
+        ), f"Expected post_comment for ticket-1, got {post_calls}"
+
+    def test_winner_no_workspace_transition_fails_no_comment(
+        self, tmp_path: Path, state_mgr: StateManager, linear: FakeLinearClient,
+    ) -> None:
+        """When transition raises LinearError, no comment is posted — avoids spam on flaky transitions."""
+        config = _make_qa_config(tmp_path)
+        orch = Orchestrator(config=config, state=state_mgr, linear=linear, workspace=tmp_path / "ws")  # type: ignore[arg-type]
+        # No state entry → hits the _bail_qa_no_workspace path.
+        linear.set_response("transition_to_state", LinearError("test transition error"))
+
+        issue = _make_qa_issue()
+        with mock.patch("symphony_lite.orchestrator.start_serve") as m_serve:
+            orch._reconcile_serve([issue], {issue.id: issue})
+
+        m_serve.assert_not_called()
+        assert orch._active_serve is None
+        # Transition was attempted (recorded before the raise).
+        transition_calls = linear.calls.get("transition_to_state", [])
+        assert any(
+            tid == "ticket-1" and state == "Needs Input"
+            for tid, state in transition_calls
+        ), f"Expected transition attempt for ticket-1, got {transition_calls}"
+        # No comment posted because transition failed.
+        post_calls = linear.calls.get("post_comment", [])
+        assert not any(
+            "ticket-1" == tid for tid, _ in post_calls
+        ), f"Expected no post_comment for ticket-1, got {post_calls}"
+
     def test_watchdog_nonzero_exit_posts_comment_and_transitions(
         self, tmp_path: Path, state_mgr: StateManager, linear: FakeLinearClient,
     ) -> None:
