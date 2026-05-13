@@ -1,186 +1,199 @@
 # Symphony
 
-Stop staring at a CLI, waiting for the LLM to finish writing code. Manage tasks on
-a Kanban-style board, working on multiple tasks in parallel, with each LLM message
-appearing as a comment.
+Symphony turns Linear into the front end for a fleet of AI coding agents.
+Label a ticket, walk away, and read the agent's reply when you have a moment;
+when you reply, the agent picks the thread back up. It runs as a single
+daemon on your own machine, clones each ticket's repo into its own sandbox,
+hands the work to [OpenCode](https://opencode.ai/), and posts the result
+back to Linear as a comment. Several tickets can be in flight at once, so
+you can keep planning while the agents type.
 
-Symphony is an AI-powered ticket orchestration daemon. Polls Linear for tickets labelled
-`agent`, clones the linked repo into a per-ticket workspace, runs OpenCode in
-a bubblewrap sandbox, and posts the AI's output back as a Linear comment. It repeats:
-when you comment on the ticket, the daemon resumes the session with your message as
-input, runs another turn, and posts the result.
+The daemon is small, self-hosted, and has no UI of its own. Linear is the UI.
 
----
+## Quickstart
 
-## Prerequisites
-
-- **Python 3.11+**
-- **bwrap** (bubblewrap) — available in most package managers:
-  ```bash
-  apt install bubblewrap       # Debian/Ubuntu
-  dnf install bubblewrap       # Fedora
-  pacman -S bubblewrap         # Arch
-  ```
-- **OpenCode** — installed and authenticated (`opencode auth`). The daemon
-  invokes `opencode` inside the sandbox; the daemon's own `$PATH` is
-  inherited into the sandbox automatically, so any tool visible in the shell
-  that launched the daemon is also visible to the agent.  Set
-  `SYMPHONY_SANDBOX_PATH` to override this (useful when the daemon runs with
-  a stripped `$PATH`, e.g. under systemd).
-- **git** — configured and able to clone the target repos.
-
-## Install
+You need Python 3.11+, `git`, `bwrap` (bubblewrap), and OpenCode installed and
+authenticated. Then:
 
 ```bash
-pip install .
+# 1. Install
+uvx symphony-linear --help
+
+# 2. Create a workspace directory and a minimal config inside it
+mkdir ~/symphony && cd ~/symphony
+cat > config.yaml <<'YAML'
+linear:
+  api_key: ${LINEAR_API_KEY}
+  bot_user_email: you+symphony@example.com
+YAML
+
+# 3. Provide the bot's Linear API key and run
+export LINEAR_API_KEY=lin_api_...
+uvx symphony-linear
 ```
 
-The package name is `symphony-linear`. The CLI entry point is `symphony-linear`.
+That gets you a running daemon. To actually trigger work you still need to
+do the [Linear setup](#linear-setup) (create a bot user, add a label, attach
+a repo link to a project) and add the `agent` label to a ticket.
 
----
+## Installation
 
-## One-time Linear setup
+Symphony is published on PyPI as `symphony-linear`, and that is also the
+name of the command it installs.
 
-### 1. Create a bot user
+### With uvx (recommended)
 
-Create a separate Linear user for the bot. Gmail aliases work:
-`yourname+symphony@gmail.com`. Invite the bot to your Linear workspace.
+`uvx` runs Symphony in a managed virtual environment without touching your
+system Python:
 
-### 2. Generate a Personal API key
-
-Sign into Linear **as the bot user**. Go to **Settings** → **API** →
-**Personal API keys**, create a key, and copy it.
-
-### 3. Add a custom workflow state
-
-In Linear **team settings** → **Workflow**, add a state named **Needs Input**.
-This is the state the daemon sets while waiting for your reply. You can
-customise the name later in the config.
-
-### 4. Create a trigger label
-
-Create a label named **agent** in the team. Tickets with this label are picked
-up by the daemon. You can override the label name in the config.
-
-### 5. (Optional) Add a QA workflow state
-
-If you want to manually QA an agent's work — e.g. run a dev server and click
-around — add a workflow state named **QA** (or whatever you prefer) and set
-`linear.qa_state` in `config.yaml`. When you move a ticket into this state,
-the daemon runs `.symphony/serve` from that ticket's workspace and pauses the
-agent. See **Manual QA** below.
-
----
-
-## Per-repo Linear setup (repeat for each repo)
-
-### 1. Create a Linear project
-
-One project per repository. Any team project works; the daemon just uses it to
-find the repo URL.
-
-### 2. Attach a Repo link
-
-Open the project, go to **Resources**, and add a link with:
-- **Label**: `Repo` (case-insensitive; must be exactly this or `repo` or `REPO`)
-- **URL**: the git clone URL (e.g. `git@github.com:you/your-project.git` or
-  `https://github.com/you/your-project.git`)
-
-The daemon reads this link to discover which repo to clone.
-
----
-
-## Repo conventions
-
-### `.symphony/setup` (optional)
-
-If your repo has an **executable** file at `.symphony/setup`, the daemon runs
-it inside the sandbox after cloning. Use it to install dependencies, set up
-environments, etc. Exit non-zero to abort the ticket with an error comment. The
-script has a 5-minute timeout.
-
-### `.symphony/serve` (optional)
-
-If your repo has an **executable** file at `.symphony/serve`, the daemon runs
-it inside the sandbox when its ticket enters the configured `qa_state` (see
-`linear.qa_state` in the config). Use it to launch a dev server, worker, or
-any other process you want to interact with manually. The script has no time
-limit; it stays running until the ticket leaves the QA state (or another
-ticket takes over QA). Only one serve runs globally at a time. See
-**Manual QA** below.
-
-### `.symphony/config.yaml` (optional)
-
-If your repo has a file at `.symphony/config.yaml`, the daemon reads it to
-override select global settings for tickets in that project. If the file is
-missing or empty, the daemon silently falls back to the global config.
-
-Only these keys are supported; unknown keys cause a hard error (see below).
-
-| Key                    | Type      | Default | Notes                                           |
-|------------------------|-----------|---------|-------------------------------------------------|
-| `auto_branch`          | bool      | global  | Applied only on first clone, not on resume.     |
-| `turn_timeout_seconds` | int (> 0) | global  | Re-read on every turn (initial and resume).     |
-
-Example:
-
-```yaml
-# .symphony/config.yaml (in your project repo)
-auto_branch: false
-turn_timeout_seconds: 600
+```bash
+uvx symphony-linear --help
 ```
 
-**Precedence.** Per-project values take priority over the equivalent global
-config. When a key is absent from the project config, the global value is
-used.
+This is convenient for casual use and for `--validate-config`. For a
+long-running daemon you may prefer to install it once rather than have
+`uvx` resolve the environment on every start:
 
-**Invalid config.** If the file contains unknown keys, invalid YAML, or
-values that fail validation, the daemon posts an error comment on the ticket
-and blocks the run (same as other setup errors). Edit the file and comment
-on the ticket to trigger a retry.
+```bash
+uv tool install symphony-linear
+symphony-linear --help
+```
 
----
+### With pip
+
+If you don't have `uv`, plain `pip` works:
+
+```bash
+pip install symphony-linear
+symphony-linear --help
+```
+
+Use `pipx` or a virtualenv if you'd rather not install into your system
+Python.
+
+### From source
+
+```bash
+git clone https://github.com/skorokithakis/symphony.git
+cd symphony
+uv sync
+.venv/bin/symphony-linear --help
+```
+
+### Runtime dependencies
+
+These are not Python packages and won't be installed for you:
+
+- **bwrap** (bubblewrap): `apt install bubblewrap`, `dnf install bubblewrap`,
+  or `pacman -S bubblewrap`.
+- **git**, configured well enough to clone the repos you want the agent to
+  work on.
+- **OpenCode**, installed and authenticated. The daemon invokes `opencode`
+  inside the sandbox; whatever is on the daemon's `$PATH` is visible to the
+  agent. Set `SYMPHONY_SANDBOX_PATH` if the daemon runs with a stripped
+  `$PATH`, for example under `systemd`.
+
+## Linear setup
+
+This is the one-off plumbing that connects Symphony to your Linear workspace.
+You do it once per workspace, plus a small per-repo step for each project
+you want the agent to touch.
+
+### Create a bot user
+
+Create a separate Linear user for the bot so its comments and state changes
+are easy to spot. Gmail aliases work: `yourname+symphony@gmail.com`. Invite
+the bot into your workspace.
+
+### Generate a Personal API key
+
+Sign into Linear as the bot. Open **Settings** → **API** → **Personal API
+keys**, create a key, and keep it somewhere safe; this is the value you'll
+supply as `LINEAR_API_KEY`.
+
+### Add a "Needs Input" workflow state
+
+In your team's workflow settings, add a state called **Needs Input**.
+Symphony moves tickets here when it finishes a turn and is waiting for you
+to reply. You can rename this state later; the name lives in `config.yaml`.
+
+### Create the trigger label
+
+Add a label called **agent** to the team. Any ticket carrying this label
+becomes eligible for the agent. The label name is configurable.
+
+### Optional: a QA workflow state
+
+If you'd like to manually exercise the agent's work, for instance by
+clicking around a running web app, add a workflow state called **QA**, point
+`linear.qa_state` at it in your config, and add a `.symphony/serve` script
+to your repo. When you drop a ticket into that state the daemon runs your
+serve script inside the sandbox. Details under [Manual QA](#manual-qa).
+
+### Per-repo: attach a Repo link
+
+For each repository you want Symphony to work on:
+
+1. Create a Linear project. Any team project will do; Symphony only uses it
+   to find the repo URL.
+2. In that project, open **Resources** and add a link with the label `Repo`
+   (case-insensitive) and the git clone URL as the target, for example
+   `git@github.com:you/your-project.git`.
+
+That link is how the daemon discovers which repo belongs to which ticket.
 
 ## Configuration
 
-Create `config.yaml` in your workspace directory (the current working
-directory by default, or the path passed to `--workspace`). The daemon refuses
-to start without a valid config.
+Symphony reads `config.yaml` from its workspace directory, which defaults to
+the current working directory and can be overridden with `--workspace`. The
+daemon refuses to start without a valid config; validate it any time with
+`symphony-linear --validate-config`.
 
-Full annotated example:
+### Minimal config
+
+```yaml
+linear:
+  api_key: ${LINEAR_API_KEY}
+  bot_user_email: yourname+symphony@gmail.com
+```
+
+You can omit `api_key` entirely and let the daemon read the `LINEAR_API_KEY`
+environment variable directly; that is often nicer for systemd or secret
+managers.
+
+### Full annotated config
 
 ```yaml
 # config.yaml (placed in the workspace directory)
 
 linear:
   # REQUIRED. Linear Personal API key from the bot account.
-  # Use ${LINEAR_API_KEY} to read from the environment (or set LINEAR_API_KEY
-  # env var — the daemon falls back to it if this field is missing or empty).
+  # Use ${LINEAR_API_KEY} to read from the environment, or omit this field
+  # entirely and the daemon will fall back to the LINEAR_API_KEY env var.
   api_key: ${LINEAR_API_KEY}
-
-  # Name of the label that triggers the bot (default: agent).
-  trigger_label: agent
-
-  # Linear workflow state set while the AI is working (default: In Progress).
-  in_progress_state: In Progress
-
-  # Linear workflow state set while waiting for human reply (default: Needs Input).
-  needs_input_state: Needs Input
 
   # REQUIRED. Email address of the bot user in Linear.
   bot_user_email: yourname+symphony@gmail.com
 
-  # Optional. Linear workflow state that enables manual QA. When a ticket
-  # enters this state, the daemon runs the repo's .symphony/serve script
-  # inside the sandbox. Only one serve runs globally; moving a different
-  # ticket into this state bumps the previous one back to needs_input_state.
-  # Omit to disable the feature entirely.
+  # Name of the label that triggers the bot (default: agent).
+  trigger_label: agent
+
+  # Workflow state set while the AI is working (default: In Progress).
+  in_progress_state: In Progress
+
+  # Workflow state set while waiting for human reply (default: Needs Input).
+  needs_input_state: Needs Input
+
+  # Optional. Workflow state that enables manual QA. When a ticket enters
+  # this state the daemon runs the repo's .symphony/serve script inside the
+  # sandbox. Only one serve runs globally; the newest entrant wins. Omit to
+  # disable the feature entirely.
   # qa_state: QA
 
 sandbox:
-  # Paths to conceal inside the sandbox (defaults shown below).
-  # Directories are overlaid with an empty tmpfs; files and sockets are
-  # replaced with /dev/null.  ~ and symlinks are expanded.
+  # Paths to conceal from the agent inside the sandbox. Directories become
+  # an empty tmpfs; files and sockets are replaced with /dev/null. ~ and
+  # symlinks are expanded.
   hide_paths:
     - ~/.ssh
     - ~/.gnupg
@@ -190,13 +203,12 @@ sandbox:
     - ~/.docker
     - /run/docker.sock
 
-  # Additional host paths to bind read-write inside the sandbox.
-  # These use --bind (not --bind-try), so missing paths cause a fatal error.
-  # Applied before hide_paths, so hide still wins on collision.
-  # WARNING: Listed paths bypass the read-only host root mount.
+  # Optional. Extra host paths bound read-write into the sandbox.
+  # Missing paths cause a fatal error. Applied before hide_paths, so hiding
+  # still wins in case of collision.
+  # WARNING: these bypass the read-only host root mount.
   # extra_rw_paths:
   #   - ~/projects/shared-tools
-
 
 # Seconds between Linear poll cycles (default: 30, minimum: 1).
 poll_interval_seconds: 30
@@ -204,35 +216,8 @@ poll_interval_seconds: 30
 # Max seconds per AI turn before the process is killed (default: 1800).
 turn_timeout_seconds: 1800
 ```
-A standalone copy of this annotated example is available at
-`config.yaml.example` in the repo root.
 
-### Minimal config
-
-At minimum you need `linear.api_key` and `linear.bot_user_email`:
-
-```yaml
-linear:
-  api_key: ${LINEAR_API_KEY}
-  bot_user_email: yourname+symphony@gmail.com
-```
-
-All other fields use the defaults shown above.
-
-You can also set the `LINEAR_API_KEY` environment variable and omit
-`linear.api_key` from the config file entirely — the daemon uses the env var
-as a fallback.
-
-### Validate
-
-```bash
-symphony-linear --validate-config
-```
-
-Exits 0 if the config is valid, prints a summary, and stops. Use this to check
-your config before launching the daemon.
-
----
+A copy of this example lives at `config.yaml.example` in the repo root.
 
 ## Running
 
@@ -240,131 +225,159 @@ your config before launching the daemon.
 symphony-linear
 ```
 
-Runs in the foreground. Start it in tmux, screen, or nohup:
+Symphony runs in the foreground and logs to stderr. For interactive use it
+is fine to start it in `tmux` or `screen`; for anything more permanent a
+`systemd --user` unit is the obvious home.
 
-```bash
-tmux new -s symphony 'symphony-linear'
-# or
-nohup symphony-linear > /dev/null 2>&1 &
+A starting point for `~/.config/systemd/user/symphony.service`:
+
+```ini
+[Unit]
+Description=Symphony Linear daemon
+After=network-online.target
+
+[Service]
+Type=simple
+WorkingDirectory=%h/symphony
+Environment=LINEAR_API_KEY=lin_api_...
+# systemd strips PATH; tell the sandbox where to find opencode, git, bwrap.
+Environment=SYMPHONY_SANDBOX_PATH=/usr/local/bin:/usr/bin:/bin
+ExecStart=%h/.local/bin/symphony-linear
+Restart=on-failure
+
+[Install]
+WantedBy=default.target
 ```
 
-Flags:
+Then `systemctl --user daemon-reload && systemctl --user enable --now symphony`.
 
-| Flag | Effect |
-|------|--------|
-| `--debug` | Enable DEBUG-level logging |
-| `--workspace <path>` | Override workspace directory (default: current working directory) |
-| `--validate-config` | Load and validate config, then exit |
+### Flags
 
-Logs go to **stderr**.
+| Flag                 | Effect                                                              |
+|----------------------|---------------------------------------------------------------------|
+| `--debug`            | Enable DEBUG-level logging.                                         |
+| `--workspace <path>` | Override workspace directory (default: current working directory).  |
+| `--validate-config`  | Load and validate the config, then exit.                            |
 
-### What happens at startup
+### Startup behaviour
 
-On launch the daemon recovers any orphaned tickets (daemon restarted while a
-ticket was `working`). It posts a recovery comment and sets the ticket to
-`Needs Input` so you know it's waiting. State is persisted at
-`<workspace>/state.json`.
+On launch the daemon recovers any orphan tickets it was working on when it
+last stopped. It posts a recovery comment and parks the ticket in `Needs
+Input` so you can decide whether to retry. State is persisted at
+`<workspace>/state.json` and rewritten atomically.
 
 ### Graceful shutdown
 
-Send `SIGINT` (Ctrl+C) or `SIGTERM`. The daemon kills all in-flight
-subprocesses, persists state, and exits.
-
----
+`SIGINT` (Ctrl+C) or `SIGTERM` triggers a clean shutdown: in-flight
+subprocesses are killed, state is persisted, and the daemon exits.
 
 ## How it works
 
-**Poll loop.** Every `poll_interval_seconds` the daemon queries Linear for
-tickets that have the trigger label and are in an active state. For each new
-ticket it:
+Every `poll_interval_seconds`, Symphony queries Linear for tickets that
+carry the trigger label and live in one of the active workflow states. New
+tickets enter the **initial pipeline**:
 
-1. Looks up the project's `Repo` link to find the git URL.
-2. Clones/updates the repo into `<workspace>/<sanitized-identifier>`.
-3. Switches to the ticket's branch (or creates a new one). Skipped when
-   `auto_branch: false` is set — the workspace stays on whatever `git clone`
-   checked out (the remote default branch).
-4. Runs `.symphony/setup` inside the sandbox if present.
-5. Launches `opencode run` inside the sandbox with the ticket title and
+1. Find the project's `Repo` link to discover the git URL.
+2. Clone or update the repo into `<workspace>/<sanitised-identifier>`.
+3. Switch to the ticket's branch, creating one if needed. If
+   `auto_branch: false` is set, the workspace stays on whatever `git clone`
+   produced (typically the remote default branch).
+4. Run `.symphony/setup` inside the sandbox, if your repo has one.
+5. Launch `opencode run` inside the sandbox with the ticket's title and
    description as the prompt.
-6. Posts the AI's final message as a comment, along with a metadata comment
-   (workspace path + session id).
-7. Transitions the ticket to `Needs Input`.
+6. Post the agent's final message as a comment, plus a small metadata
+   comment with the workspace path and OpenCode session id.
+7. Transition the ticket to `Needs Input`.
 
-**Resume.** When you comment, the daemon picks up new human comments, launches
-`opencode run --session <id>`, and posts the result.
+Tickets you've already replied to enter the **resume pipeline** instead:
+the daemon picks up the new human comments, runs `opencode run --session
+<id>`, and posts the result.
 
-**Manual QA.** If you configure `linear.qa_state` and add a `.symphony/serve`
-script to your repo, moving a ticket into that workflow state launches the
-script inside the sandbox so you can interact with the agent's work (run a
-server, exercise a worker, etc.). Only one serve runs globally; moving a
-second ticket into QA bumps the first back to `Needs Input` and starts the
-new one. Commenting on a QA ticket pulls it out of QA into `In Progress`,
-kills the serve (on the next poll tick, via existing reconcile logic), runs
-the agent, and lands in `Needs Input`. To re-test after the agent's changes,
-move the ticket back to QA.
-If the script exits non-zero within 10s of launch, or exits later for any
-reason, the daemon posts a comment with the exit code and the first 1000
-chars of stdout/stderr and transitions the ticket back to `Needs Input`.
-Clean exits within 10s are silent (assumed to be a parent that daemonized
-a child).
+Up to five turns run in parallel across different tickets, with per-ticket
+serialisation so a single ticket never has two turns in flight. The agent
+and you only ever communicate through Linear comments; the daemon has no
+other channel.
 
-**Sandbox.** Each OpenCode turn runs inside a bubblewrap sandbox. The workspace
-is mounted read-write; the rest of the host filesystem is read-only. Credential
-directories (SSH, GPG, cloud credentials, Docker socket) are concealed. The
-network namespace is shared so the agent can access the internet, but user/PID/
-IPC/UTS namespaces are isolated. The sandbox clears the host environment and
-provides `HOME` and a `PATH` inherited from the daemon's own `$PATH` (override
-with `SYMPHONY_SANDBOX_PATH` for stripped-environment deployments).
+### Sandbox
 
-**Concurrency.** Up to 5 turns run in parallel across different tickets. Per-ticket
-tasks are serialised — a ticket won't get a new turn while a previous one is
-still running.
+Each OpenCode turn runs inside a bubblewrap sandbox. The ticket's workspace
+is mounted read-write; the rest of the host root is read-only. Credential
+directories such as `~/.ssh`, `~/.gnupg`, `~/.aws`, the Docker socket and a
+handful of others are concealed by overlaying empty tmpfs or `/dev/null`.
+The network namespace is shared so the agent can reach the internet, but
+user, PID, IPC and UTS namespaces are isolated. Environment is wiped down
+to `HOME` plus an inherited `PATH` (or `SYMPHONY_SANDBOX_PATH` if set).
 
-**Interaction model.** The agent and human communicate entirely through Linear
-comments. The agent doesn't have access to your terminal, notifications, or
-any conversational channel other than Linear.
+Git operations run outside the sandbox using the daemon's own credentials,
+so cloning private repositories works without exposing your keys to the
+agent. The flip side is that the agent itself cannot `git push`; you do
+that yourself, after reviewing.
 
----
+## Manual QA
 
-## Limitations
+If you set `linear.qa_state` and add an executable `.symphony/serve` script
+to your repo, moving a ticket into that workflow state launches the script
+inside the sandbox. Use it to run a dev server, a worker, or anything else
+you want to exercise by hand.
 
-- **No `git push` from inside the agent.** The sandbox conceals `~/.ssh`,
-  `~/.gnupg`, and other credential stores, so the agent cannot push commits.
-  Pushing is your job — do it outside the sandbox after reviewing the agent's
-  work.
+Only one serve runs across the whole daemon. Dropping a second ticket into
+QA bumps the first back to `Needs Input` and starts the new one. Commenting
+on a ticket that is currently in QA pulls it back out into `In Progress`:
+on the next poll tick the serve is killed, the agent runs another turn on
+your comment, and the ticket lands in `Needs Input`. Move it back to QA to
+test again.
 
-- **No mid-turn steering.** You cannot interrupt or redirect the agent during a
-  turn. Comments you post while a turn is running are queued and delivered at
-  the start of the *next* turn.
+The script is given no time limit and the daemon does not interpret its
+output. If it exits non-zero within ten seconds, or exits later for any
+reason, the daemon posts a comment containing the exit code and a thousand
+characters of stdout/stderr, and the ticket goes back to `Needs Input`.
+Clean exits within ten seconds are treated as a parent that has daemonised
+a child, and are silent.
 
-- **No auto-retry.** If the AI turn fails (timeout, crash, model error), the
-  daemon posts an error comment and sets the ticket to `failed`. It does not
-  retry automatically. Comment on the ticket to re-trigger.
+## Repo conventions
 
-- **Free Linear plan limits.** Free plans cap workspace members at 10 and
-  issues at 250. The bot user counts toward the member limit.
+Three optional files in a repo change how Symphony treats it. All three
+live under `.symphony/` at the repo root.
 
-- **Single workspace per ticket.** The daemon reuses the same workspace
-  directory across turns. It does not create a fresh clone per turn.
+### `.symphony/setup`
 
-- **Label-based trigger only.** The agent label must be present for the daemon
-  to pick up a ticket. There's no other trigger mechanism.
+An executable script run inside the sandbox once, right after each fresh
+clone, before the agent starts. Use it to install dependencies, prepare
+caches, or whatever else the project needs. Non-zero exit aborts the ticket
+with an error comment. The script has a five-minute timeout.
 
-- **No priority or ordering.** Tickets are picked up in whatever order Linear
-  returns them. There is no queue priority system.
+### `.symphony/serve`
 
-- **One QA server at a time.** Only a single `.symphony/serve` process runs
-  globally. There is no port allocation or routing — your serve script is
-  responsible for binding to whatever port you (or your reverse proxy)
-  expect.
+An executable script run inside the sandbox when the ticket enters the
+configured `qa_state`. See [Manual QA](#manual-qa) for the details.
 
----
+### `.symphony/config.yaml`
+
+Optional per-project overrides for a small set of global settings.
+Currently supported keys:
+
+| Key                    | Type      | Default            | Notes                                          |
+|------------------------|-----------|--------------------|------------------------------------------------|
+| `auto_branch`          | bool      | inherits global    | Applied on first clone, not on resume.         |
+| `turn_timeout_seconds` | int (> 0) | inherits global    | Re-read on every turn (initial and resume).    |
+
+```yaml
+# .symphony/config.yaml (committed in your project repo)
+auto_branch: false
+turn_timeout_seconds: 600
+```
+
+Unknown keys, invalid YAML or out-of-range values cause Symphony to post an
+error comment on the ticket and block the run until you fix the file and
+comment to retry. Per-project values win over the global config; missing
+keys fall back to the global value.
 
 ## Troubleshooting
 
-### Find the session id
+### Find the workspace and session id
 
-The daemon posts a metadata comment on every ticket it processes, formatted as:
+For every ticket it processes, Symphony posts a small metadata comment in
+this shape:
 
 ```
 **Symphony**
@@ -372,29 +385,19 @@ The daemon posts a metadata comment on every ticket it processes, formatted as:
 - session: `ses_abc123`
 ```
 
-Look for this comment on the ticket to find the workspace path and OpenCode
-session id.
+The workspace path is where the repo was cloned; the session id is the
+OpenCode session you can resume manually.
 
-### Inspect a workspace
-
-Workspaces live inside your workspace directory. Each subdirectory is named
-after the sanitised ticket identifier (e.g. `TEAM-42`, `SCR-123`). You can
-`cd` into the workspace and inspect the repo, the agent's changes, or run
-OpenCode commands manually.
-
-### Resume a session manually
+### Resume a session by hand
 
 ```bash
 cd <workspace>/TEAM-42
 opencode run --session ses_abc123 -- "Hello, what's the status?"
 ```
 
-### See what happened in a turn
-
-OpenCode stores session state (prompt history, tool output, etc.) in
-`~/.opencode/` and `~/.local/share/opencode/`. These directories are bind-
-mounted into the sandbox, so session resume works across daemon turns and
-manual invocations.
+OpenCode session state lives under `~/.opencode/` and
+`~/.local/share/opencode/`. These are bind-mounted into the sandbox so
+session resumes work both from inside the daemon and from your shell.
 
 ### Check daemon state
 
@@ -402,4 +405,45 @@ manual invocations.
 cat <workspace>/state.json | python -m json.tool
 ```
 
-Shows every tracked ticket, its status, workspace path, branch, and session id.
+This shows every tracked ticket, its status, workspace path, branch, and
+session id.
+
+## Limitations
+
+- **No `git push` from inside the agent.** The sandbox conceals
+  credentials, so the agent cannot push. Pushing is a deliberate human
+  step.
+- **No mid-turn steering.** You cannot interrupt or redirect a turn while
+  it is running. Comments you post mid-turn are queued and delivered at the
+  start of the next one.
+- **No auto-retry.** A failed turn moves the ticket to `failed` and stays
+  there. Comment on the ticket to re-trigger.
+- **Single workspace per ticket.** A ticket's workspace is reused across
+  turns; the agent works in the same clone every time.
+- **Label-only trigger.** The trigger label is the only way to enrol a
+  ticket. There is no manual nudge, slash command, or webhook.
+- **No priority.** Tickets are picked in whatever order Linear returns
+  them. There is no queue.
+- **One QA serve at a time.** A single `.symphony/serve` runs globally with
+  no port allocation. Your script is responsible for binding to whichever
+  port you (or your reverse proxy) expect.
+- **Free Linear plan caps.** Free workspaces are capped at 10 members and
+  250 issues; the bot counts against the member cap.
+
+## Development
+
+```bash
+git clone https://github.com/skorokithakis/symphony.git
+cd symphony
+uv sync
+.venv/bin/pytest                              # full suite
+.venv/bin/pytest -m "not integration"         # unit only
+```
+
+Integration tests shell out to `bwrap` and `git` but never to the real
+`opencode` binary or any LLM. See `AGENTS.md` for an orientation to the
+codebase.
+
+## License
+
+MIT. See `LICENSE`.
