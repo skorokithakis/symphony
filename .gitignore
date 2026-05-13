@@ -20,3 +20,4 @@ env/
 
 # OS
 .DS_Store
+.tickets/
