@@ -1,7 +1,8 @@
 # Symphony
 
-Stop staring at a CLI, waiting for your LLM. Manage tasks on a Kanban-style board,
-working on multiple tasks in parallel, with each LLM message appearing as a comment.
+Stop staring at a CLI, waiting for the LLM to finish writing code. Manage tasks on
+a Kanban-style board, working on multiple tasks in parallel, with each LLM message
+appearing as a comment.
 
 Symphony is an AI-powered ticket orchestration daemon. Polls Linear for tickets labelled
 `agent`, clones the linked repo into a per-ticket workspace, runs OpenCode in
