@@ -29,6 +29,7 @@ from symphony_lite.orchestrator import (
     Orchestrator,
     _ActiveServe,
     _format_comments_message,
+    _maybe_rewrite_to_ssh,
 )
 from symphony_lite.state import StateManager, TicketState, TicketStatus
 
@@ -2687,3 +2688,80 @@ class TestIntegration:
         from symphony_lite.workspace import remove
 
         remove("TEAM-1", str(ws_root))
+
+
+# ---------------------------------------------------------------------------
+# _maybe_rewrite_to_ssh
+# ---------------------------------------------------------------------------
+
+
+class TestMaybeRewriteToSSH:
+    def test_bare_browser_url_rewritten(self) -> None:
+        assert _maybe_rewrite_to_ssh("https://github.com/owner/repo") == "git@github.com:owner/repo.git"
+
+    def test_dot_git_url_unchanged(self) -> None:
+        url = "https://github.com/owner/repo.git"
+        assert _maybe_rewrite_to_ssh(url) == url
+
+    def test_ssh_git_url_unchanged(self) -> None:
+        url = "git@github.com:owner/repo.git"
+        assert _maybe_rewrite_to_ssh(url) == url
+
+    def test_ssh_ssh_url_unchanged(self) -> None:
+        url = "ssh://git@github.com/owner/repo.git"
+        assert _maybe_rewrite_to_ssh(url) == url
+
+    def test_non_github_url_unchanged(self) -> None:
+        url = "https://gitlab.com/owner/repo"
+        assert _maybe_rewrite_to_ssh(url) == url
+
+    def test_trailing_slash_rewritten(self) -> None:
+        assert _maybe_rewrite_to_ssh("https://github.com/owner/repo/") == "git@github.com:owner/repo.git"
+
+    def test_uppercase_host_rewritten(self) -> None:
+        assert _maybe_rewrite_to_ssh("https://GITHUB.COM/owner/repo") == "git@github.com:owner/repo.git"
+
+    def test_url_with_query_stripped_and_rewritten(self) -> None:
+        assert _maybe_rewrite_to_ssh("https://github.com/owner/repo?tab=readme") == "git@github.com:owner/repo.git"
+
+    def test_url_with_fragment_stripped_and_rewritten(self) -> None:
+        assert _maybe_rewrite_to_ssh("https://github.com/owner/repo#readme") == "git@github.com:owner/repo.git"
+
+    def test_url_with_query_and_fragment_stripped_and_rewritten(self) -> None:
+        assert _maybe_rewrite_to_ssh("https://github.com/owner/repo?tab=readme#section") == "git@github.com:owner/repo.git"
+
+    def test_local_path_unchanged(self) -> None:
+        url = "/home/user/repo"
+        assert _maybe_rewrite_to_ssh(url) == url
+
+    def test_preserves_owner_repo_casing(self) -> None:
+        assert _maybe_rewrite_to_ssh("https://github.com/MyOrg/MyRepo") == "git@github.com:MyOrg/MyRepo.git"
+
+    def test_dot_git_with_query_unchanged(self) -> None:
+        """HTTPS URL ending in .git (after stripping query) should pass through unchanged."""
+        url = "https://github.com/owner/repo.git?tab=readme"
+        assert _maybe_rewrite_to_ssh(url) == url
+
+    def test_unexpected_path_structure_unchanged(self) -> None:
+        """A GitHub URL with more than owner/repo in path should pass through."""
+        url = "https://github.com/owner/repo/tree/main"
+        assert _maybe_rewrite_to_ssh(url) == url
+
+    def test_uppercase_scheme_rewritten(self) -> None:
+        """HTTPS:// scheme (case-insensitive) should be rewritten."""
+        assert _maybe_rewrite_to_ssh("HTTPS://github.com/owner/repo") == "git@github.com:owner/repo.git"
+
+    def test_userinfo_url_unchanged(self) -> None:
+        """URL with userinfo should pass through unchanged."""
+        url = "https://user@github.com/owner/repo"
+        assert _maybe_rewrite_to_ssh(url) == url
+
+    def test_custom_port_url_unchanged(self) -> None:
+        """URL with a custom port should pass through unchanged."""
+        url = "https://github.com:8443/owner/repo"
+        assert _maybe_rewrite_to_ssh(url) == url
+
+    def test_non_numeric_port_passes_through(self) -> None:
+        """Malformed/non-numeric port should pass through unchanged (no ValueError)."""
+        url = "https://github.com:bad/owner/repo"
+        assert _maybe_rewrite_to_ssh(url) == url

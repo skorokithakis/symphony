@@ -12,6 +12,7 @@ from dataclasses import dataclass, field
 from datetime import datetime, timezone
 from pathlib import Path
 from typing import Any
+from urllib.parse import urlparse
 
 from symphony_lite.config import AppConfig
 from symphony_lite.linear import (
@@ -58,13 +59,53 @@ def _iso_now() -> str:
     return datetime.now(timezone.utc).isoformat()
 
 
+def _maybe_rewrite_to_ssh(url: str) -> str:
+    """Rewrite GitHub browser-style HTTPS URLs to their SSH equivalents.
+
+    Passes through unchanged: HTTPS URLs ending in .git, SSH URLs
+    (``git@...``, ``ssh://...``), non-GitHub URLs, and local paths.
+    """
+    parsed = urlparse(url)
+
+    # Must be HTTPS (case-insensitive).
+    if parsed.scheme.lower() != "https":
+        return url
+
+    # Must be github.com (case-insensitive), no userinfo, no custom port.
+    if parsed.hostname is None or parsed.hostname.lower() != "github.com":
+        return url
+    if parsed.username is not None or parsed.password is not None:
+        return url
+    try:
+        if parsed.port is not None:
+            return url
+    except ValueError:
+        return url  # malformed/non-numeric/out-of-range port — pass through
+
+    # Path: strip trailing slash, then split into segments.
+    # Pass through .git URLs and paths that are not exactly <owner>/<repo>.
+    path = parsed.path.rstrip("/")
+    if path.endswith(".git"):
+        return url
+
+    parts = path.lstrip("/").split("/")
+    if len(parts) != 2:
+        return url
+
+    owner, repo = parts
+    if not owner or not repo:
+        return url
+
+    return f"git@github.com:{owner}/{repo}.git"
+
+
 def _find_repo_link(project: Any, linear: LinearClient) -> str | None:
     if project is None or project.id is None:
         return None
     fp = linear.get_project(project.id)
     for link in fp.links:
         if link.label.strip().lower() == "repo":
-            return link.url
+            return _maybe_rewrite_to_ssh(link.url)
     return None
 
 
