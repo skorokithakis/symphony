@@ -94,14 +94,6 @@ class _SandboxConfig(BaseModel):
     )
 
 
-class _OpenCodeConfig(BaseModel):
-    # Optional: if unset, OpenCode uses whatever model its own config selects.
-    model: str | None = Field(
-        None,
-        description="OpenCode model identifier (e.g. anthropic/claude-sonnet-4); if unset, OpenCode's default is used",
-    )
-
-
 class AppConfig(BaseModel):
     """Top-level application configuration."""
 
@@ -109,7 +101,6 @@ class AppConfig(BaseModel):
 
     linear: _LinearConfig
     sandbox: _SandboxConfig = Field(default_factory=_SandboxConfig)
-    opencode: _OpenCodeConfig = Field(default_factory=_OpenCodeConfig)
     poll_interval_seconds: int = Field(
         30, gt=0, description="Seconds between Linear poll cycles"
     )
@@ -129,13 +120,12 @@ class AppConfig(BaseModel):
     @model_validator(mode="before")
     @classmethod
     def _drop_null_subconfigs(cls, data: Any) -> Any:
-        # YAML keys with empty values (e.g. `opencode:` on its own line) parse
+        # YAML keys with empty values (e.g. `sandbox:` on its own line) parse
         # as ``None``. For sub-config fields that have a default, treat ``None``
         # as "use the default" rather than failing validation.
         if isinstance(data, dict):
-            for key in ("sandbox", "opencode"):
-                if key in data and data[key] is None:
-                    del data[key]
+            if "sandbox" in data and data["sandbox"] is None:
+                del data["sandbox"]
         return data
 
 

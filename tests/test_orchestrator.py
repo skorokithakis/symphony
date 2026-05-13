@@ -48,7 +48,6 @@ def _make_config(tmp_path: Path, **overrides: Any) -> AppConfig:
             "needs_input_state": "Needs Input",
             "bot_user_email": "bot@example.com",
         },
-        "opencode": {"model": "test/model"},
         "sandbox": {"hide_paths": ["/fake/secret"], "extra_rw_paths": ["/fake/rw"]},
         "poll_interval_seconds": 1,
         "turn_timeout_seconds": 30,

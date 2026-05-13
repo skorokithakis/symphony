@@ -142,7 +142,6 @@ class OpenCodeCancelled(Exception):
 def run_initial(
     workspace_path: str,
     prompt: str,
-    model: str | None = None,
     *,
     timeout_seconds: int,
     on_subprocess: Callable[[subprocess.Popen[bytes]], None],
@@ -156,9 +155,6 @@ def run_initial(
         workspace_path: Path to the workspace directory (host side; will be
             mounted read-write inside the sandbox).
         prompt: The initial prompt/message to send to OpenCode.
-        model: Optional model identifier in ``provider/model`` format (e.g.
-            ``anthropic/claude-sonnet-4``).  If ``None``, OpenCode uses
-            whatever model its own configuration selects.
         timeout_seconds: Maximum number of seconds to wait for the turn to
             complete.  If exceeded the process is killed and
             :class:`OpenCodeTimeout` is raised.
@@ -187,8 +183,6 @@ def run_initial(
         "json",
         "--dangerously-skip-permissions",
     ]
-    if model:
-        cmd += ["-m", model]
     cmd += ["--", prompt]
 
     return _execute(

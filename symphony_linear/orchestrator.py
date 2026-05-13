@@ -990,7 +990,6 @@ class Orchestrator:
             session_id, final_message = run_initial(
                 workspace_path=workspace_path,
                 prompt=prompt,
-                model=self._config.opencode.model,
                 timeout_seconds=self._config.turn_timeout_seconds,
                 on_subprocess=lambda proc: (self._register_subprocess(tid, proc), None)[
                     1

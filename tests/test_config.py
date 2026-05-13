@@ -48,11 +48,11 @@ class TestExpandValues:
         monkeypatch.setenv("KEY", "secret")
         data = {
             "linear": {"api_key": "$KEY"},
-            "opencode": {"model": "~/model"},
+            "sandbox": {"extra_rw_paths": ["~/model"]},
         }
         result = _expand_values(data)
         assert result["linear"]["api_key"] == "secret"
-        assert result["opencode"]["model"] == str(Path.home() / "model")
+        assert result["sandbox"]["extra_rw_paths"] == [str(Path.home() / "model")]
 
     def test_list_recursion(self) -> None:
         data = ["~/a", "~/b"]
@@ -77,9 +77,7 @@ class TestLoadConfig:
                 "api_key": "test-key",
                 "bot_user_email": "bot@example.com",
             },
-            "opencode": {
-                "model": "anthropic/claude-sonnet-4",
-            },
+
         }
         _write_yaml(tmp_path / "config.yaml", cfg)
 
@@ -126,9 +124,7 @@ class TestLoadConfig:
                 "api_key": "$LINEAR_KEY",
                 "bot_user_email": "bot@example.com",
             },
-            "opencode": {
-                "model": "anthropic/claude-sonnet-4",
-            },
+
         }
         _write_yaml(tmp_path / "config.yaml", cfg)
 
@@ -150,9 +146,7 @@ class TestLoadConfig:
                 "api_key": "key",
                 "bot_user_email": "bot@example.com",
             },
-            "opencode": {
-                "model": "anthropic/claude-sonnet-4",
-            },
+
             "sandbox": {
                 "hide_paths": ["/secret", "~/private"],
             },
@@ -171,9 +165,7 @@ class TestLoadConfig:
             "linear": {
                 "bot_user_email": "bot@example.com",
             },
-            "opencode": {
-                "model": "anthropic/claude-sonnet-4",
-            },
+
         }
         _write_yaml(tmp_path / "config.yaml", cfg)
 
@@ -192,9 +184,7 @@ class TestLoadConfig:
                 "api_key": "",
                 "bot_user_email": "bot@example.com",
             },
-            "opencode": {
-                "model": "anthropic/claude-sonnet-4",
-            },
+
         }
         _write_yaml(tmp_path / "config.yaml", cfg)
 
@@ -207,9 +197,7 @@ class TestLoadConfig:
             "linear": {
                 "bot_user_email": "bot@example.com",
             },
-            "opencode": {
-                "model": "anthropic/claude-sonnet-4",
-            },
+
         }
         _write_yaml(tmp_path / "config.yaml", cfg)
 
@@ -226,9 +214,7 @@ class TestLoadConfig:
                 "api_key": "${LINEAR_API_KEY}",
                 "bot_user_email": "bot@example.com",
             },
-            "opencode": {
-                "model": "anthropic/claude-sonnet-4",
-            },
+
         }
         _write_yaml(tmp_path / "config.yaml", cfg)
 
@@ -242,9 +228,7 @@ class TestLoadConfig:
                 "api_key": "key",
                 "bot_user_email": "bot@example.com",
             },
-            "opencode": {
-                "model": "anthropic/claude-sonnet-4",
-            },
+
             "workspace_root": "~/anything",
         }
         _write_yaml(tmp_path / "config.yaml", cfg)
@@ -258,9 +242,7 @@ class TestLoadConfig:
                 "api_key": "key",
                 "bot_user_email": "bot@example.com",
             },
-            "opencode": {
-                "model": "anthropic/claude-sonnet-4",
-            },
+
             "poll_interval_seconds": 0,
         }
         _write_yaml(tmp_path / "config.yaml", cfg)
@@ -275,9 +257,7 @@ class TestLoadConfig:
                 "api_key": "test-key",
                 "bot_user_email": "bot@example.com",
             },
-            "opencode": {
-                "model": "anthropic/claude-sonnet-4",
-            },
+
         }
         _write_yaml(tmp_path / "config.yaml", cfg)
 
@@ -291,9 +271,7 @@ class TestLoadConfig:
                 "api_key": "key",
                 "bot_user_email": "bot@example.com",
             },
-            "opencode": {
-                "model": "anthropic/claude-sonnet-4",
-            },
+
             "sandbox": {
                 "extra_rw_paths": ["~/projects/shared", "/opt/tools"],
             },

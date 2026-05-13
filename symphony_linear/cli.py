@@ -72,7 +72,6 @@ def main(argv: list[str] | None = None) -> None:
         logger.info("Config is valid.")
         logger.info("  workspace       = %s", workspace)
         logger.info("  poll_interval   = %s s", config.poll_interval_seconds)
-        logger.info("  model           = %s", config.opencode.model)
         return
 
     # Load state and create the Linear client.

@@ -167,10 +167,6 @@ sandbox:
   # extra_rw_paths:
   #   - ~/projects/shared-tools
 
-opencode:
-  # Optional. Model in provider/model format. If omitted, OpenCode uses
-  # whatever model its own config selects.
-  model: anthropic/claude-sonnet-4
 
 # Seconds between Linear poll cycles (default: 30, minimum: 1).
 poll_interval_seconds: 30
@@ -191,8 +187,7 @@ linear:
   bot_user_email: yourname+symphony@gmail.com
 ```
 
-All other fields use the defaults shown above. If you don't set
-`opencode.model`, OpenCode picks the model from its own configuration.
+All other fields use the defaults shown above.
 
 You can also set the `LINEAR_API_KEY` environment variable and omit
 `linear.api_key` from the config file entirely — the daemon uses the env var

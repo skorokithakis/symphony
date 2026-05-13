@@ -46,10 +46,6 @@ sandbox:
   # extra_rw_paths:
   #   - ~/projects/shared-tools
 
-opencode:
-  # Optional. Model in provider/model format. If omitted, OpenCode uses
-  # whatever model its own config selects.
-  model: anthropic/claude-sonnet-4
 
 # Seconds between Linear poll cycles (default: 30, minimum: 1).
 poll_interval_seconds: 30
