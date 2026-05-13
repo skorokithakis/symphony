@@ -764,7 +764,12 @@ class Orchestrator:
             return
 
         # --- Save bootstrapping state EARLY (B2) ---
-        branch = issue.branch_name or f"symphony/{issue.identifier.lower()}"
+        # When auto_branch is disabled we don't pick a branch — record empty
+        # rather than a misleading placeholder. The field is informational.
+        if self._config.auto_branch:
+            branch = issue.branch_name or f"symphony/{issue.identifier.lower()}"
+        else:
+            branch = ""
         ticket_state = TicketState(
             ticket_id=tid,
             ticket_identifier=issue.identifier,
@@ -791,6 +796,7 @@ class Orchestrator:
                 sandbox_hide_paths=self._config.sandbox.hide_paths,
                 on_subprocess=lambda proc: self._register_subprocess(tid, proc),
                 sandbox_extra_rw_paths=self._config.sandbox.extra_rw_paths,
+                auto_branch=self._config.auto_branch,
             )
         except (WorkspaceError, FileNotFoundError) as exc:
             logger.error("Workspace preparation failed for %s: %s", tid, exc)
@@ -1109,7 +1115,10 @@ class Orchestrator:
         error_comment: Comment | None = None,
     ) -> None:
         """Save failed state with setup_error, using error comment id as baseline (S3)."""
-        branch = issue.branch_name or f"symphony/{issue.identifier.lower()}"
+        if self._config.auto_branch:
+            branch = issue.branch_name or f"symphony/{issue.identifier.lower()}"
+        else:
+            branch = ""
         ts = TicketState(
             ticket_id=tid,
             ticket_identifier=issue.identifier,

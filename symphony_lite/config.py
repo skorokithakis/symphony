@@ -104,6 +104,17 @@ class AppConfig(BaseModel):
     opencode: _OpenCodeConfig = Field(default_factory=_OpenCodeConfig)
     poll_interval_seconds: int = Field(30, gt=0, description="Seconds between Linear poll cycles")
     turn_timeout_seconds: int = Field(1800, gt=0, description="Max seconds per AI turn")
+    auto_branch: bool = Field(
+        True,
+        description=(
+            "If true (default), switch the workspace to a per-ticket branch "
+            "during prepare() — Linear's branchName, or symphony/<id> as "
+            "fallback. If false, no branch switch runs and the workspace "
+            "stays on whatever git clone checked out (the remote default "
+            "branch). Useful when the agent commits straight to the default "
+            "branch and pushes are handled outside Symphony's scope."
+        ),
+    )
 
     @model_validator(mode="before")
     @classmethod

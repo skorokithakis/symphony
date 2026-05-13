@@ -1,6 +1,6 @@
 ---
 id: sym-irfzm
-status: open
+status: closed
 deps: []
 links: []
 created: 2026-05-13T02:29:14Z

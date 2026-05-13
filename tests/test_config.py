@@ -92,6 +92,20 @@ class TestLoadConfig:
         assert config.sandbox.hide_paths  # defaults populated
         assert config.poll_interval_seconds == 30
         assert config.turn_timeout_seconds == 1800
+        assert config.auto_branch is True  # default
+
+    def test_auto_branch_can_be_disabled(self, tmp_path: Path) -> None:
+        cfg = {
+            "linear": {
+                "api_key": "test-key",
+                "bot_user_email": "bot@example.com",
+            },
+            "auto_branch": False,
+        }
+        _write_yaml(tmp_path / "config.yaml", cfg)
+
+        config = load_config(tmp_path)
+        assert config.auto_branch is False
 
     def test_missing_required_field_raises(self, tmp_path: Path) -> None:
         cfg = {

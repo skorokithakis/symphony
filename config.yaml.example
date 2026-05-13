@@ -56,3 +56,13 @@ poll_interval_seconds: 30
 
 # Max seconds per AI turn before the process is killed (default: 1800).
 turn_timeout_seconds: 1800
+
+# Whether to switch the workspace to a per-ticket branch (default: true).
+# When true, prepare() switches to Linear's suggested branchName, or
+# symphony/<id> as a fallback (creating it if needed).
+# When false, prepare() skips the branch switch entirely and the agent
+# works on whatever branch git clone checked out (i.e. the remote default
+# branch). Useful when you've arranged for the agent to commit directly to
+# the default branch — pushing, credentials, and PR creation remain outside
+# Symphony's scope either way.
+# auto_branch: true

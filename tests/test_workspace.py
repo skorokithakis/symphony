@@ -510,6 +510,46 @@ class TestPrepareRemoveIntegration:
         # Clean up
         remove(ticket, str(workspace_root))
 
+    def test_auto_branch_disabled_skips_switch(self, tmp_path: Path) -> None:
+        """When auto_branch=False, no branch switch runs and HEAD stays on
+        whatever git clone checked out (the source repo's default branch)."""
+        _require_git()
+
+        workspace_root = tmp_path / "workspaces"
+        workspace_root.mkdir()
+
+        source_repo = tmp_path / "source"
+        _make_source_repo(source_repo)  # default branch: main
+
+        result_path = prepare(
+            ticket_identifier="TEAM-99",
+            repo_url=str(source_repo),
+            branch_name="symphony/team-99",  # supplied but should be ignored
+            workspace_root=str(workspace_root),
+            sandbox_hide_paths=[],
+            auto_branch=False,
+        )
+
+        branch_result = subprocess.run(
+            ["git", "branch", "--show-current"],
+            cwd=result_path,
+            capture_output=True,
+            text=True,
+        )
+        # HEAD stays on the clone default ("main"), not the supplied name.
+        assert branch_result.stdout.strip() == "main"
+
+        # And no symphony/team-99 branch was created.
+        list_result = subprocess.run(
+            ["git", "branch", "--list", "symphony/team-99"],
+            cwd=result_path,
+            capture_output=True,
+            text=True,
+        )
+        assert list_result.stdout.strip() == ""
+
+        remove("TEAM-99", str(workspace_root))
+
     def test_default_branch_naming(self, tmp_path: Path) -> None:
         """When branch_name is None, the default naming convention is used."""
         _require_git()

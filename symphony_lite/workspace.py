@@ -328,23 +328,26 @@ def prepare(
     sandbox_hide_paths: list[str],
     on_subprocess: Callable[[subprocess.Popen[bytes]], None] | None = None,
     sandbox_extra_rw_paths: list[str] | None = None,
+    auto_branch: bool = True,
 ) -> str:
     """Prepare a workspace for *ticket_identifier*.
 
     1. Sanitize the identifier to a safe directory name.
     2. Compute the workspace path and verify it is within *workspace_root*.
     3. Clone the repository if the directory does not already exist.
-    4. Switch to (or create) the target branch.
+    4. Switch to (or create) the target branch (skipped when ``auto_branch``
+       is false — the workspace stays on whatever ``git clone`` checked out).
     5. Run ``.symphony/setup`` inside the sandbox if present and executable.
 
     This function is idempotent: re-calling it on an existing workspace will
-    switch to the right branch and re-run setup.
+    switch to the right branch (when ``auto_branch`` is true) and re-run setup.
 
     Args:
         ticket_identifier: Human-readable ticket ID (e.g. ``TEAM-42``).
         repo_url: Git clone URL (supports local paths for testing).
         branch_name: Target branch name.  If ``None``, defaults to
-            ``symphony/<identifier_lower>``.
+            ``symphony/<identifier_lower>``. Ignored when ``auto_branch`` is
+            false.
         workspace_root: Root directory under which all workspaces live.
         sandbox_hide_paths: Paths to conceal inside the sandbox when running
             the setup script.
@@ -352,6 +355,9 @@ def prepare(
             setup script (if any), for external cancellation.
         sandbox_extra_rw_paths: Additional host paths to bind read-write inside
             the sandbox when running the setup script.
+        auto_branch: If true (default), switch to a per-ticket branch after
+            clone/fetch. If false, skip the branch switch entirely and leave
+            the workspace on the cloned default branch.
 
     Returns:
         The real path to the prepared workspace.
@@ -370,7 +376,7 @@ def prepare(
     workspace_path = os.path.join(workspace_root, workspace_key)
     real_path = _check_containment(workspace_path, workspace_root)
 
-    # Determine the target branch name
+    # Determine the target branch name (only relevant when auto_branch is on).
     if branch_name is None:
         branch_name = f"{_DEFAULT_BRANCH_PREFIX}{ticket_identifier.lower()}"
 
@@ -392,9 +398,15 @@ def prepare(
             description="fetch",
         )
 
-    # 4. Switch to (or create) the target branch.
-    logger.info("Switching to branch '%s' in %s", branch_name, real_path)
-    _git_switch_branch(branch_name, real_path)
+    # 4. Switch to (or create) the target branch — unless disabled.
+    if auto_branch:
+        logger.info("Switching to branch '%s' in %s", branch_name, real_path)
+        _git_switch_branch(branch_name, real_path)
+    else:
+        logger.info(
+            "auto_branch disabled — staying on cloned default branch in %s",
+            real_path,
+        )
 
     # 5. Run setup script if present
     _run_setup_script(real_path, sandbox_hide_paths, on_subprocess=on_subprocess,

@@ -251,7 +251,9 @@ ticket it:
 
 1. Looks up the project's `Repo` link to find the git URL.
 2. Clones/updates the repo into `<workspace>/<sanitized-identifier>`.
-3. Switches to the ticket's branch (or creates a new one).
+3. Switches to the ticket's branch (or creates a new one). Skipped when
+   `auto_branch: false` is set — the workspace stays on whatever `git clone`
+   checked out (the remote default branch).
 4. Runs `.symphony/setup` inside the sandbox if present.
 5. Launches `opencode run` inside the sandbox with the ticket title and
    description as the prompt.
