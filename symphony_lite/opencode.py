@@ -109,7 +109,6 @@ from __future__ import annotations
 
 import json
 import logging
-import os
 import subprocess
 from pathlib import Path
 from typing import Callable
@@ -281,23 +280,11 @@ def _execute(
     """
     home = str(Path.home())
 
-    # Build a PATH that includes well-known locations where opencode might be
-    # installed (npm global, local bin, etc.).  The sandbox clears the
-    # environment so we must be explicit.
-    sandbox_path = os.environ.get(
-        "SYMPHONY_SANDBOX_PATH",
-        "/usr/local/bin:/usr/bin:/bin:"
-        f"{home}/.npm-global/bin:{home}/.local/bin",
-    )
-
     proc = run_in_sandbox(
         cmd=cmd,
         workspace_path=workspace_path,
         hide_paths=hide_paths or [],
-        env={
-            "HOME": home,
-            "PATH": sandbox_path,
-        },
+        env={"HOME": home},
         stdout=subprocess.PIPE,
         stderr=subprocess.PIPE,
         extra_rw_paths=extra_rw_paths or [],

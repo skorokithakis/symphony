@@ -18,9 +18,11 @@ your message as input, runs another turn, and posts the result.
   pacman -S bubblewrap         # Arch
   ```
 - **OpenCode** — installed and authenticated (`opencode auth`). The daemon
-  invokes `opencode` inside the sandbox; `opencode` must be on `$PATH` (or
-  provide a custom `$PATH` via `SYMPHONY_SANDBOX_PATH` — see
-  `symphony_lite/opencode.py`).
+  invokes `opencode` inside the sandbox; the daemon's own `$PATH` is
+  inherited into the sandbox automatically, so any tool visible in the shell
+  that launched the daemon is also visible to the agent.  Set
+  `SYMPHONY_SANDBOX_PATH` to override this (useful when the daemon runs with
+  a stripped `$PATH`, e.g. under systemd).
 - **git** — configured and able to clone the target repos.
 
 ## Install
@@ -240,7 +242,8 @@ is mounted read-write; the rest of the host filesystem is read-only. Credential
 directories (SSH, GPG, cloud credentials, Docker socket) are concealed. The
 network namespace is shared so the agent can access the internet, but user/PID/
 IPC/UTS namespaces are isolated. The sandbox clears the host environment and
-provides only `HOME`, a minimal `PATH`, and whatever the caller sets.
+provides `HOME` and a `PATH` inherited from the daemon's own `$PATH` (override
+with `SYMPHONY_SANDBOX_PATH` for stripped-environment deployments).
 
 **Concurrency.** Up to 5 turns run in parallel across different tickets. Per-ticket
 tasks are serialised — a ticket won't get a new turn while a previous one is

@@ -49,8 +49,12 @@ def run_in_sandbox(
             expanded.
         env: Environment variables to set for the sandboxed process.  The
             host environment is **not** inherited (``--clearenv`` is used).
-            A minimal ``PATH`` is provided automatically if not present in
-            *env*.
+            If *env* does not contain ``"PATH"``, the PATH is resolved in
+            this order: (1) the ``SYMPHONY_SANDBOX_PATH`` environment
+            variable if set; (2) the daemon's own ``os.environ["PATH"]``
+            if set; (3) the hard-coded fallback
+            ``"/usr/local/bin:/usr/bin:/bin"``.  Pass ``"PATH"`` explicitly
+            in *env* to override this resolution entirely.
         stdin: Passed through to :class:`subprocess.Popen` (default ``None``).
         stdout: Passed through to :class:`subprocess.Popen` (default
             :data:`subprocess.PIPE`).
@@ -161,12 +165,17 @@ def run_in_sandbox(
     # Start with a clean slate so nothing leaks from the daemon.
     bwrap_args.append("--clearenv")
 
-    # Always provide a sensible PATH, but let the caller override.
+    # Resolve PATH if the caller did not supply one explicitly.
+    # Priority: caller-supplied PATH > SYMPHONY_SANDBOX_PATH env var >
+    # daemon's own os.environ["PATH"] > hard-coded fallback.
     env_to_set = dict(env)
     if "PATH" not in env_to_set:
-        bwrap_args.extend(
-            ["--setenv", "PATH", "/usr/local/bin:/usr/bin:/bin"]
-        )
+        if "SYMPHONY_SANDBOX_PATH" in os.environ:
+            env_to_set["PATH"] = os.environ["SYMPHONY_SANDBOX_PATH"]
+        elif "PATH" in os.environ:
+            env_to_set["PATH"] = os.environ["PATH"]
+        else:
+            env_to_set["PATH"] = "/usr/local/bin:/usr/bin:/bin"
     for key, value in env_to_set.items():
         bwrap_args.extend(["--setenv", key, value])
 
