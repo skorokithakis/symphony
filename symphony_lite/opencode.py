@@ -50,14 +50,42 @@ is a single JSON object.  The events observed during testing were:
       }
     }
 
-Other event types (e.g. ``"tool_use"``, ``"tool_result"``) may appear but are
-ignored by this module.
+**tool_use** – emitted when the assistant invokes a tool:
+    {
+      "type": "tool_use",
+      "sessionID": "ses_...",
+      "part": {
+        "id": "prt_...",
+        "messageID": "msg_...",
+        "sessionID": "ses_...",
+        "type": "tool-use",
+        "tool": "bash",
+        "state": {
+          "title": "Running shell command",
+          "status": "running"
+        }
+      }
+    }
+
+Other event types (e.g. ``"tool_result"``) may appear but are ignored by
+this module.
 
 Key observations:
 - ``sessionID`` appears at the top level of every event.  We grab it from the
   first event we see.
-- The final assistant message is the concatenation of all ``"text"`` events
-  received during the turn (in order).
+- The final assistant message is assembled from ``"text"`` and ``"tool_use"``
+  events in stream order:
+
+  * ``"text"`` events contribute ``part.text`` (when non-empty).
+  * ``"tool_use"`` events contribute ``*<part.state.title>*`` when
+    ``part.state.title`` is a non-empty string; otherwise ``*<part.tool>*``
+    when ``part.tool`` is a non-empty string; otherwise the event is skipped.
+  * All other event types are ignored.
+
+  Non-empty segments are joined with ``"\\n\\n"`` and the result is
+  ``.strip()``-ped.  This ensures tool invocations between text bursts are
+  visible in the Linear comment rather than silently elided.
+
 - ``stderr`` is empty on success; on failure it contains diagnostic output
   that we include in ``OpenCodeError``.
 - The stream is always valid line-delimited JSON.  Corrupt lines are logged
@@ -280,7 +308,7 @@ def _execute(
 
     # Parse the JSON stream from stdout with a timeout.
     session_id: str | None = None
-    text_parts: list[str] = []
+    parsed_events: list[dict] = []
     stderr_tail: str = ""
 
     try:
@@ -324,11 +352,7 @@ def _execute(
                 if sid:
                     session_id = sid
 
-            # Accumulate text from assistant text events.
-            if event.get("type") == "text":
-                text = event.get("part", {}).get("text")
-                if isinstance(text, str):
-                    text_parts.append(text)
+            parsed_events.append(event)
 
             # step_finish marks the end of the turn — we can stop reading
             # (though we've already read everything since communicate returned).
@@ -358,7 +382,7 @@ def _execute(
                 f"stderr: {stderr_tail[:2000]}"
             )
 
-        final_message = "".join(text_parts).strip()
+        final_message = _assemble_message(parsed_events)
 
         return session_id, final_message
 
@@ -370,6 +394,43 @@ def _execute(
                 proc.wait(timeout=5)
             except Exception:
                 pass
+
+
+def _assemble_message(events: list[dict]) -> str:
+    """Build the final assistant message from a list of parsed NDJSON event dicts.
+
+    Walks *events* in order and collects non-empty segments:
+
+    * ``"text"`` events contribute ``part.text`` when non-empty.
+    * ``"tool_use"`` events contribute ``*<part.state.title>*`` when the title
+      is a non-empty string; otherwise ``*<part.tool>*`` when the tool name is
+      a non-empty string; otherwise the event is skipped entirely.
+    * All other event types are ignored.
+
+    Segments are joined with ``"\\n\\n"`` and the result is ``.strip()``-ped.
+    """
+    segments: list[str] = []
+    for event in events:
+        event_type = event.get("type")
+        part = event.get("part", {})
+
+        if event_type == "text":
+            text = part.get("text")
+            if isinstance(text, str) and text:
+                segments.append(text)
+
+        elif event_type == "tool_use":
+            state = part.get("state") or {}
+            title = state.get("title")
+            if isinstance(title, str) and title:
+                segments.append(f"*{title}*")
+            else:
+                tool = part.get("tool")
+                if isinstance(tool, str) and tool:
+                    segments.append(f"*{tool}*")
+            # If neither title nor tool is available, skip the event.
+
+    return "\n\n".join(segments).strip()
 
 
 def _tail(text: str, lines: int = 30) -> str:
