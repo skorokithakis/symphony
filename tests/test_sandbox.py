@@ -274,39 +274,48 @@ class TestRunInSandbox:
             f"Host environment leaked into sandbox: {output}"
         )
 
-    def test_tilde_expansion_in_hide_paths(self, tmp_path: Path) -> None:
+    def test_tilde_expansion_in_hide_paths(
+        self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
         """Verify that tilde-prefixed hide paths are expanded correctly."""
         _require_bwrap()
 
         workspace = tmp_path / "workspace"
         workspace.mkdir()
 
-        home = str(Path.home())
-        # Make a test directory under home to hide
-        test_dir = Path(home) / ".symphony_smoke_test_dir"
-        test_dir.mkdir(exist_ok=True)
+        fake_home = tmp_path / "fake_home"
+        fake_home.mkdir()
+
+        # Both host-side expanduser (in sandbox._expand) and bwrap process need
+        # HOME set to fake_home for the tilde to resolve correctly.
+        monkeypatch.setenv("HOME", str(fake_home))
+
+        # Make a test directory under fake_home to hide
+        test_dir = fake_home / ".symphony_smoke_test_dir"
+        test_dir.mkdir()
         (test_dir / "secret").write_text("hidden")
-        try:
-            proc = run_in_sandbox(
-                cmd=[
-                    "bash",
-                    "-c",
-                    f'if [[ -f "{test_dir}/secret" ]]; then echo "VISIBLE"; else echo "MASKED"; fi',
-                ],
-                workspace_path=str(workspace),
-                hide_paths=["~/.symphony_smoke_test_dir"],
-                env={"HOME": home},
-                stdout=subprocess.PIPE,
-                stderr=subprocess.PIPE,
-            )
 
-            stdout, stderr = proc.communicate(timeout=30)
-            output = stdout.decode(errors="replace").strip()
+        proc = run_in_sandbox(
+            cmd=[
+                "bash",
+                "-c",
+                (
+                    f'if [[ -f "{test_dir}/secret" ]]; then '
+                    f'echo "VISIBLE"; else echo "MASKED"; fi'
+                ),
+            ],
+            workspace_path=str(workspace),
+            hide_paths=["~/.symphony_smoke_test_dir"],
+            env={"HOME": str(fake_home)},
+            stdout=subprocess.PIPE,
+            stderr=subprocess.PIPE,
+        )
 
-            assert proc.returncode == 0
-            assert output == "MASKED", f"Expected MASKED, got: {output}"
-        finally:
-            shutil.rmtree(test_dir, ignore_errors=True)
+        stdout, stderr = proc.communicate(timeout=30)
+        output = stdout.decode(errors="replace").strip()
+
+        assert proc.returncode == 0
+        assert output == "MASKED", f"Expected MASKED, got: {output}"
 
     def test_bind_try_for_cache_dirs(self, tmp_path: Path) -> None:
         """Verify that --bind-try for .cache and .local/share does not fail
@@ -344,7 +353,9 @@ class TestRunInSandbox:
             if old_home:
                 os.environ["HOME"] = old_home
 
-    def test_opencode_dirs_writable(self, tmp_path: Path) -> None:
+    def test_opencode_dirs_writable(
+        self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
         """Verify that ~/.opencode and ~/.local/share/opencode are writable
         inside the sandbox when they exist on the host."""
         _require_bwrap()
@@ -352,47 +363,44 @@ class TestRunInSandbox:
         workspace = tmp_path / "workspace"
         workspace.mkdir()
 
-        home = str(Path.home())
+        fake_home = tmp_path / "fake_home"
+        fake_home.mkdir()
 
-        # Ensure both directories exist on the host so --bind-try actually binds them.
-        opencode_legacy = Path(home) / ".opencode"
-        opencode_xdg = Path(home) / ".local" / "share" / "opencode"
+        # Both host-side expanduser (in sandbox.py) and bwrap process need
+        # HOME set to fake_home so the --bind-try paths resolve to fake_home.
+        monkeypatch.setenv("HOME", str(fake_home))
 
-        created: list[Path] = []
-        for d in [opencode_legacy, opencode_xdg]:
-            if not d.exists():
-                d.mkdir(parents=True, exist_ok=True)
-                created.append(d)
+        # Create OpenCode dirs under fake_home so --bind-try actually binds them.
+        opencode_legacy = fake_home / ".opencode"
+        opencode_xdg = fake_home / ".local" / "share" / "opencode"
+        opencode_legacy.mkdir(parents=True, exist_ok=True)
+        opencode_xdg.mkdir(parents=True, exist_ok=True)
 
-        try:
-            proc = run_in_sandbox(
-                cmd=[
-                    "bash",
-                    "-c",
-                    (
-                        f'touch "{opencode_legacy}/.writetest" 2>&1 && echo "LEGACY_OK" || echo "LEGACY_FAIL";'
-                        f'touch "{opencode_xdg}/.writetest" 2>&1 && echo "XDG_OK" || echo "XDG_FAIL";'
-                        f'rm -f "{opencode_legacy}/.writetest" "{opencode_xdg}/.writetest"'
-                    ),
-                ],
-                workspace_path=str(workspace),
-                hide_paths=[],
-                env={"HOME": home},
-                stdout=subprocess.PIPE,
-                stderr=subprocess.PIPE,
-            )
+        proc = run_in_sandbox(
+            cmd=[
+                "bash",
+                "-c",
+                (
+                    f'touch "{opencode_legacy}/.writetest" 2>&1 && echo "LEGACY_OK" || echo "LEGACY_FAIL";'
+                    f'touch "{opencode_xdg}/.writetest" 2>&1 && echo "XDG_OK" || echo "XDG_FAIL";'
+                    f'rm -f "{opencode_legacy}/.writetest" "{opencode_xdg}/.writetest"'
+                ),
+            ],
+            workspace_path=str(workspace),
+            hide_paths=[],
+            env={"HOME": str(fake_home)},
+            stdout=subprocess.PIPE,
+            stderr=subprocess.PIPE,
+        )
 
-            stdout, stderr = proc.communicate(timeout=30)
-            output = stdout.decode(errors="replace").strip()
+        stdout, stderr = proc.communicate(timeout=30)
+        output = stdout.decode(errors="replace").strip()
 
-            assert proc.returncode == 0, (
-                f"Sandbox failed: stderr={stderr.decode(errors='replace')}"
-            )
-            assert "LEGACY_OK" in output, f"~/.opencode not writable: {output}"
-            assert "XDG_OK" in output, f"~/.local/share/opencode not writable: {output}"
-        finally:
-            for d in created:
-                shutil.rmtree(d, ignore_errors=True)
+        assert proc.returncode == 0, (
+            f"Sandbox failed: stderr={stderr.decode(errors='replace')}"
+        )
+        assert "LEGACY_OK" in output, f"~/.opencode not writable: {output}"
+        assert "XDG_OK" in output, f"~/.local/share/opencode not writable: {output}"
 
     def test_opencode_dirs_missing_ok(self, tmp_path: Path) -> None:
         """Verify that --bind-try for ~/.opencode and ~/.local/share/opencode
