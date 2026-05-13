@@ -28,4 +28,3 @@ Tests:
 ## Acceptance Criteria
 
 Existing tests pass. New config field round-trips through YAML. When qa_state is configured and an issue is in that state, the daemon tracks it and does not clean it up.
-

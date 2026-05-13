@@ -38,4 +38,3 @@ pagination or "comment_id missing" behaviour.
 ## Acceptance Criteria
 
 After the fix, a Linear response with [newest, ..., oldest] yields ascending output, and list_comments_since(id, last_seen_id) returns only the comments newer than last_seen_id. Full unit suite passes.
-

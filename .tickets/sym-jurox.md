@@ -29,4 +29,3 @@ Use `_post_comment_safe` (consistent with the rest of the file) and follow the e
 - Auto-cloning a fresh workspace on QA entry. The reason it's not in scope: the agent's commits live only in the local workspace clone (push is out of Symphony's responsibility), so a fresh clone would serve the wrong code. Deferred.
 - De-duping the comment beyond the transition. The transition out of QA is the de-dup mechanism — if the user moves it back to QA without re-triggering, getting the comment again is fine.
 - Anything about the "Cloning ... (branch: X)" log line in workspace.py (separate concern; not in this ticket).
-

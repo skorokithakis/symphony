@@ -29,7 +29,13 @@ from symphony_lite.opencode import (
     run_resume,
 )
 from symphony_lite.state import StateManager, TicketState, TicketStatus
-from symphony_lite.workspace import ServeScriptMissing, WorkspaceError, prepare, remove, start_serve
+from symphony_lite.workspace import (
+    ServeScriptMissing,
+    WorkspaceError,
+    prepare,
+    remove,
+    start_serve,
+)
 
 logger = logging.getLogger(__name__)
 
@@ -128,7 +134,13 @@ def _format_serve_died_comment(rc: int | None, stdout: str, stderr: str) -> str:
 
 
 class Orchestrator:
-    def __init__(self, config: AppConfig, state: StateManager, linear: LinearClient, workspace: Path) -> None:
+    def __init__(
+        self,
+        config: AppConfig,
+        state: StateManager,
+        linear: LinearClient,
+        workspace: Path,
+    ) -> None:
         self._config = config
         self._state = state
         self._linear = linear
@@ -161,8 +173,10 @@ class Orchestrator:
 
     def run(self) -> None:
         self._install_signal_handlers()
-        logger.info("symphony-lite daemon starting (poll interval=%ds)",
-                     self._config.poll_interval_seconds)
+        logger.info(
+            "symphony-lite daemon starting (poll interval=%ds)",
+            self._config.poll_interval_seconds,
+        )
         self._recover_state()
         try:
             while not self._shutdown.is_set():
@@ -181,7 +195,9 @@ class Orchestrator:
     def _recover_state(self) -> None:
         for ticket_state in list(self._state.tickets):
             if ticket_state.status == TicketStatus.bootstrapping:
-                logger.info("Recovery: dropping bootstrapping %s", ticket_state.ticket_id)
+                logger.info(
+                    "Recovery: dropping bootstrapping %s", ticket_state.ticket_id
+                )
                 if ticket_state.metadata_comment_id:
                     # A metadata comment was already posted; edit it rather
                     # than leave it looking like a normal run.
@@ -198,7 +214,9 @@ class Orchestrator:
                         )
                 self._state.remove(ticket_state.ticket_id)
             elif ticket_state.status == TicketStatus.working:
-                logger.info("Recovery: found orphaned working %s", ticket_state.ticket_id)
+                logger.info(
+                    "Recovery: found orphaned working %s", ticket_state.ticket_id
+                )
                 self._recover_working_ticket(ticket_state)
         self._state.save()
         logger.info("Startup recovery complete")
@@ -246,16 +264,25 @@ class Orchestrator:
         for issue in issues:
             # Skip any pipeline scheduling while the ticket is in QA — the serve
             # handles it; the agent should not run concurrently.
-            if self._config.linear.qa_state is not None and issue.state == self._config.linear.qa_state:
-                logger.debug("Skipping step-2 scheduling for %s: ticket is in QA state", issue.id)
+            if (
+                self._config.linear.qa_state is not None
+                and issue.state == self._config.linear.qa_state
+            ):
+                logger.debug(
+                    "Skipping step-2 scheduling for %s: ticket is in QA state", issue.id
+                )
                 continue
 
             existing = self._state.get(issue.id)
             if existing is not None:
                 # Retry setup-error tickets if user commented.
                 if existing.setup_error is not None:
-                    if self._has_new_human_comment(issue.id, existing.last_seen_comment_id):
-                        logger.info("User commented on setup-error %s – retrying", issue.id)
+                    if self._has_new_human_comment(
+                        issue.id, existing.last_seen_comment_id
+                    ):
+                        logger.info(
+                            "User commented on setup-error %s – retrying", issue.id
+                        )
                         with self._state_lock:
                             existing.setup_error = None
                             existing.updated_at = _iso_now()
@@ -263,11 +290,18 @@ class Orchestrator:
                             self._state.save()
                         self._schedule_task(issue.id, self._new_ticket_pipeline, issue)
                 # Retry failed-no-session tickets if user commented (B1).
-                elif (existing.status == TicketStatus.failed
-                      and existing.session_id is None
-                      and existing.setup_error is None):
-                    if self._has_new_human_comment(issue.id, existing.last_seen_comment_id):
-                        logger.info("User commented on failed-no-session %s – retrying initial", issue.id)
+                elif (
+                    existing.status == TicketStatus.failed
+                    and existing.session_id is None
+                    and existing.setup_error is None
+                ):
+                    if self._has_new_human_comment(
+                        issue.id, existing.last_seen_comment_id
+                    ):
+                        logger.info(
+                            "User commented on failed-no-session %s – retrying initial",
+                            issue.id,
+                        )
                         self._schedule_task(issue.id, self._new_ticket_pipeline, issue)
                 continue  # known ticket
 
@@ -309,7 +343,10 @@ class Orchestrator:
 
             logger.info(
                 "Ticket %s no longer triggered (state=%s labels=%s archived=%s) — cleaning up",
-                tid, current.state, current.labels, current.archived_at is not None,
+                tid,
+                current.state,
+                current.labels,
+                current.archived_at is not None,
             )
             self._cancel_ticket(tid)
             identifier = ticket_state.ticket_identifier
@@ -339,9 +376,11 @@ class Orchestrator:
                 continue
             if st == TicketStatus.working:
                 fetched = issues_by_id.get(tid)
-                if (fetched is not None
-                        and self._config.linear.qa_state is not None
-                        and fetched.state == self._config.linear.qa_state):
+                if (
+                    fetched is not None
+                    and self._config.linear.qa_state is not None
+                    and fetched.state == self._config.linear.qa_state
+                ):
                     logger.debug("Skipping recovery for working QA ticket %s", tid)
                     continue
                 self._schedule_task(tid, self._recover_working_ticket, ticket_state)
@@ -356,7 +395,9 @@ class Orchestrator:
     # QA serve reconciliation
     # ==================================================================
 
-    def _reconcile_serve(self, issues: list[Issue], issues_by_id: dict[str, Issue]) -> None:
+    def _reconcile_serve(
+        self, issues: list[Issue], issues_by_id: dict[str, Issue]
+    ) -> None:
         """Reconcile the active QA serve process against the current set of issues.
 
         Called once per tick after pipeline scheduling.  No-op when qa_state is
@@ -379,7 +420,8 @@ class Orchestrator:
             rc = av.proc.returncode
             logger.info(
                 "QA serve for %s exited (rc=%s) post-watchdog — notifying",
-                av.ticket_identifier, rc,
+                av.ticket_identifier,
+                rc,
             )
             if not av.failure_comment_posted:
                 stdout_text = bytes(av.stdout_head).decode(errors="replace")
@@ -388,11 +430,17 @@ class Orchestrator:
                 try:
                     self._linear.post_comment(av.ticket_id, body)
                 except Exception:
-                    logger.exception("Failed to post serve-died comment for %s", av.ticket_id)
+                    logger.exception(
+                        "Failed to post serve-died comment for %s", av.ticket_id
+                    )
             try:
-                self._linear.transition_to_state(av.ticket_id, self._config.linear.needs_input_state)
+                self._linear.transition_to_state(
+                    av.ticket_id, self._config.linear.needs_input_state
+                )
             except Exception:
-                logger.exception("Failed to transition %s after serve died", av.ticket_id)
+                logger.exception(
+                    "Failed to transition %s after serve died", av.ticket_id
+                )
             # Prune from qa_tickets so we don't re-serve this tick.
             qa_tickets = [t for t in qa_tickets if t.id != av.ticket_id]
             qa_ids = {t.id for t in qa_tickets}
@@ -423,7 +471,8 @@ class Orchestrator:
         if active_id is not None and active_id != winner_id:
             logger.info(
                 "QA winner changed from %s to %s — killing old serve",
-                active_id, winner_id,
+                active_id,
+                winner_id,
             )
             self._kill_active_serve()
             active_id = None
@@ -434,12 +483,17 @@ class Orchestrator:
                 continue
             logger.info(
                 "Bumping %s out of QA — %s is the winner",
-                loser.identifier, winner.identifier,
+                loser.identifier,
+                winner.identifier,
             )
             try:
-                self._linear.transition_to_state(loser.id, self._config.linear.needs_input_state)
+                self._linear.transition_to_state(
+                    loser.id, self._config.linear.needs_input_state
+                )
             except LinearError:
-                logger.exception("Failed to transition bumped ticket %s to needs_input", loser.id)
+                logger.exception(
+                    "Failed to transition bumped ticket %s to needs_input", loser.id
+                )
                 continue  # skip comment — loser still in QA, will retry next tick
             try:
                 self._linear.post_comment(
@@ -465,7 +519,10 @@ class Orchestrator:
 
         # Cancel any in-flight agent task for the winner before starting the serve.
         with self._task_lock:
-            has_inflight = winner_id in self._active_tasks and not self._active_tasks[winner_id].done()
+            has_inflight = (
+                winner_id in self._active_tasks
+                and not self._active_tasks[winner_id].done()
+            )
         if has_inflight:
             logger.info(
                 "Cancelling in-flight task for QA winner %s before starting serve",
@@ -473,7 +530,9 @@ class Orchestrator:
             )
             self._cancel_ticket(winner_id)
 
-        logger.info("Starting QA serve for %s (workspace=%s)", winner.identifier, workspace_path)
+        logger.info(
+            "Starting QA serve for %s (workspace=%s)", winner.identifier, workspace_path
+        )
         try:
             proc = start_serve(
                 workspace_path=workspace_path,
@@ -523,7 +582,8 @@ class Orchestrator:
         except LinearError:
             logger.exception(
                 "Failed to transition QA winner %s to needs_input (%s)",
-                ticket_id, log_reason,
+                ticket_id,
+                log_reason,
             )
             return
         self._post_comment_safe(
@@ -553,12 +613,15 @@ class Orchestrator:
         # Process exited within 10s.
         rc = av.proc.returncode
         if rc == 0:
-            logger.info("QA serve for %s exited cleanly (rc=0) within 10s", av.ticket_identifier)
+            logger.info(
+                "QA serve for %s exited cleanly (rc=0) within 10s", av.ticket_identifier
+            )
         elif av.intentional_kill.is_set():
             # Fix 1: we killed it ourselves — suppress the failure comment.
             logger.info(
                 "QA serve for %s killed intentionally (rc=%s) — suppressing comment",
-                av.ticket_identifier, rc,
+                av.ticket_identifier,
+                rc,
             )
         else:
             # Brief pause to let drainers capture post-mortem output.
@@ -566,15 +629,20 @@ class Orchestrator:
             stderr_text = bytes(av.stderr_head).decode(errors="replace")
             stdout_text = bytes(av.stdout_head).decode(errors="replace")
             body = _format_serve_died_comment(rc, stdout_text, stderr_text)
-            logger.error("QA serve for %s exited with rc=%s within 10s", av.ticket_identifier, rc)
+            logger.error(
+                "QA serve for %s exited with rc=%s within 10s", av.ticket_identifier, rc
+            )
             self._post_comment_safe(av.ticket_id, body)
             av.failure_comment_posted = True
             # Transition the ticket out of QA so the next tick doesn't respawn the serve.
             try:
-                self._linear.transition_to_state(av.ticket_id, self._config.linear.needs_input_state)
+                self._linear.transition_to_state(
+                    av.ticket_id, self._config.linear.needs_input_state
+                )
             except LinearError:
                 logger.exception(
-                    "Failed to transition %s out of QA after serve failure", av.ticket_id
+                    "Failed to transition %s out of QA after serve failure",
+                    av.ticket_id,
                 )
 
         # Clear _active_serve (only if it still points to this _ActiveServe).
@@ -687,7 +755,10 @@ class Orchestrator:
 
         # Also kill the QA serve if this ticket owns it.
         with self._serve_lock:
-            if self._active_serve is not None and self._active_serve.ticket_id == ticket_id:
+            if (
+                self._active_serve is not None
+                and self._active_serve.ticket_id == ticket_id
+            ):
                 serve_av = self._active_serve
                 self._active_serve = None
             else:
@@ -705,7 +776,9 @@ class Orchestrator:
         with self._subprocess_lock:
             return ticket_id in self._cancelled
 
-    def _register_subprocess(self, ticket_id: str, proc: subprocess.Popen[bytes]) -> bool:
+    def _register_subprocess(
+        self, ticket_id: str, proc: subprocess.Popen[bytes]
+    ) -> bool:
         """Register a Popen for cancellation.  Returns False if already cancelled (S1)."""
         with self._subprocess_lock:
             if ticket_id in self._cancelled:
@@ -747,19 +820,23 @@ class Orchestrator:
         # --- Check project + Repo link ---
         if issue.project is None or issue.project.id is None:
             logger.warning("Ticket %s has no project", tid)
-            err_comment = self._post_comment_safe(tid,
+            err_comment = self._post_comment_safe(
+                tid,
                 "**Symphony error**: No project linked to this ticket.",
-                return_comment=True)
+                return_comment=True,
+            )
             self._save_setup_error(tid, issue, "no_project", err_comment)
             return
 
         repo_url = _find_repo_link(issue.project, self._linear)
         if repo_url is None:
             logger.warning("Ticket %s has no Repo link", tid)
-            err_comment = self._post_comment_safe(tid,
+            err_comment = self._post_comment_safe(
+                tid,
                 "**Symphony error**: No `Repo` link found on the project. "
                 "Add one and re-trigger.",
-                return_comment=True)
+                return_comment=True,
+            )
             self._save_setup_error(tid, issue, "no_repo_link", err_comment)
             return
 
@@ -797,15 +874,19 @@ class Orchestrator:
                 branch_name=issue.branch_name,
                 workspace_root=str(self._workspace),
                 sandbox_hide_paths=self._config.sandbox.hide_paths,
-                on_subprocess=lambda proc: self._register_subprocess(tid, proc),
+                on_subprocess=lambda proc: (self._register_subprocess(tid, proc), None)[
+                    1
+                ],
                 sandbox_extra_rw_paths=self._config.sandbox.extra_rw_paths,
                 auto_branch=self._config.auto_branch,
             )
         except (WorkspaceError, FileNotFoundError) as exc:
             logger.error("Workspace preparation failed for %s: %s", tid, exc)
-            err_comment = self._post_comment_safe(tid,
+            err_comment = self._post_comment_safe(
+                tid,
                 f"**Symphony error**: Workspace preparation failed:\n```\n{exc}\n```",
-                return_comment=True)
+                return_comment=True,
+            )
             self._save_setup_error(tid, issue, str(exc), err_comment)
             return
 
@@ -822,8 +903,11 @@ class Orchestrator:
         try:
             self._linear.transition_to_state(tid, self._config.linear.in_progress_state)
         except Exception:
-            logger.exception("Failed to transition %s to '%s'",
-                             tid, self._config.linear.in_progress_state)
+            logger.exception(
+                "Failed to transition %s to '%s'",
+                tid,
+                self._config.linear.in_progress_state,
+            )
 
         if self._is_cancelled(tid):
             return
@@ -867,16 +951,20 @@ class Orchestrator:
                 prompt=prompt,
                 model=self._config.opencode.model,
                 timeout_seconds=self._config.turn_timeout_seconds,
-                on_subprocess=lambda proc: self._register_subprocess(tid, proc),
+                on_subprocess=lambda proc: (self._register_subprocess(tid, proc), None)[
+                    1
+                ],
                 hide_paths=self._config.sandbox.hide_paths,
                 extra_rw_paths=self._config.sandbox.extra_rw_paths,
             )
         except OpenCodeTimeout:
             logger.error("OpenCode turn timed out for %s", tid)
-            err_comment = self._post_comment_safe(tid,
+            err_comment = self._post_comment_safe(
+                tid,
                 f"**Symphony error**: The AI turn timed out after "
                 f"{self._config.turn_timeout_seconds}s.",
-                return_comment=True)
+                return_comment=True,
+            )
             with self._state_lock:
                 ticket_state.status = TicketStatus.failed
                 ticket_state.updated_at = _iso_now()
@@ -891,9 +979,11 @@ class Orchestrator:
             return
         except OpenCodeError as exc:
             logger.error("OpenCode failed for %s: %s", tid, exc)
-            err_comment = self._post_comment_safe(tid,
+            err_comment = self._post_comment_safe(
+                tid,
                 f"**Symphony error**: The AI turn failed:\n```\n{exc}\n```",
-                return_comment=True)
+                return_comment=True,
+            )
             with self._state_lock:
                 ticket_state.status = TicketStatus.failed
                 ticket_state.updated_at = _iso_now()
@@ -947,12 +1037,17 @@ class Orchestrator:
         try:
             self._linear.transition_to_state(tid, self._config.linear.needs_input_state)
         except Exception:
-            logger.exception("Failed to transition %s to '%s'",
-                             tid, self._config.linear.needs_input_state)
+            logger.exception(
+                "Failed to transition %s to '%s'",
+                tid,
+                self._config.linear.needs_input_state,
+            )
             transition_ok = False
 
         with self._state_lock:
-            ticket_state.status = TicketStatus.needs_input if transition_ok else TicketStatus.failed
+            ticket_state.status = (
+                TicketStatus.needs_input if transition_ok else TicketStatus.failed
+            )
             ticket_state.updated_at = _iso_now()
             self._state.upsert(ticket_state)
             self._state.save()
@@ -974,7 +1069,8 @@ class Orchestrator:
 
         try:
             new_comments = self._linear.list_comments_since(
-                tid, ticket_state.last_seen_comment_id,
+                tid,
+                ticket_state.last_seen_comment_id,
             )
         except Exception:
             logger.exception("Failed to fetch comments for %s", tid)
@@ -988,15 +1084,21 @@ class Orchestrator:
         if self._is_cancelled(tid):
             return
 
-        logger.info("Resume pipeline starting for %s (%d new human comment(s))",
-                    tid, len(human_comments))
+        logger.info(
+            "Resume pipeline starting for %s (%d new human comment(s))",
+            tid,
+            len(human_comments),
+        )
         message = _format_comments_message(human_comments)
 
         try:
             self._linear.transition_to_state(tid, self._config.linear.in_progress_state)
         except Exception:
-            logger.exception("Failed to transition %s to '%s'",
-                             tid, self._config.linear.in_progress_state)
+            logger.exception(
+                "Failed to transition %s to '%s'",
+                tid,
+                self._config.linear.in_progress_state,
+            )
 
         with self._state_lock:
             ticket_state.status = TicketStatus.working
@@ -1013,16 +1115,20 @@ class Orchestrator:
                 session_id=ticket_state.session_id or "",
                 message=message,
                 timeout_seconds=self._config.turn_timeout_seconds,
-                on_subprocess=lambda proc: self._register_subprocess(tid, proc),
+                on_subprocess=lambda proc: (self._register_subprocess(tid, proc), None)[
+                    1
+                ],
                 hide_paths=self._config.sandbox.hide_paths,  # B3
                 extra_rw_paths=self._config.sandbox.extra_rw_paths,
             )
         except OpenCodeTimeout:
             logger.error("OpenCode resume timed out for %s", tid)
-            err_comment = self._post_comment_safe(tid,
+            err_comment = self._post_comment_safe(
+                tid,
                 f"**Symphony error**: The AI turn timed out after "
                 f"{self._config.turn_timeout_seconds}s.",
-                return_comment=True)
+                return_comment=True,
+            )
             with self._state_lock:
                 ticket_state.status = TicketStatus.failed
                 ticket_state.updated_at = _iso_now()
@@ -1036,9 +1142,11 @@ class Orchestrator:
             return
         except OpenCodeError as exc:
             logger.error("OpenCode resume failed for %s: %s", tid, exc)
-            err_comment = self._post_comment_safe(tid,
+            err_comment = self._post_comment_safe(
+                tid,
                 f"**Symphony error**: The AI turn failed:\n```\n{exc}\n```",
-                return_comment=True)
+                return_comment=True,
+            )
             with self._state_lock:
                 ticket_state.status = TicketStatus.failed
                 ticket_state.updated_at = _iso_now()
@@ -1071,12 +1179,17 @@ class Orchestrator:
         try:
             self._linear.transition_to_state(tid, self._config.linear.needs_input_state)
         except Exception:
-            logger.exception("Failed to transition %s to '%s'",
-                             tid, self._config.linear.needs_input_state)
+            logger.exception(
+                "Failed to transition %s to '%s'",
+                tid,
+                self._config.linear.needs_input_state,
+            )
             transition_ok = False
 
         with self._state_lock:
-            ticket_state.status = TicketStatus.needs_input if transition_ok else TicketStatus.failed
+            ticket_state.status = (
+                TicketStatus.needs_input if transition_ok else TicketStatus.failed
+            )
             ticket_state.updated_at = _iso_now()
             self._state.upsert(ticket_state)
             self._state.save()
@@ -1087,7 +1200,9 @@ class Orchestrator:
     # Shared helpers
     # ==================================================================
 
-    def _post_comment_safe(self, tid: str, body: str, *, return_comment: bool = False) -> Comment | None:
+    def _post_comment_safe(
+        self, tid: str, body: str, *, return_comment: bool = False
+    ) -> Comment | None:
         try:
             comment = self._linear.post_comment(tid, body)
             return comment if return_comment else None
@@ -1114,7 +1229,10 @@ class Orchestrator:
             return None
 
     def _save_setup_error(
-        self, tid: str, issue: Issue, error_code: str,
+        self,
+        tid: str,
+        issue: Issue,
+        error_code: str,
         error_comment: Comment | None = None,
     ) -> None:
         """Save failed state with setup_error, using error comment id as baseline (S3)."""
@@ -1126,7 +1244,9 @@ class Orchestrator:
             ticket_id=tid,
             ticket_identifier=issue.identifier,
             project_id=issue.project.id if issue.project else None,
-            repo_url="", workspace_path="", branch=branch,
+            repo_url="",
+            workspace_path="",
+            branch=branch,
             status=TicketStatus.failed,
             setup_error=error_code,
             last_seen_comment_id=error_comment.id if error_comment else None,

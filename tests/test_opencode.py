@@ -140,7 +140,9 @@ class TestAssembleMessage:
         """The tool_use fixture file produces the expected assembled message."""
         events = _load_fixture_events("opencode_events_tool_use.jsonl")
         result = _assemble_message(events)
-        assert result == "Let me check that for you.\n\n*Running shell command*\n\nDone."
+        assert (
+            result == "Let me check that for you.\n\n*Running shell command*\n\nDone."
+        )
 
     def test_italics_use_single_asterisks(self) -> None:
         """Tool labels must use *foo* (single asterisk), not _foo_ or **foo**."""
@@ -156,7 +158,9 @@ class TestAssembleMessage:
 # ---------------------------------------------------------------------------
 
 
-def _load_fixture_events(filename: str = "opencode_events.jsonl") -> list[dict[str, Any]]:
+def _load_fixture_events(
+    filename: str = "opencode_events.jsonl",
+) -> list[dict[str, Any]]:
     """Load the recorded OpenCode JSON events from the fixture file."""
     fixture_path = FIXTURE_DIR / filename
     raw = fixture_path.read_text()

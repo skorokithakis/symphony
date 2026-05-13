@@ -43,4 +43,3 @@ Out of scope: streaming intermediate output anywhere, token tracking, tool-call 
 ## Acceptance Criteria
 
 Initial run returns a valid session id and the assistant's final message. Resume with that session id produces a context-aware second message. Timeout kills the process and raises `OpenCodeTimeout`. Non-zero exit raises `OpenCodeError`. External kill via Popen handle raises `OpenCodeCancelled`.
-

@@ -28,4 +28,3 @@ Extend `tests/fixtures/opencode_events.jsonl` (or add a second fixture) with a t
 ## Acceptance Criteria
 
 Final message for a text → tool_use(title) → text stream is `<text1>\n\n*<title>*\n\n<text2>` after stripping. Existing fixture in tests/fixtures/opencode_events.jsonl still yields `hi`. Markdown italics use single asterisks (`*foo*`), not underscores.
-

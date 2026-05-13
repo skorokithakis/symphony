@@ -36,4 +36,3 @@ Non-goals:
 ## Acceptance Criteria
 
 config.py no longer references workspace_root or SYMPHONY_CONFIG; load_config takes a workspace_dir and reads config.yaml from it; LINEAR_API_KEY env var works when api_key is unset in YAML; state.py's load_state takes a workspace_dir and reads/writes state.json there; tests for config and state pass.
-

@@ -30,4 +30,3 @@ Non-goals:
 Caveats:
 - Use --bind, not --bind-try, for extra_rw_paths.
 - Order matters: extras must be applied before hide_paths so hide wins on collision (later bwrap mounts override earlier).
-

@@ -322,7 +322,9 @@ def _execute(
         # Raw OpenCode output; only useful when diagnosing parse/protocol issues.
         logger.debug("=== raw OpenCode stdout ===\n%s\n=== end stdout ===", stdout_text)
         if stderr_tail:
-            logger.debug("=== raw OpenCode stderr ===\n%s\n=== end stderr ===", stderr_tail)
+            logger.debug(
+                "=== raw OpenCode stderr ===\n%s\n=== end stderr ===", stderr_tail
+            )
 
         # ------------------------------------------------------------------
         # Parse NDJSON events.
@@ -357,14 +359,11 @@ def _execute(
         # Detect external kill (negative returncode = killed by signal).
         # Check this before non-zero exit so we can distinguish.
         if exit_code is not None and exit_code < 0:
-            raise OpenCodeCancelled(
-                f"OpenCode process killed by signal {-exit_code}"
-            )
+            raise OpenCodeCancelled(f"OpenCode process killed by signal {-exit_code}")
 
         if exit_code != 0:
             raise OpenCodeError(
-                f"OpenCode exited with code {exit_code}\n"
-                f"stderr: {stderr_tail[:2000]}"
+                f"OpenCode exited with code {exit_code}\nstderr: {stderr_tail[:2000]}"
             )
 
         if session_id is None:

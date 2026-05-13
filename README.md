@@ -35,7 +35,7 @@ input, runs another turn, and posts the result.
 pip install .
 ```
 
-The package name is `symphony-lite`. The CLI entry point is `symphony-lite`.
+The package name is `symphony-linear`. The CLI entry point is `symphony`.
 
 ---
 
@@ -201,7 +201,7 @@ as a fallback.
 ### Validate
 
 ```bash
-symphony-lite --validate-config
+symphony --validate-config
 ```
 
 Exits 0 if the config is valid, prints a summary, and stops. Use this to check
@@ -212,15 +212,15 @@ your config before launching the daemon.
 ## Running
 
 ```bash
-symphony-lite
+symphony
 ```
 
 Runs in the foreground. Start it in tmux, screen, or nohup:
 
 ```bash
-tmux new -s symphony 'symphony-lite'
+tmux new -s symphony 'symphony'
 # or
-nohup symphony-lite > /dev/null 2>&1 &
+nohup symphony > /dev/null 2>&1 &
 ```
 
 Flags:

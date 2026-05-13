@@ -42,4 +42,3 @@ Out of scope: tutorials, examples beyond the minimum, screenshots.
 ## Acceptance Criteria
 
 A fresh user can follow the README and get from zero to a working daemon polling Linear.
-

@@ -39,4 +39,3 @@ Out of scope: daemon loop, any Linear/OpenCode/bwrap-specific logic.
 ## Acceptance Criteria
 
 `symphony-lite --help` runs. Loading a valid config returns a typed config object. Loading an invalid config raises a clear error. State file round-trips correctly and writes are atomic. Concurrent writes from multiple threads do not corrupt the file.
-

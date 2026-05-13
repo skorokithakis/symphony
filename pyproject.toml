@@ -3,7 +3,7 @@ requires = ["hatchling"]
 build-backend = "hatchling.build"
 
 [project]
-name = "symphony-lite"
+name = "symphony-linear"
 version = "0.1.0"
 description = "AI-powered ticket orchestration daemon"
 # readme not yet published
@@ -16,7 +16,7 @@ dependencies = [
 ]
 
 [project.scripts]
-symphony-lite = "symphony_lite.cli:main"
+symphony = "symphony_lite.cli:main"
 
 [project.optional-dependencies]
 dev = [
@@ -25,6 +25,17 @@ dev = [
 
 [tool.hatch.build.targets.wheel]
 packages = ["symphony_lite"]
+
+[tool.mypy]
+python_version = "3.11"
+warn_unused_configs = true
+
+[[tool.mypy.overrides]]
+module = "tests.*"
+# Tests use FakeLinearClient (a test double) where the production signature
+# expects LinearClient.  Suppressing arg-type in tests avoids 30+ per-site
+# ignore comments for a pattern that is both intentional and correct.
+disable_error_code = ["arg-type"]
 
 [tool.pytest.ini_options]
 testpaths = ["tests"]

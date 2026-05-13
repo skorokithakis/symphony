@@ -26,4 +26,3 @@ Non-goals: don't change --clearenv behaviour; don't inherit any other env vars; 
 ## Acceptance Criteria
 
 Daemon's PATH is visible to opencode and .symphony/setup without setting SYMPHONY_SANDBOX_PATH. SYMPHONY_SANDBOX_PATH still works as an override. PATH-resolution logic lives only in sandbox.py. README reflects the new behaviour. Tests cover the three cases (caller-supplied PATH, SYMPHONY_SANDBOX_PATH set, neither set).
-

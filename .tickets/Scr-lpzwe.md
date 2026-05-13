@@ -40,4 +40,3 @@ Out of scope: capability dropping beyond no-new-privs (bwrap default), cgroup li
 ## Acceptance Criteria
 
 Smoke-test script (committed to repo as a fixture) demonstrates: workspace rw, hide_paths masked, network OK, no docker socket, no sudo. Function cleanly hands back a Popen the caller can manage.
-

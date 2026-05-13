@@ -36,4 +36,3 @@ Non-goals:
 ## Acceptance Criteria
 
 symphony-lite --workspace <dir> works and uses <dir>/config.yaml and <dir>/state.json; running without --workspace uses CWD; missing config produces a clear stderr error and non-zero exit (no traceback); Orchestrator no longer reads workspace_root from config; tests pass.
-

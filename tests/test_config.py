@@ -2,8 +2,6 @@
 
 from __future__ import annotations
 
-import os
-import tempfile
 from pathlib import Path
 
 import pytest
@@ -119,7 +117,9 @@ class TestLoadConfig:
         with pytest.raises(ValueError, match="Config validation failed"):
             load_config(tmp_path)
 
-    def test_env_var_in_api_key(self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+    def test_env_var_in_api_key(
+        self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
         monkeypatch.setenv("LINEAR_KEY", "my-secret-token")
         cfg = {
             "linear": {
@@ -162,7 +162,9 @@ class TestLoadConfig:
         config = load_config(tmp_path)
         assert config.sandbox.hide_paths == ["/secret", str(Path.home() / "private")]
 
-    def test_linear_api_key_env_fallback(self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+    def test_linear_api_key_env_fallback(
+        self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
         """If linear.api_key is missing from YAML, LINEAR_API_KEY env var is used."""
         monkeypatch.setenv("LINEAR_API_KEY", "env-provided-key")
         cfg = {
@@ -179,7 +181,9 @@ class TestLoadConfig:
         assert config.linear.api_key == "env-provided-key"
 
     def test_linear_api_key_empty_string_fallback(
-        self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch,
+        self,
+        tmp_path: Path,
+        monkeypatch: pytest.MonkeyPatch,
     ) -> None:
         """If linear.api_key is an empty string, fall back to LINEAR_API_KEY."""
         monkeypatch.setenv("LINEAR_API_KEY", "env-provided-key")
@@ -213,7 +217,8 @@ class TestLoadConfig:
             load_config(tmp_path)
 
     def test_unresolved_api_key_env_var_triggers_fallback_error(
-        self, tmp_path: Path,
+        self,
+        tmp_path: Path,
     ) -> None:
         """api_key: ${LINEAR_API_KEY} with unset env var → empty string → fallback error."""
         cfg = {

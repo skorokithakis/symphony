@@ -75,7 +75,11 @@ def _extract_path_value(bwrap_args: list[str]) -> str | None:
     """Return the value of ``--setenv PATH <value>`` from *bwrap_args*, or
     ``None`` if no such flag is present."""
     for i, arg in enumerate(bwrap_args):
-        if arg == "--setenv" and i + 2 < len(bwrap_args) and bwrap_args[i + 1] == "PATH":
+        if (
+            arg == "--setenv"
+            and i + 2 < len(bwrap_args)
+            and bwrap_args[i + 1] == "PATH"
+        ):
             return bwrap_args[i + 2]
     return None
 

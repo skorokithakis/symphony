@@ -28,4 +28,3 @@ Today the daemon always switches to (or creates) a per-ticket branch — either 
 - Config flag exists with a sensible default (current behavior preserved when unset).
 - When disabled, no `git switch` runs during prepare(); workspace HEAD is whatever clone selected.
 - Documented in `config.yaml.example`.
-

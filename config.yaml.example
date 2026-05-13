@@ -1,4 +1,4 @@
-# config.yaml.example — fully annotated example for symphony-lite.
+# config.yaml.example — fully annotated example for symphony-linear.
 # Copy this to your workspace directory as config.yaml and adjust to taste.
 
 linear:

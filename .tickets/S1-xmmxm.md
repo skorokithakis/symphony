@@ -37,4 +37,3 @@ Caveats / non-goals:
 - Bot's own comments still do not trigger a resume.
 - AGENTS.md and README updated to describe the new behavior.
 - Tests in `tests/test_orchestrator.py` cover (a) QA ticket with new human comment triggers resume, (b) QA ticket with no new comments does nothing, (c) QA ticket with only a bot comment does nothing.
-

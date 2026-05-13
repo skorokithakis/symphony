@@ -43,6 +43,7 @@ def _expand(value: str) -> str:
     # Tilde expansion
     if value.startswith("~") and (len(value) == 1 or value[1] in ("/", os.sep)):
         value = str(Path(value).expanduser())
+
     # Env-var expansion
     def _sub(m: re.Match[str]) -> str:
         return os.environ.get(m.group(1), "")
@@ -69,9 +70,16 @@ def _expand_values(obj: Any) -> Any:
 class _LinearConfig(BaseModel):
     api_key: str = Field(..., description="Linear API key (bearer token)")
     trigger_label: str = Field("agent", description="Label that triggers the bot")
-    in_progress_state: str = Field("In Progress", description="Linear state for active work")
-    needs_input_state: str = Field("Needs Input", description="Linear state when input is needed")
-    qa_state: str | None = Field(None, description="Optional Linear state for QA; polled in addition to in_progress and needs_input")
+    in_progress_state: str = Field(
+        "In Progress", description="Linear state for active work"
+    )
+    needs_input_state: str = Field(
+        "Needs Input", description="Linear state when input is needed"
+    )
+    qa_state: str | None = Field(
+        None,
+        description="Optional Linear state for QA; polled in addition to in_progress and needs_input",
+    )
     bot_user_email: str = Field(..., description="Email of the bot user in Linear")
 
 
@@ -102,7 +110,9 @@ class AppConfig(BaseModel):
     linear: _LinearConfig
     sandbox: _SandboxConfig = Field(default_factory=_SandboxConfig)
     opencode: _OpenCodeConfig = Field(default_factory=_OpenCodeConfig)
-    poll_interval_seconds: int = Field(30, gt=0, description="Seconds between Linear poll cycles")
+    poll_interval_seconds: int = Field(
+        30, gt=0, description="Seconds between Linear poll cycles"
+    )
     turn_timeout_seconds: int = Field(1800, gt=0, description="Max seconds per AI turn")
     auto_branch: bool = Field(
         True,

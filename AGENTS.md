@@ -5,7 +5,7 @@ Orientation for AI agents working on this repo. Pair this with `README.md`
 
 ## What this is
 
-`symphony-lite` is a single-process Python daemon that orchestrates AI work on
+`symphony-linear` is a single-process Python daemon that orchestrates AI work on
 Linear tickets. The loop:
 
 1. Poll Linear for issues with the trigger label (default `agent`).
@@ -30,7 +30,7 @@ workspace dir. The only external services are Linear (GraphQL) and OpenCode
 - Runtime deps: `pyyaml`, `pydantic` v2, `httpx`.
 - Dev deps: `pytest`.
 - External binaries required at runtime: `bwrap`, `git`, `opencode`.
-- CLI entry point: `symphony-lite` → `symphony_lite.cli:main`.
+- CLI entry point: `symphony` → `symphony_lite.cli:main`.
 
 ## Layout
 
@@ -141,6 +141,12 @@ behaviour, not ours. The NDJSON parser is unit-tested against a fixture.
   the security-sensitive parts.
 - Logging is to `stderr` only, via the format set in `logging.py`. Don't add
   `print()` calls.
+- Commit messages MUST follow Conventional Commits (https://www.conventionalcommits.org/).
+  Common prefixes: `feat:`, `fix:`, `chore:`, `docs:`, `refactor:`, `test:`,
+  `ci:`, `build:`, `perf:`, `style:`. Breaking changes: append `!` after type
+  (`feat!: ...`) or add `BREAKING CHANGE:` footer. Release Please uses these
+  to compute the next version — `fix:` → patch, `feat:` → minor, breaking →
+  major.
 
 ## Knowledge and tickets
 

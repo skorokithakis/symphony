@@ -58,8 +58,8 @@ class TestRunInSandbox:
         hide = [
             str(Path("~/.ssh").expanduser()),
             str(Path("~/.gnupg").expanduser()),
-            "/run/docker.sock",        # real path after symlink resolution
-            "/var/run/docker.sock",    # will be expanded to /run/docker.sock
+            "/run/docker.sock",  # real path after symlink resolution
+            "/var/run/docker.sock",  # will be expanded to /run/docker.sock
         ]
 
         env = {
@@ -243,7 +243,9 @@ class TestRunInSandbox:
         assert "MYVAR=hello-world" in output
         assert "EXTRA=sandboxed" in output
 
-    def test_host_env_not_leaked(self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+    def test_host_env_not_leaked(
+        self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
         """Verify host environment is NOT leaked into the sandbox."""
         _require_bwrap()
 
@@ -292,7 +294,7 @@ class TestRunInSandbox:
                     f'if [[ -f "{test_dir}/secret" ]]; then echo "VISIBLE"; else echo "MASKED"; fi',
                 ],
                 workspace_path=str(workspace),
-                hide_paths=[f"~/.symphony_smoke_test_dir"],
+                hide_paths=["~/.symphony_smoke_test_dir"],
                 env={"HOME": home},
                 stdout=subprocess.PIPE,
                 stderr=subprocess.PIPE,
@@ -386,12 +388,8 @@ class TestRunInSandbox:
             assert proc.returncode == 0, (
                 f"Sandbox failed: stderr={stderr.decode(errors='replace')}"
             )
-            assert "LEGACY_OK" in output, (
-                f"~/.opencode not writable: {output}"
-            )
-            assert "XDG_OK" in output, (
-                f"~/.local/share/opencode not writable: {output}"
-            )
+            assert "LEGACY_OK" in output, f"~/.opencode not writable: {output}"
+            assert "XDG_OK" in output, f"~/.local/share/opencode not writable: {output}"
         finally:
             for d in created:
                 shutil.rmtree(d, ignore_errors=True)

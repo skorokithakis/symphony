@@ -51,4 +51,3 @@ The state-entry-exists ⟺ workspace-exists invariant is what makes the resume p
 - A triggered ticket that is archived in Linear (without being moved to a terminal state) has its workspace and state entry deleted.
 - A triggered ticket moved to a non-active, non-terminal Linear state (e.g. Backlog) while keeping the label has its workspace and state entry deleted.
 - Existing terminal-state and ticket-deleted cleanup paths still work.
-

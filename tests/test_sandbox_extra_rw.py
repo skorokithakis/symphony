@@ -10,7 +10,6 @@ from __future__ import annotations
 from pathlib import Path
 from unittest import mock
 
-import pytest
 
 from symphony_lite.sandbox import run_in_sandbox
 
@@ -26,7 +25,8 @@ class TestExtraRWPathsArgv:
     def test_bind_not_bind_try(self) -> None:
         """extra_rw_paths must use --bind, not --bind-try."""
         with mock.patch(
-            "symphony_lite.sandbox.shutil.which", return_value="/usr/bin/bwrap",
+            "symphony_lite.sandbox.shutil.which",
+            return_value="/usr/bin/bwrap",
         ):
             with mock.patch("subprocess.Popen") as popen_mock:
                 popen_mock.return_value.returncode = 0
@@ -42,8 +42,12 @@ class TestExtraRWPathsArgv:
 
                 args = popen_mock.call_args[0][0]  # bwrap_args list
                 # Check that --bind appears for our paths (not --bind-try)
-                assert ("--bind", "/extra/a", "/extra/a") in zip(args, args[1:], args[2:])
-                assert ("--bind", "/extra/b", "/extra/b") in zip(args, args[1:], args[2:])
+                assert ("--bind", "/extra/a", "/extra/a") in zip(
+                    args, args[1:], args[2:]
+                )
+                assert ("--bind", "/extra/b", "/extra/b") in zip(
+                    args, args[1:], args[2:]
+                )
                 # Verify --bind-try is NOT used for extra paths
                 for i, a in enumerate(args):
                     if a == "--bind-try":
@@ -57,7 +61,8 @@ class TestExtraRWPathsArgv:
         hide_dir.mkdir()
 
         with mock.patch(
-            "symphony_lite.sandbox.shutil.which", return_value="/usr/bin/bwrap",
+            "symphony_lite.sandbox.shutil.which",
+            return_value="/usr/bin/bwrap",
         ):
             with mock.patch("subprocess.Popen") as popen_mock:
                 popen_mock.return_value.returncode = 0
@@ -93,7 +98,8 @@ class TestExtraRWPathsArgv:
     def test_extra_rw_none_omitted(self) -> None:
         """When extra_rw_paths is None/empty, no extra --bind args added."""
         with mock.patch(
-            "symphony_lite.sandbox.shutil.which", return_value="/usr/bin/bwrap",
+            "symphony_lite.sandbox.shutil.which",
+            return_value="/usr/bin/bwrap",
         ):
             with mock.patch("subprocess.Popen") as popen_mock:
                 popen_mock.return_value.returncode = 0

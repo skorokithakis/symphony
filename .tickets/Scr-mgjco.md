@@ -66,4 +66,3 @@ Out of scope: webhooks, hot config reload, mid-turn interrupts, auto-retry on ag
 ## Acceptance Criteria
 
 Labeling a Linear ticket `agent` triggers the full new-ticket pipeline within ~poll-interval and ends with the ticket in `Needs Input` with a comment from the bot. Replying triggers the resume pipeline. Removing the label kills the subprocess within one poll cycle. Moving the ticket to `Done` cleans up the workspace. Multiple replies before the daemon polls are concatenated into one user turn. Two or three concurrent tickets work without crosstalk.
-

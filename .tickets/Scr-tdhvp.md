@@ -32,4 +32,3 @@ Out of scope: git worktrees (we use full clones), push, remote rewriting, partia
 ## Acceptance Criteria
 
 Clones a real repo, switches to the right branch, runs setup script when present (inside sandbox), idempotent on re-prepare. Remove cleans up. Bad identifiers are sanitized. Path containment check rejects malicious inputs (e.g. identifier with `../`).
-

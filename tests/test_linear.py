@@ -120,9 +120,7 @@ class TestExceptionMapping:
 
     def test_auth_403_raises(self) -> None:
         transport = _make_transport(
-            lambda req: _json_response(
-                {"errors": [{"message": "Forbidden"}]}, 403
-            )
+            lambda req: _json_response({"errors": [{"message": "Forbidden"}]}, 403)
         )
         client = _client(transport)
         with pytest.raises(LinearAuthError):
@@ -148,9 +146,7 @@ class TestExceptionMapping:
 
     def test_not_found_via_graphql_error(self) -> None:
         transport = _make_transport(
-            lambda req: _json_response(
-                {"errors": [{"message": "not found"}]}, 200
-            )
+            lambda req: _json_response({"errors": [{"message": "not found"}]}, 200)
         )
         client = _client(transport)
         with pytest.raises(LinearNotFoundError):
@@ -277,7 +273,7 @@ class TestListTriggeredIssues:
         assert issues[0].id == "i-1"
 
     def test_empty_result(self) -> None:
-        raw = {"data": {"issues": {"nodes": []}}}
+        raw: dict[str, Any] = {"data": {"issues": {"nodes": []}}}
         transport = _make_transport(lambda req: _json_response(raw))
         client = _client(transport)
         issues = client.list_triggered_issues("agent", ["In Progress"])
@@ -348,7 +344,9 @@ class TestGetIssue:
 
 
 class TestGetProject:
-    def test_parses_project_with_links(self, sample_project_raw: dict[str, Any]) -> None:
+    def test_parses_project_with_links(
+        self, sample_project_raw: dict[str, Any]
+    ) -> None:
         raw = {"data": {"project": sample_project_raw}}
         transport = _make_transport(lambda req: _json_response(raw))
         client = _client(transport)
@@ -395,7 +393,9 @@ class TestGetProject:
 
 
 class TestListCommentsSince:
-    def _comments_issue_raw(self, comment_nodes: list[dict[str, Any]]) -> dict[str, Any]:
+    def _comments_issue_raw(
+        self, comment_nodes: list[dict[str, Any]]
+    ) -> dict[str, Any]:
         return {
             "data": {
                 "issue": {
@@ -476,12 +476,12 @@ class TestListCommentsSince:
         in ascending (oldest-first) chronological order."""
         # Linear returns comments newest-first.  last_seen is cmt-3.
         nodes = [
-            self._make_comment("cmt-6", "Sixth"),   # newest
+            self._make_comment("cmt-6", "Sixth"),  # newest
             self._make_comment("cmt-5", "Fifth"),
             self._make_comment("cmt-4", "Fourth"),
-            self._make_comment("cmt-3", "Third"),    # last_seen
+            self._make_comment("cmt-3", "Third"),  # last_seen
             self._make_comment("cmt-2", "Second"),
-            self._make_comment("cmt-1", "First"),    # oldest
+            self._make_comment("cmt-1", "First"),  # oldest
         ]
         raw = self._comments_issue_raw(nodes)
         transport = _make_transport(lambda req: _json_response(raw))
@@ -608,9 +608,7 @@ class TestTransitionToState:
                     }
                 )
             elif "issueUpdate" in body:
-                return _json_response(
-                    {"data": {"issueUpdate": {"success": True}}}
-                )
+                return _json_response({"data": {"issueUpdate": {"success": True}}})
             return _json_response({}, 500)
 
         transport = _make_transport(handler)
@@ -652,9 +650,7 @@ class TestTransitionToState:
 
     def test_no_team_raises(self) -> None:
         transport = _make_transport(
-            lambda req: _json_response(
-                {"data": {"issue": {"team": None}}}, 200
-            )
+            lambda req: _json_response({"data": {"issue": {"team": None}}}, 200)
         )
         client = _client(transport)
         with pytest.raises(LinearError, match="has no team"):
@@ -683,9 +679,7 @@ class TestTransitionToState:
                     }
                 )
             elif "issueUpdate" in body:
-                return _json_response(
-                    {"data": {"issueUpdate": {"success": False}}}
-                )
+                return _json_response({"data": {"issueUpdate": {"success": False}}})
             return _json_response({}, 500)
 
         transport = _make_transport(handler)
@@ -717,14 +711,23 @@ class TestCommentModel:
 class TestIssueModel:
     def test_branch_name_alias(self) -> None:
         issue = Issue(
-            id="i", identifier="T-1", title="T", state="S",
-            branchName="feat/x", updatedAt="2025-06-01T00:00:00Z",
+            id="i",
+            identifier="T-1",
+            title="T",
+            state="S",
+            branchName="feat/x",
+            updatedAt="2025-06-01T00:00:00Z",
         )
         assert issue.branch_name == "feat/x"
 
     def test_defaults(self) -> None:
-        issue = Issue(id="i", identifier="T-1", title="T", state="S",
-                      updatedAt="2025-06-01T00:00:00Z")
+        issue = Issue(
+            id="i",
+            identifier="T-1",
+            title="T",
+            state="S",
+            updatedAt="2025-06-01T00:00:00Z",
+        )
         assert issue.labels == []
         assert issue.comments == []
         assert issue.branch_name is None

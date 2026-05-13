@@ -287,10 +287,7 @@ class TestPrepareRemoveIntegration:
 
         _make_source_repo(
             source_repo,
-            setup_script=(
-                "#!/bin/bash\n"
-                f"echo 'setup ran' > {marker_file}\n"
-            ),
+            setup_script=(f"#!/bin/bash\necho 'setup ran' > {marker_file}\n"),
         )
 
         # 2. Prepare the workspace.
@@ -382,11 +379,7 @@ class TestPrepareRemoveIntegration:
         source_repo = tmp_path / "source"
         _make_source_repo(
             source_repo,
-            setup_script=(
-                "#!/bin/bash\n"
-                "echo 'something went wrong' >&2\n"
-                "exit 42\n"
-            ),
+            setup_script=("#!/bin/bash\necho 'something went wrong' >&2\nexit 42\n"),
         )
 
         with pytest.raises(SetupFailed) as exc_info:
@@ -463,7 +456,9 @@ class TestPrepareRemoveIntegration:
         assert branch_result.stdout.strip() == "branch-b"
 
         # Verify the file from branch-b is present.
-        assert (Path(result_path) / "file-b.txt").read_text().strip() == "branch b content"
+        assert (
+            Path(result_path) / "file-b.txt"
+        ).read_text().strip() == "branch b content"
 
         # Clean up
         remove(ticket, str(workspace_root))
@@ -693,7 +688,9 @@ class TestStartServeIntegration:
         extra_dir = tmp_path / "extra"
         extra_dir.mkdir()
 
-        proc = start_serve(str(workspace), hide_paths=[], extra_rw_paths=[str(extra_dir)])
+        proc = start_serve(
+            str(workspace), hide_paths=[], extra_rw_paths=[str(extra_dir)]
+        )
         try:
             assert proc.poll() is None
         finally:

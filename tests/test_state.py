@@ -5,8 +5,7 @@ from __future__ import annotations
 import json
 import threading
 from pathlib import Path
-
-import pytest
+from typing import Any
 
 from symphony_lite.state import (
     StateManager,
@@ -22,7 +21,7 @@ from symphony_lite.state import (
 # ---------------------------------------------------------------------------
 
 
-def _make_ticket(ticket_id: str = "1", **overrides: object) -> TicketState:
+def _make_ticket(ticket_id: str = "1", **overrides: Any) -> TicketState:
     defaults = {
         "ticket_id": ticket_id,
         "ticket_identifier": f"TEAM-{ticket_id}",
@@ -193,7 +192,6 @@ class TestConcurrentWrites:
         path = tmp_path / "state.json"
         mgr = StateManager(path)
         mgr.load()
-        num_tickets = 20
         num_threads = 8
         ready = threading.Barrier(num_threads + 1)  # +1 for main
 
@@ -204,7 +202,9 @@ class TestConcurrentWrites:
                 mgr.upsert(t)
                 mgr.save()
 
-        threads = [threading.Thread(target=worker, args=(i,)) for i in range(num_threads)]
+        threads = [
+            threading.Thread(target=worker, args=(i,)) for i in range(num_threads)
+        ]
         for t in threads:
             t.start()
         ready.wait()

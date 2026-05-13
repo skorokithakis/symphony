@@ -79,10 +79,10 @@ Comment format (single body):
     **Symphony**: QA serve exited (rc={rc}). Transitioning ticket back to Needs Input — re-enter QA to retry.
 
     **stdout** (first 1000 chars):
-    
+
 
     **stderr** (first 1000 chars):
-    
+
 
 Cap each tail at 1000 chars (already bounded by the drainer buffer, but defense-in-depth).
 

@@ -82,7 +82,6 @@ def run_in_sandbox(
     # ------------------------------------------------------------------
     # Expand paths on the host side
     # ------------------------------------------------------------------
-    home = str(Path.home())
     cache_dir = str(Path("~/.cache").expanduser())
     local_share_dir = str(Path("~/.local/share").expanduser())
     expanded_workspace = _expand(workspace_path)

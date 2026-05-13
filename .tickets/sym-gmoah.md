@@ -38,4 +38,3 @@ Tests:
 ## Acceptance Criteria
 
 Function exists with the documented signature, raises the typed exception on missing script, returns a Popen otherwise. Tests cover both branches.
-

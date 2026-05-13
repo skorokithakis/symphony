@@ -24,4 +24,3 @@ Do not introduce new sections or restructure beyond what's needed for accuracy. 
 ## Acceptance Criteria
 
 README accurately describes the workspace-dir model; no references to workspace_root, SYMPHONY_CONFIG, ~/.config/symphony-lite, or ~/.local/share/symphony-lite remain; --workspace is documented; LINEAR_API_KEY env-var option is documented.
-

@@ -33,4 +33,3 @@ Out of scope: webhooks, caching beyond `current_user_id`, batched mutations, pag
 ## Acceptance Criteria
 
 All methods callable against a real Linear workspace. Auth failure raises `LinearAuthError`. State transition succeeds for valid state names and raises clearly for unknown ones. Project link lookup returns the structured links list.
-

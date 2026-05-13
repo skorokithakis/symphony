@@ -12,7 +12,6 @@ import threading
 from datetime import datetime, timezone
 from enum import Enum
 from pathlib import Path
-from typing import Any
 
 from pydantic import BaseModel, Field
 
@@ -38,16 +37,24 @@ class TicketState(BaseModel):
     """State for a single ticket being processed by the daemon."""
 
     ticket_id: str = Field(..., description="Linear ticket ID")
-    ticket_identifier: str = Field(..., description="Human-readable identifier (e.g. TEAM-42)")
+    ticket_identifier: str = Field(
+        ..., description="Human-readable identifier (e.g. TEAM-42)"
+    )
     project_id: str | None = Field(None, description="Linear project ID")
     repo_url: str = Field(..., description="Clone URL of the repository")
     session_id: str | None = Field(None, description="OpenCode session identifier")
     workspace_path: str = Field(..., description="Path to the workspace on disk")
     branch: str = Field(..., description="Git branch name for this ticket")
-    last_seen_comment_id: str | None = Field(None, description="Last Linear comment ID the bot has seen")
+    last_seen_comment_id: str | None = Field(
+        None, description="Last Linear comment ID the bot has seen"
+    )
     status: TicketStatus = TicketStatus.bootstrapping
-    metadata_comment_id: str | None = Field(None, description="Linear comment ID of the bot's metadata comment")
-    setup_error: str | None = Field(None, description="Non-null when a setup step failed; prevents re-spam")
+    metadata_comment_id: str | None = Field(
+        None, description="Linear comment ID of the bot's metadata comment"
+    )
+    setup_error: str | None = Field(
+        None, description="Non-null when a setup step failed; prevents re-spam"
+    )
 
     # Audit trail (not part of the ticket spec but useful for debugging)
     created_at: str = Field(

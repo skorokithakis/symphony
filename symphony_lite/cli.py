@@ -18,7 +18,7 @@ logger = get_logger(__name__)
 
 def _build_parser() -> argparse.ArgumentParser:
     parser = argparse.ArgumentParser(
-        prog="symphony-lite",
+        prog="symphony",
         description="AI-powered ticket orchestration daemon",
     )
     parser.add_argument(
@@ -48,7 +48,11 @@ def main(argv: list[str] | None = None) -> None:
 
     setup_logging(debug=args.debug)
 
-    workspace = Path(args.workspace).expanduser().resolve() if args.workspace else Path.cwd().resolve()
+    workspace = (
+        Path(args.workspace).expanduser().resolve()
+        if args.workspace
+        else Path.cwd().resolve()
+    )
 
     try:
         config: AppConfig = load_config(workspace)
@@ -76,5 +80,7 @@ def main(argv: list[str] | None = None) -> None:
     linear = LinearClient(api_key=config.linear.api_key)
 
     # Create and run the orchestrator daemon.
-    orchestrator = Orchestrator(config=config, state=state, linear=linear, workspace=workspace)
+    orchestrator = Orchestrator(
+        config=config, state=state, linear=linear, workspace=workspace
+    )
     orchestrator.run()

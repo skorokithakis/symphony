@@ -52,4 +52,3 @@ post-comment-then-save race.
 ## Acceptance Criteria
 
 After daemon restart mid-bootstrap, the previously-posted metadata comment is edited in place rather than duplicated, state is removed, and the next poll resumes the pipeline cleanly. New unit tests pass; full suite passes.
-

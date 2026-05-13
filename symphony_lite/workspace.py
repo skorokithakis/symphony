@@ -131,12 +131,8 @@ def _run_git(
 
         # Distinguish clone from branch by looking at the sub-command.
         if args[0] == "clone":
-            raise CloneFailed(
-                f"git clone failed (rc={result.returncode}): {tail}"
-            )
-        raise BranchFailed(
-            f"git {args[0]} failed (rc={result.returncode}): {tail}"
-        )
+            raise CloneFailed(f"git clone failed (rc={result.returncode}): {tail}")
+        raise BranchFailed(f"git {args[0]} failed (rc={result.returncode}): {tail}")
 
     return result
 
@@ -190,7 +186,11 @@ def _run_setup_script(
             _, stderr_bytes = proc.communicate(timeout=10)
         except subprocess.TimeoutExpired:
             stderr_bytes = b"(timed out collecting stderr)"
-        stderr_text = stderr_bytes.decode(errors="replace") if isinstance(stderr_bytes, bytes) else str(stderr_bytes)
+        stderr_text = (
+            stderr_bytes.decode(errors="replace")
+            if isinstance(stderr_bytes, bytes)
+            else str(stderr_bytes)
+        )
         raise SetupFailed(
             f".symphony/setup timed out after {SETUP_TIMEOUT_SECONDS}s\n"
             f"stderr tail:\n{_tail(stderr_text)}"
@@ -209,7 +209,9 @@ def _run_setup_script(
             f"stderr tail:\n{_tail(stderr_text)}"
         )
 
-    logger.info(".symphony/setup completed successfully for workspace %s", workspace_path)
+    logger.info(
+        ".symphony/setup completed successfully for workspace %s", workspace_path
+    )
 
 
 def start_serve(
@@ -300,7 +302,9 @@ def _git_switch_branch(
         "git switch '%s' failed (rc=%d), trying -c: %s",
         branch_name,
         result.returncode,
-        result.stderr.strip().splitlines()[-1] if result.stderr.strip() else "(no stderr)",
+        result.stderr.strip().splitlines()[-1]
+        if result.stderr.strip()
+        else "(no stderr)",
     )
 
     # Attempt 2: create a new branch from HEAD.
@@ -409,8 +413,12 @@ def prepare(
         )
 
     # 5. Run setup script if present
-    _run_setup_script(real_path, sandbox_hide_paths, on_subprocess=on_subprocess,
-                      extra_rw_paths=sandbox_extra_rw_paths)
+    _run_setup_script(
+        real_path,
+        sandbox_hide_paths,
+        on_subprocess=on_subprocess,
+        extra_rw_paths=sandbox_extra_rw_paths,
+    )
 
     return real_path
 
