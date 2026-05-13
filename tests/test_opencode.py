@@ -15,7 +15,7 @@ from typing import Any
 
 import pytest
 
-from symphony_lite.opencode import _assemble_message
+from symphony_linear.opencode import _assemble_message
 
 # ---------------------------------------------------------------------------
 # Helpers
@@ -180,7 +180,7 @@ def _parse_one_line(line: str) -> dict[str, Any] | None:
     try:
         return json.loads(stripped)
     except json.JSONDecodeError:
-        logging.getLogger("symphony_lite.opencode").debug(
+        logging.getLogger("symphony_linear.opencode").debug(
             "Skipping unparseable JSON line: %s", stripped[:200]
         )
         return None

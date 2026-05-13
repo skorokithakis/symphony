@@ -11,7 +11,7 @@ from pathlib import Path
 from unittest import mock
 
 
-from symphony_lite.sandbox import run_in_sandbox
+from symphony_linear.sandbox import run_in_sandbox
 
 
 class TestExtraRWPathsArgv:
@@ -25,7 +25,7 @@ class TestExtraRWPathsArgv:
     def test_bind_not_bind_try(self) -> None:
         """extra_rw_paths must use --bind, not --bind-try."""
         with mock.patch(
-            "symphony_lite.sandbox.shutil.which",
+            "symphony_linear.sandbox.shutil.which",
             return_value="/usr/bin/bwrap",
         ):
             with mock.patch("subprocess.Popen") as popen_mock:
@@ -61,7 +61,7 @@ class TestExtraRWPathsArgv:
         hide_dir.mkdir()
 
         with mock.patch(
-            "symphony_lite.sandbox.shutil.which",
+            "symphony_linear.sandbox.shutil.which",
             return_value="/usr/bin/bwrap",
         ):
             with mock.patch("subprocess.Popen") as popen_mock:
@@ -98,7 +98,7 @@ class TestExtraRWPathsArgv:
     def test_extra_rw_none_omitted(self) -> None:
         """When extra_rw_paths is None/empty, no extra --bind args added."""
         with mock.patch(
-            "symphony_lite.sandbox.shutil.which",
+            "symphony_linear.sandbox.shutil.which",
             return_value="/usr/bin/bwrap",
         ):
             with mock.patch("subprocess.Popen") as popen_mock:

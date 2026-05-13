@@ -7,11 +7,11 @@ import sys
 
 from pathlib import Path
 
-from symphony_lite.config import AppConfig, load_config
-from symphony_lite.linear import LinearClient
-from symphony_lite.logging import get_logger, setup_logging
-from symphony_lite.orchestrator import Orchestrator
-from symphony_lite.state import load_state
+from symphony_linear.config import AppConfig, load_config
+from symphony_linear.linear import LinearClient
+from symphony_linear.logging import get_logger, setup_logging
+from symphony_linear.orchestrator import Orchestrator
+from symphony_linear.state import load_state
 
 logger = get_logger(__name__)
 

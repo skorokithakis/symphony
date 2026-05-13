@@ -19,7 +19,7 @@ from pathlib import Path
 
 import pytest
 
-from symphony_lite.sandbox import run_in_sandbox
+from symphony_linear.sandbox import run_in_sandbox
 
 pytestmark = pytest.mark.integration
 

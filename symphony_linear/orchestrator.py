@@ -14,23 +14,23 @@ from pathlib import Path
 from typing import Any
 from urllib.parse import urlparse
 
-from symphony_lite.config import AppConfig
-from symphony_lite.linear import (
+from symphony_linear.config import AppConfig
+from symphony_linear.linear import (
     Comment,
     Issue,
     LinearClient,
     LinearError,
     LinearNotFoundError,
 )
-from symphony_lite.opencode import (
+from symphony_linear.opencode import (
     OpenCodeCancelled,
     OpenCodeError,
     OpenCodeTimeout,
     run_initial,
     run_resume,
 )
-from symphony_lite.state import StateManager, TicketState, TicketStatus
-from symphony_lite.workspace import (
+from symphony_linear.state import StateManager, TicketState, TicketStatus
+from symphony_linear.workspace import (
     ServeScriptMissing,
     WorkspaceError,
     prepare,

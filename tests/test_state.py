@@ -7,7 +7,7 @@ import threading
 from pathlib import Path
 from typing import Any
 
-from symphony_lite.state import (
+from symphony_linear.state import (
     StateManager,
     StateStore,
     TicketState,

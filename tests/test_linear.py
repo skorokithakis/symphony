@@ -11,7 +11,7 @@ from typing import Any
 import httpx
 import pytest
 
-from symphony_lite.linear import (
+from symphony_linear.linear import (
     Comment,
     Issue,
     LinearAuthError,

@@ -11,7 +11,7 @@ from unittest.mock import MagicMock, patch
 
 import pytest
 
-from symphony_lite.sandbox import run_in_sandbox
+from symphony_linear.sandbox import run_in_sandbox
 
 
 # ---------------------------------------------------------------------------
@@ -58,8 +58,8 @@ def _capture_bwrap_args(
         captured.append(list(args))
         return MagicMock()
 
-    with patch("symphony_lite.sandbox.shutil.which", return_value="/usr/bin/bwrap"):
-        with patch("symphony_lite.sandbox.subprocess.Popen", side_effect=fake_popen):
+    with patch("symphony_linear.sandbox.shutil.which", return_value="/usr/bin/bwrap"):
+        with patch("symphony_linear.sandbox.subprocess.Popen", side_effect=fake_popen):
             run_in_sandbox(
                 cmd=["echo", "hello"],
                 workspace_path=str(workspace),

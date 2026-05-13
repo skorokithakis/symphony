@@ -7,7 +7,7 @@ from pathlib import Path
 import pytest
 import yaml
 
-from symphony_lite.config import (
+from symphony_linear.config import (
     AppConfig,
     _expand,
     _expand_values,

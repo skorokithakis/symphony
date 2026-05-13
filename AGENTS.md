@@ -30,12 +30,12 @@ workspace dir. The only external services are Linear (GraphQL) and OpenCode
 - Runtime deps: `pyyaml`, `pydantic` v2, `httpx`.
 - Dev deps: `pytest`.
 - External binaries required at runtime: `bwrap`, `git`, `opencode`.
-- CLI entry point: `symphony` → `symphony_lite.cli:main`.
+- CLI entry point: `symphony` → `symphony_linear.cli:main`.
 
 ## Layout
 
 ```
-symphony_lite/
+symphony_linear/
   cli.py            argparse + wiring; loads config, builds Orchestrator, runs it
   config.py         YAML + pydantic config; ~ and ${VAR} expansion; LINEAR_API_KEY fallback
   state.py          TicketState model + StateManager (atomic JSON writes, threading.Lock)
@@ -116,7 +116,7 @@ shutting down, or the ticket is no longer triggered — see `_is_still_triggered
 .venv/bin/pytest                              # full suite (unit + integration)
 .venv/bin/pytest -m "not integration"         # unit only
 .venv/bin/pytest tests/test_orchestrator.py   # one file
-.venv/bin/python -m symphony_lite --validate-config --workspace <dir>
+.venv/bin/python -m symphony_linear --validate-config --workspace <dir>
 ```
 
 There is no linter configured. There is no Makefile. If you add tooling,

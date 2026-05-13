@@ -12,8 +12,8 @@ from unittest import mock
 
 import pytest
 
-from symphony_lite.config import AppConfig
-from symphony_lite.linear import (
+from symphony_linear.config import AppConfig
+from symphony_linear.linear import (
     Comment,
     Issue,
     LinearError,
@@ -21,17 +21,17 @@ from symphony_lite.linear import (
     Project,
     ProjectLink,
 )
-from symphony_lite.opencode import (
+from symphony_linear.opencode import (
     OpenCodeError,
     OpenCodeTimeout,
 )
-from symphony_lite.orchestrator import (
+from symphony_linear.orchestrator import (
     Orchestrator,
     _ActiveServe,
     _format_comments_message,
     _maybe_rewrite_to_ssh,
 )
-from symphony_lite.state import StateManager, TicketState, TicketStatus
+from symphony_linear.state import StateManager, TicketState, TicketStatus
 
 
 # ---------------------------------------------------------------------------
@@ -241,8 +241,8 @@ class TestNewTicketPipeline:
         self, orchestrator: Orchestrator, linear: FakeLinearClient
     ) -> None:
         with (
-            mock.patch("symphony_lite.orchestrator.prepare") as mock_prepare,
-            mock.patch("symphony_lite.orchestrator.run_initial") as mock_run_initial,
+            mock.patch("symphony_linear.orchestrator.prepare") as mock_prepare,
+            mock.patch("symphony_linear.orchestrator.run_initial") as mock_run_initial,
         ):
             issue = self._setup_mocks(mock_prepare, mock_run_initial, linear)
             orchestrator._new_ticket_pipeline(issue)
@@ -288,7 +288,7 @@ class TestNewTicketPipeline:
     def test_clone_failure_saves_setup_error(
         self, orchestrator: Orchestrator, linear: FakeLinearClient
     ) -> None:
-        from symphony_lite.workspace import CloneFailed
+        from symphony_linear.workspace import CloneFailed
 
         linear.set_response(
             "get_project",
@@ -301,7 +301,7 @@ class TestNewTicketPipeline:
             ),
         )
         with mock.patch(
-            "symphony_lite.orchestrator.prepare", side_effect=CloneFailed("fail")
+            "symphony_linear.orchestrator.prepare", side_effect=CloneFailed("fail")
         ):
             orchestrator._new_ticket_pipeline(_make_issue())
         ts = orchestrator._state.get("ticket-1")
@@ -327,10 +327,10 @@ class TestNewTicketPipeline:
         linear.set_response("get_issue", _make_issue(description="Fix"))
         with (
             mock.patch(
-                "symphony_lite.orchestrator.prepare", return_value="/tmp/ws/TEAM-1"
+                "symphony_linear.orchestrator.prepare", return_value="/tmp/ws/TEAM-1"
             ),
             mock.patch(
-                "symphony_lite.orchestrator.run_initial",
+                "symphony_linear.orchestrator.run_initial",
                 side_effect=OpenCodeTimeout("timeout"),
             ),
         ):
@@ -358,10 +358,10 @@ class TestNewTicketPipeline:
         linear.set_response("get_issue", _make_issue(description="Fix"))
         with (
             mock.patch(
-                "symphony_lite.orchestrator.prepare", return_value="/tmp/ws/TEAM-1"
+                "symphony_linear.orchestrator.prepare", return_value="/tmp/ws/TEAM-1"
             ),
             mock.patch(
-                "symphony_lite.orchestrator.run_initial",
+                "symphony_linear.orchestrator.run_initial",
                 side_effect=OpenCodeError("fail"),
             ),
         ):
@@ -389,10 +389,10 @@ class TestNewTicketPipeline:
         linear.set_response("transition_to_state", LinearError("nope"))
         with (
             mock.patch(
-                "symphony_lite.orchestrator.prepare", return_value="/tmp/ws/TEAM-1"
+                "symphony_linear.orchestrator.prepare", return_value="/tmp/ws/TEAM-1"
             ),
             mock.patch(
-                "symphony_lite.orchestrator.run_initial",
+                "symphony_linear.orchestrator.run_initial",
                 return_value=("ses-abc", "done"),
             ),
         ):
@@ -419,9 +419,9 @@ class TestNewTicketPipeline:
         linear.set_response("get_issue", _make_issue(description="Fix"))
 
         with mock.patch(
-            "symphony_lite.orchestrator.prepare", return_value="/tmp/ws/TEAM-1"
+            "symphony_linear.orchestrator.prepare", return_value="/tmp/ws/TEAM-1"
         ):
-            with mock.patch("symphony_lite.orchestrator.run_initial") as mock_oc:
+            with mock.patch("symphony_linear.orchestrator.run_initial") as mock_oc:
                 # Cancel after prepare is mocked to return.
                 orchestrator._cancel_ticket("ticket-1")
                 orchestrator._new_ticket_pipeline(_make_issue())
@@ -455,7 +455,7 @@ class TestResumePipeline:
         ts = self._make_ts()
         orchestrator._state.upsert(ts)
         linear.set_response("list_comments_since", [_make_comment("c1", "Fix please")])
-        with mock.patch("symphony_lite.orchestrator.run_resume", return_value="Done!"):
+        with mock.patch("symphony_linear.orchestrator.run_resume", return_value="Done!"):
             orchestrator._resume_pipeline(ts)
         updated = orchestrator._state.get("ticket-1")
         assert updated is not None and updated.status == TicketStatus.needs_input
@@ -473,7 +473,7 @@ class TestResumePipeline:
             ],
         )
         with mock.patch(
-            "symphony_lite.orchestrator.run_resume", return_value="Done!"
+            "symphony_linear.orchestrator.run_resume", return_value="Done!"
         ) as m:
             orchestrator._resume_pipeline(ts)
         m.assert_called_once()
@@ -492,7 +492,7 @@ class TestResumePipeline:
         orchestrator._state.upsert(ts)
         linear.set_response("list_comments_since", [_make_comment("c1", "Go")])
         with mock.patch(
-            "symphony_lite.orchestrator.run_resume", side_effect=OpenCodeTimeout("t")
+            "symphony_linear.orchestrator.run_resume", side_effect=OpenCodeTimeout("t")
         ):
             orchestrator._resume_pipeline(ts)
         updated = orchestrator._state.get("ticket-1")
@@ -506,14 +506,14 @@ class TestResumePipeline:
         orchestrator._state.upsert(ts)
         linear.set_response("list_comments_since", [_make_comment("c1", "Go")])
         with mock.patch(
-            "symphony_lite.orchestrator.run_resume", side_effect=OpenCodeError("e")
+            "symphony_linear.orchestrator.run_resume", side_effect=OpenCodeError("e")
         ):
             orchestrator._resume_pipeline(ts)
         updated = orchestrator._state.get("ticket-1")
         assert updated is not None
         assert updated.status == TicketStatus.failed
         linear.set_response("list_comments_since", [])
-        with mock.patch("symphony_lite.orchestrator.run_resume") as m:
+        with mock.patch("symphony_linear.orchestrator.run_resume") as m:
             orchestrator._resume_pipeline(updated)
         m.assert_not_called()
 
@@ -525,7 +525,7 @@ class TestResumePipeline:
         orchestrator._state.upsert(ts)
         linear.set_response("current_user_id", LinearError("transient"))
         linear.set_response("list_comments_since", [_make_comment("c1", "Go")])
-        with mock.patch("symphony_lite.orchestrator.run_resume") as m:
+        with mock.patch("symphony_linear.orchestrator.run_resume") as m:
             orchestrator._resume_pipeline(ts)
         m.assert_not_called()  # skipped due to bot_id None
 
@@ -903,7 +903,7 @@ class TestTick:
         linear.set_response("list_triggered_issues", [qa_issue])
 
         with mock.patch(
-            "symphony_lite.orchestrator.start_serve", return_value=_make_fake_proc()
+            "symphony_linear.orchestrator.start_serve", return_value=_make_fake_proc()
         ):
             with mock.patch.object(orch, "_recover_working_ticket") as m_recover:
                 orch._tick()
@@ -939,7 +939,7 @@ class TestTick:
         linear.set_response("list_triggered_issues", [qa_issue])
 
         with mock.patch(
-            "symphony_lite.orchestrator.start_serve", return_value=_make_fake_proc()
+            "symphony_linear.orchestrator.start_serve", return_value=_make_fake_proc()
         ):
             with mock.patch.object(orch, "_resume_pipeline") as m_resume:
                 orch._tick()
@@ -976,9 +976,9 @@ class TestTick:
         linear.set_response("list_comments_since", [])  # no new comments
 
         with mock.patch(
-            "symphony_lite.orchestrator.start_serve", return_value=_make_fake_proc()
+            "symphony_linear.orchestrator.start_serve", return_value=_make_fake_proc()
         ):
-            with mock.patch("symphony_lite.orchestrator.run_resume") as m_run_resume:
+            with mock.patch("symphony_linear.orchestrator.run_resume") as m_run_resume:
                 orch._tick()
                 time.sleep(0.2)
 
@@ -1018,9 +1018,9 @@ class TestTick:
         )
 
         with mock.patch(
-            "symphony_lite.orchestrator.start_serve", return_value=_make_fake_proc()
+            "symphony_linear.orchestrator.start_serve", return_value=_make_fake_proc()
         ):
-            with mock.patch("symphony_lite.orchestrator.run_resume") as m_run_resume:
+            with mock.patch("symphony_linear.orchestrator.run_resume") as m_run_resume:
                 orch._tick()
                 time.sleep(0.2)
 
@@ -1043,7 +1043,7 @@ class TestTick:
         linear.set_response("list_triggered_issues", [qa_issue])
 
         with mock.patch(
-            "symphony_lite.orchestrator.start_serve", return_value=_make_fake_proc()
+            "symphony_linear.orchestrator.start_serve", return_value=_make_fake_proc()
         ):
             with mock.patch.object(orch, "_new_ticket_pipeline") as m_new:
                 orch._tick()
@@ -1198,10 +1198,10 @@ class TestCancellation:
             return ("ses-x", "out")
 
         with mock.patch(
-            "symphony_lite.orchestrator.prepare", return_value="/tmp/ws/TEAM-1"
+            "symphony_linear.orchestrator.prepare", return_value="/tmp/ws/TEAM-1"
         ):
             with mock.patch(
-                "symphony_lite.orchestrator.run_initial", side_effect=slow_run_initial
+                "symphony_linear.orchestrator.run_initial", side_effect=slow_run_initial
             ):
                 orchestrator._schedule_task(
                     "ticket-1", orchestrator._new_ticket_pipeline, _make_issue()
@@ -1243,10 +1243,10 @@ class TestHidePaths:
         linear.set_response("get_issue", _make_issue(description="Fix"))
         with (
             mock.patch(
-                "symphony_lite.orchestrator.prepare", return_value="/tmp/ws/TEAM-1"
+                "symphony_linear.orchestrator.prepare", return_value="/tmp/ws/TEAM-1"
             ),
             mock.patch(
-                "symphony_lite.orchestrator.run_initial", return_value=("ses", "msg")
+                "symphony_linear.orchestrator.run_initial", return_value=("ses", "msg")
             ) as m_oc,
         ):
             orchestrator._new_ticket_pipeline(_make_issue())
@@ -1269,7 +1269,7 @@ class TestHidePaths:
         orchestrator._state.upsert(ts)
         linear.set_response("list_comments_since", [_make_comment("c1", "Go")])
         with mock.patch(
-            "symphony_lite.orchestrator.run_resume", return_value="Done!"
+            "symphony_linear.orchestrator.run_resume", return_value="Done!"
         ) as m_oc:
             orchestrator._resume_pipeline(ts)
         _, kwargs = m_oc.call_args
@@ -1299,10 +1299,10 @@ class TestExtraRWPaths:
         linear.set_response("get_issue", _make_issue(description="Fix"))
         with (
             mock.patch(
-                "symphony_lite.orchestrator.prepare", return_value="/tmp/ws/TEAM-1"
+                "symphony_linear.orchestrator.prepare", return_value="/tmp/ws/TEAM-1"
             ) as m_prep,
             mock.patch(
-                "symphony_lite.orchestrator.run_initial", return_value=("ses", "msg")
+                "symphony_linear.orchestrator.run_initial", return_value=("ses", "msg")
             ),
         ):
             orchestrator._new_ticket_pipeline(_make_issue())
@@ -1325,10 +1325,10 @@ class TestExtraRWPaths:
         linear.set_response("get_issue", _make_issue(description="Fix"))
         with (
             mock.patch(
-                "symphony_lite.orchestrator.prepare", return_value="/tmp/ws/TEAM-1"
+                "symphony_linear.orchestrator.prepare", return_value="/tmp/ws/TEAM-1"
             ),
             mock.patch(
-                "symphony_lite.orchestrator.run_initial", return_value=("ses", "msg")
+                "symphony_linear.orchestrator.run_initial", return_value=("ses", "msg")
             ) as m_oc,
         ):
             orchestrator._new_ticket_pipeline(_make_issue())
@@ -1351,7 +1351,7 @@ class TestExtraRWPaths:
         orchestrator._state.upsert(ts)
         linear.set_response("list_comments_since", [_make_comment("c1", "Go")])
         with mock.patch(
-            "symphony_lite.orchestrator.run_resume", return_value="Done!"
+            "symphony_linear.orchestrator.run_resume", return_value="Done!"
         ) as m_oc:
             orchestrator._resume_pipeline(ts)
         _, kwargs = m_oc.call_args
@@ -1513,7 +1513,7 @@ class TestReconcileServe:
         """When qa_state is not configured, _reconcile_serve is a no-op."""
         assert orchestrator._config.linear.qa_state is None
         issue = _make_issue(state="In Review")
-        with mock.patch("symphony_lite.orchestrator.start_serve") as m:
+        with mock.patch("symphony_linear.orchestrator.start_serve") as m:
             orchestrator._reconcile_serve([issue], {issue.id: issue})
         m.assert_not_called()
         assert orchestrator._active_serve is None
@@ -1535,7 +1535,7 @@ class TestReconcileServe:
         fake_proc = _make_fake_proc(returncode=None)
 
         with mock.patch(
-            "symphony_lite.orchestrator.start_serve", return_value=fake_proc
+            "symphony_linear.orchestrator.start_serve", return_value=fake_proc
         ) as m_serve:
             orch._reconcile_serve([issue], {issue.id: issue})
 
@@ -1586,7 +1586,7 @@ class TestReconcileServe:
         orch._active_serve = av
 
         issue = _make_qa_issue()
-        with mock.patch("symphony_lite.orchestrator.start_serve") as m_serve:
+        with mock.patch("symphony_linear.orchestrator.start_serve") as m_serve:
             orch._reconcile_serve([issue], {issue.id: issue})
 
         # Comment posted and ticket transitioned.
@@ -1640,7 +1640,7 @@ class TestReconcileServe:
         orch._active_serve = av
 
         issue = _make_qa_issue()
-        with mock.patch("symphony_lite.orchestrator.start_serve"):
+        with mock.patch("symphony_linear.orchestrator.start_serve"):
             orch._reconcile_serve([issue], {issue.id: issue})
 
         # (a) No duplicate "QA serve exited" comment — failure_comment_posted guards it.
@@ -1690,7 +1690,7 @@ class TestReconcileServe:
 
         new_proc = _make_fake_proc(returncode=None)
         with mock.patch(
-            "symphony_lite.orchestrator.start_serve", return_value=new_proc
+            "symphony_linear.orchestrator.start_serve", return_value=new_proc
         ) as m_serve:
             orch._reconcile_serve([issue1, issue2], issues_by_id)
 
@@ -1732,7 +1732,7 @@ class TestReconcileServe:
 
         fake_proc = _make_fake_proc(returncode=None)
         with mock.patch(
-            "symphony_lite.orchestrator.start_serve", return_value=fake_proc
+            "symphony_linear.orchestrator.start_serve", return_value=fake_proc
         ) as m_serve:
             orch._reconcile_serve([issue1, issue2], issues_by_id)
 
@@ -1764,7 +1764,7 @@ class TestReconcileServe:
         linear.set_response("list_comments_since", [_make_comment("c1", "LGTM")])
 
         with mock.patch(
-            "symphony_lite.orchestrator.start_serve", return_value=_make_fake_proc()
+            "symphony_linear.orchestrator.start_serve", return_value=_make_fake_proc()
         ):
             with mock.patch.object(orch, "_resume_pipeline") as m_resume:
                 orch._tick()
@@ -1779,7 +1779,7 @@ class TestReconcileServe:
         linear: FakeLinearClient,
     ) -> None:
         """ServeScriptMissing → comment posted on ticket, _active_serve unchanged."""
-        from symphony_lite.workspace import ServeScriptMissing
+        from symphony_linear.workspace import ServeScriptMissing
 
         config = _make_qa_config(tmp_path)
         orch = Orchestrator(
@@ -1789,7 +1789,7 @@ class TestReconcileServe:
 
         issue = _make_qa_issue()
         with mock.patch(
-            "symphony_lite.orchestrator.start_serve",
+            "symphony_linear.orchestrator.start_serve",
             side_effect=ServeScriptMissing("no serve script"),
         ):
             orch._reconcile_serve([issue], {issue.id: issue})
@@ -1814,7 +1814,7 @@ class TestReconcileServe:
 
         issue = _make_qa_issue()
         with mock.patch(
-            "symphony_lite.orchestrator.start_serve",
+            "symphony_linear.orchestrator.start_serve",
             side_effect=FileNotFoundError("bwrap not found"),
         ):
             orch._reconcile_serve([issue], {issue.id: issue})
@@ -1837,7 +1837,7 @@ class TestReconcileServe:
         # Deliberately do NOT call _add_ticket_state — state entry is missing.
 
         issue = _make_qa_issue()
-        with mock.patch("symphony_lite.orchestrator.start_serve") as m_serve:
+        with mock.patch("symphony_linear.orchestrator.start_serve") as m_serve:
             orch._reconcile_serve([issue], {issue.id: issue})
 
         m_serve.assert_not_called()
@@ -1874,7 +1874,7 @@ class TestReconcileServe:
         )  # state exists but workspace_path is empty
 
         issue = _make_qa_issue()
-        with mock.patch("symphony_lite.orchestrator.start_serve") as m_serve:
+        with mock.patch("symphony_linear.orchestrator.start_serve") as m_serve:
             orch._reconcile_serve([issue], {issue.id: issue})
 
         m_serve.assert_not_called()
@@ -1910,7 +1910,7 @@ class TestReconcileServe:
         linear.set_response("transition_to_state", LinearError("test transition error"))
 
         issue = _make_qa_issue()
-        with mock.patch("symphony_lite.orchestrator.start_serve") as m_serve:
+        with mock.patch("symphony_linear.orchestrator.start_serve") as m_serve:
             orch._reconcile_serve([issue], {issue.id: issue})
 
         m_serve.assert_not_called()
@@ -2128,7 +2128,7 @@ class TestReconcileServe:
 
         fake_proc = _make_fake_proc(returncode=None)
         with mock.patch(
-            "symphony_lite.orchestrator.start_serve", return_value=fake_proc
+            "symphony_linear.orchestrator.start_serve", return_value=fake_proc
         ):
             # Should not raise.
             orch._reconcile_serve([issue1, issue2], issues_by_id)
@@ -2200,10 +2200,10 @@ class TestFix2CancelledAgentGuards:
 
         with (
             mock.patch(
-                "symphony_lite.orchestrator.prepare", return_value="/tmp/ws/TEAM-1"
+                "symphony_linear.orchestrator.prepare", return_value="/tmp/ws/TEAM-1"
             ),
             mock.patch(
-                "symphony_lite.orchestrator.run_initial", side_effect=cancel_then_return
+                "symphony_linear.orchestrator.run_initial", side_effect=cancel_then_return
             ),
         ):
             orchestrator._new_ticket_pipeline(_make_issue())
@@ -2235,10 +2235,10 @@ class TestFix2CancelledAgentGuards:
 
         with (
             mock.patch(
-                "symphony_lite.orchestrator.prepare", return_value="/tmp/ws/TEAM-1"
+                "symphony_linear.orchestrator.prepare", return_value="/tmp/ws/TEAM-1"
             ),
             mock.patch(
-                "symphony_lite.orchestrator.run_initial", side_effect=cancel_then_return
+                "symphony_linear.orchestrator.run_initial", side_effect=cancel_then_return
             ),
         ):
             orchestrator._new_ticket_pipeline(_make_issue())
@@ -2272,7 +2272,7 @@ class TestFix2CancelledAgentGuards:
             return "Done!"
 
         with mock.patch(
-            "symphony_lite.orchestrator.run_resume", side_effect=cancel_then_return
+            "symphony_linear.orchestrator.run_resume", side_effect=cancel_then_return
         ):
             orchestrator._resume_pipeline(ts)
 
@@ -2315,7 +2315,7 @@ class TestFix3TransitionFirst:
 
         fake_proc = _make_fake_proc(returncode=None)
         with mock.patch(
-            "symphony_lite.orchestrator.start_serve", return_value=fake_proc
+            "symphony_linear.orchestrator.start_serve", return_value=fake_proc
         ):
             orch._reconcile_serve([issue1, issue2], issues_by_id)
 
@@ -2351,7 +2351,7 @@ class TestFix3TransitionFirst:
 
         fake_proc = _make_fake_proc(returncode=None)
         with mock.patch(
-            "symphony_lite.orchestrator.start_serve", return_value=fake_proc
+            "symphony_linear.orchestrator.start_serve", return_value=fake_proc
         ):
             orch._reconcile_serve([issue1, issue2], issues_by_id)
 
@@ -2376,7 +2376,7 @@ class TestFix4Drainer:
     ) -> None:
         """Fix 4: drainer fills buffer up to _DRAINER_CAP bytes and stops appending."""
         import io
-        from symphony_lite.orchestrator import _DRAINER_CAP
+        from symphony_linear.orchestrator import _DRAINER_CAP
 
         config = _make_qa_config(tmp_path)
         orch = Orchestrator(
@@ -2443,7 +2443,7 @@ class TestFix4Drainer:
             original_start_drainers(av)
 
         with mock.patch(
-            "symphony_lite.orchestrator.start_serve", return_value=fake_proc
+            "symphony_linear.orchestrator.start_serve", return_value=fake_proc
         ):
             with mock.patch.object(
                 orch, "_start_drainers", side_effect=patched_start_drainers
@@ -2486,7 +2486,7 @@ class TestCorrection3:
         new_proc = _make_fake_proc(returncode=None)
 
         with mock.patch(
-            "symphony_lite.orchestrator.start_serve", return_value=new_proc
+            "symphony_linear.orchestrator.start_serve", return_value=new_proc
         ) as m_serve:
             orch._reconcile_serve([issue], {issue.id: issue})
 
@@ -2516,7 +2516,7 @@ class TestCorrection3:
         new_proc = _make_fake_proc(returncode=None)
 
         with mock.patch(
-            "symphony_lite.orchestrator.start_serve", return_value=new_proc
+            "symphony_linear.orchestrator.start_serve", return_value=new_proc
         ) as m_serve:
             orch._reconcile_serve([issue], {issue.id: issue})
 
@@ -2548,10 +2548,10 @@ class TestCorrection3:
 
         with (
             mock.patch(
-                "symphony_lite.orchestrator.prepare", return_value="/tmp/ws/TEAM-1"
+                "symphony_linear.orchestrator.prepare", return_value="/tmp/ws/TEAM-1"
             ),
             mock.patch(
-                "symphony_lite.orchestrator.run_initial", side_effect=cancel_then_return
+                "symphony_linear.orchestrator.run_initial", side_effect=cancel_then_return
             ),
         ):
             orchestrator._new_ticket_pipeline(_make_issue())
@@ -2593,7 +2593,7 @@ class TestCorrection3:
             return "Done!"
 
         with mock.patch(
-            "symphony_lite.orchestrator.run_resume", side_effect=cancel_then_return
+            "symphony_linear.orchestrator.run_resume", side_effect=cancel_then_return
         ):
             orchestrator._resume_pipeline(ts)
 
@@ -2677,7 +2677,7 @@ class TestIntegration:
         )  # type: ignore[arg-type]
 
         with mock.patch(
-            "symphony_lite.orchestrator.run_initial", return_value=("ses-int", "Done.")
+            "symphony_linear.orchestrator.run_initial", return_value=("ses-int", "Done.")
         ):
             orch._new_ticket_pipeline(_make_issue())
 
@@ -2685,7 +2685,7 @@ class TestIntegration:
         assert ts is not None
         assert ts.status == TicketStatus.needs_input
         assert Path(ts.workspace_path).is_dir()
-        from symphony_lite.workspace import remove
+        from symphony_linear.workspace import remove
 
         remove("TEAM-1", str(ws_root))
 

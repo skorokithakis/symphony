@@ -16,7 +16,7 @@ dependencies = [
 ]
 
 [project.scripts]
-symphony = "symphony_lite.cli:main"
+symphony = "symphony_linear.cli:main"
 
 [project.optional-dependencies]
 dev = [
@@ -24,7 +24,7 @@ dev = [
 ]
 
 [tool.hatch.build.targets.wheel]
-packages = ["symphony_lite"]
+packages = ["symphony_linear"]
 
 [tool.mypy]
 python_version = "3.11"

@@ -15,7 +15,7 @@ import subprocess
 from pathlib import Path
 from typing import Callable
 
-from symphony_lite.sandbox import run_in_sandbox
+from symphony_linear.sandbox import run_in_sandbox
 
 logger = logging.getLogger(__name__)
 

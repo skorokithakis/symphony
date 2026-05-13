@@ -15,7 +15,7 @@ from pathlib import Path
 
 import pytest
 
-from symphony_lite.workspace import (
+from symphony_linear.workspace import (
     BranchFailed,
     CloneFailed,
     PathContainmentError,

@@ -96,7 +96,7 @@ Design notes
 -------------------------------------------------------------------------------
 
 - Each call to ``run_initial`` or ``run_resume`` represents exactly one turn.
-- The process is launched via ``run_in_sandbox`` from ``symphony_lite.sandbox``.
+- The process is launched via ``run_in_sandbox`` from ``symphony_linear.sandbox``.
 - The ``on_subprocess`` callback is invoked immediately after launch so the
   orchestrator can register the Popen handle for kill-on-label-removal.
 - Timeout handling uses ``subprocess.Popen.wait(timeout=...)``.  On timeout
@@ -113,7 +113,7 @@ import subprocess
 from pathlib import Path
 from typing import Callable
 
-from symphony_lite.sandbox import run_in_sandbox
+from symphony_linear.sandbox import run_in_sandbox
 
 logger = logging.getLogger(__name__)
 
