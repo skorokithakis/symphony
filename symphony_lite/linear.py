@@ -88,6 +88,7 @@ class Issue(BaseModel):
     project: Project | None = None
     comments: list[Comment] = Field(default_factory=list)
     archived_at: datetime | None = Field(None, alias="archivedAt")
+    updated_at: datetime = Field(alias="updatedAt")
 
 
 # ---------------------------------------------------------------------------
@@ -246,6 +247,7 @@ class LinearClient:
               id
               identifier
               title
+              updatedAt
               state { name }
               labels { nodes { name } }
               branchName
@@ -274,6 +276,7 @@ class LinearClient:
             identifier
             title
             description
+            updatedAt
             archivedAt
             state { name }
             labels { nodes { name } }
@@ -514,6 +517,7 @@ def _parse_issue_summary(raw: dict[str, Any]) -> Issue:
             else None
         ),
         archivedAt=raw.get("archivedAt"),
+        updatedAt=raw["updatedAt"],
     )
 
 
@@ -533,6 +537,7 @@ def _parse_issue_full(raw: dict[str, Any]) -> Issue:
             else None
         ),
         archivedAt=raw.get("archivedAt"),
+        updatedAt=raw["updatedAt"],
         comments=[
             Comment(
                 id=c["id"],

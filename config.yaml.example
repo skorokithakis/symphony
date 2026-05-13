@@ -19,6 +19,13 @@ linear:
   # REQUIRED. Email address of the bot user in Linear.
   bot_user_email: yourname+symphony@gmail.com
 
+  # Optional. Linear workflow state that enables manual QA. When a ticket
+  # enters this state, the daemon runs the repo's .symphony/serve script
+  # inside the sandbox. Only one serve runs globally; moving a different
+  # ticket into this state bumps the previous one back to needs_input_state.
+  # Omit to disable the feature entirely.
+  # qa_state: QA
+
 sandbox:
   # Paths to conceal inside the sandbox (defaults shown below).
   # Directories are overlaid with an empty tmpfs; files and sockets are

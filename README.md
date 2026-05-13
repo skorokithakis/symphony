@@ -58,6 +58,14 @@ customise the name later in the config.
 Create a label named **agent** in the team. Tickets with this label are picked
 up by the daemon. You can override the label name in the config.
 
+### 5. (Optional) Add a QA workflow state
+
+If you want to manually QA an agent's work — e.g. run a dev server and click
+around — add a workflow state named **QA** (or whatever you prefer) and set
+`linear.qa_state` in `config.yaml`. When you move a ticket into this state,
+the daemon runs `.symphony/serve` from that ticket's workspace and pauses the
+agent. See **Manual QA** below.
+
 ---
 
 ## Per-repo Linear setup (repeat for each repo)
@@ -86,6 +94,16 @@ If your repo has an **executable** file at `.symphony/setup`, the daemon runs
 it inside the sandbox after cloning. Use it to install dependencies, set up
 environments, etc. Exit non-zero to abort the ticket with an error comment. The
 script has a 5-minute timeout.
+
+### `.symphony/serve` (optional)
+
+If your repo has an **executable** file at `.symphony/serve`, the daemon runs
+it inside the sandbox when its ticket enters the configured `qa_state` (see
+`linear.qa_state` in the config). Use it to launch a dev server, worker, or
+any other process you want to interact with manually. The script has no time
+limit; it stays running until the ticket leaves the QA state (or another
+ticket takes over QA). Only one serve runs globally at a time. See
+**Manual QA** below.
 
 ---
 
@@ -117,6 +135,13 @@ linear:
 
   # REQUIRED. Email address of the bot user in Linear.
   bot_user_email: yourname+symphony@gmail.com
+
+  # Optional. Linear workflow state that enables manual QA. When a ticket
+  # enters this state, the daemon runs the repo's .symphony/serve script
+  # inside the sandbox. Only one serve runs globally; moving a different
+  # ticket into this state bumps the previous one back to needs_input_state.
+  # Omit to disable the feature entirely.
+  # qa_state: QA
 
 sandbox:
   # Paths to conceal inside the sandbox (defaults shown below).
@@ -237,6 +262,19 @@ ticket it:
 **Resume.** When you comment, the daemon picks up new human comments, launches
 `opencode run --session <id>`, and posts the result.
 
+**Manual QA.** If you configure `linear.qa_state` and add a `.symphony/serve`
+script to your repo, moving a ticket into that workflow state launches the
+script inside the sandbox so you can interact with the agent's work (run a
+server, exercise a worker, etc.). Only one serve runs globally; moving a
+second ticket into QA bumps the first back to `Needs Input` and starts the
+new one. The agent doesn't process comments while a ticket is in QA — move
+it out of QA (or remove the trigger label) to resume the conversation.
+If the script exits non-zero within 10s of launch, or exits later for any
+reason, the daemon posts a comment with the exit code and the first 1000
+chars of stdout/stderr and transitions the ticket back to `Needs Input`.
+Clean exits within 10s are silent (assumed to be a parent that daemonized
+a child).
+
 **Sandbox.** Each OpenCode turn runs inside a bubblewrap sandbox. The workspace
 is mounted read-write; the rest of the host filesystem is read-only. Credential
 directories (SSH, GPG, cloud credentials, Docker socket) are concealed. The
@@ -281,6 +319,11 @@ any conversational channel other than Linear.
 
 - **No priority or ordering.** Tickets are picked up in whatever order Linear
   returns them. There is no queue priority system.
+
+- **One QA server at a time.** Only a single `.symphony/serve` process runs
+  globally. There is no port allocation or routing — your serve script is
+  responsible for binding to whatever port you (or your reverse proxy)
+  expect.
 
 ---
 

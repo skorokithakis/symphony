@@ -71,6 +71,7 @@ class _LinearConfig(BaseModel):
     trigger_label: str = Field("agent", description="Label that triggers the bot")
     in_progress_state: str = Field("In Progress", description="Linear state for active work")
     needs_input_state: str = Field("Needs Input", description="Linear state when input is needed")
+    qa_state: str | None = Field(None, description="Optional Linear state for QA; polled in addition to in_progress and needs_input")
     bot_user_email: str = Field(..., description="Email of the bot user in Linear")
 
 

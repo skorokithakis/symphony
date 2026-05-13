@@ -19,12 +19,14 @@ from symphony_lite.workspace import (
     BranchFailed,
     CloneFailed,
     PathContainmentError,
+    ServeScriptMissing,
     SetupFailed,
     WorkspaceError,
     _check_containment,
     _sanitize_identifier,
     prepare,
     remove,
+    start_serve,
 )
 
 # ---------------------------------------------------------------------------
@@ -560,3 +562,100 @@ class TestPrepareRemoveIntegration:
         assert os.path.realpath(result_path) == os.path.realpath(expected_dir)
 
         remove("Team/With Spaces", str(workspace_root))
+
+
+# ---------------------------------------------------------------------------
+# Unit: start_serve — missing / non-executable script
+# ---------------------------------------------------------------------------
+
+
+class TestStartServeMissingScript:
+    """start_serve raises ServeScriptMissing when the script is absent or not executable."""
+
+    def test_raises_when_symphony_dir_absent(self, tmp_path: Path) -> None:
+        """No .symphony directory at all → ServeScriptMissing."""
+        workspace = tmp_path / "ws"
+        workspace.mkdir()
+        with pytest.raises(ServeScriptMissing, match=r"\.symphony/serve"):
+            start_serve(str(workspace), hide_paths=[])
+
+    def test_raises_when_serve_file_absent(self, tmp_path: Path) -> None:
+        """Directory exists but serve file is missing → ServeScriptMissing."""
+        workspace = tmp_path / "ws"
+        symphony_dir = workspace / ".symphony"
+        symphony_dir.mkdir(parents=True)
+        with pytest.raises(ServeScriptMissing, match=r"\.symphony/serve"):
+            start_serve(str(workspace), hide_paths=[])
+
+    def test_raises_when_serve_not_executable(self, tmp_path: Path) -> None:
+        """serve file exists but is not executable → ServeScriptMissing."""
+        workspace = tmp_path / "ws"
+        symphony_dir = workspace / ".symphony"
+        symphony_dir.mkdir(parents=True)
+        serve_file = symphony_dir / "serve"
+        serve_file.write_text("#!/bin/bash\nsleep 60\n")
+        # Explicitly remove execute bit
+        serve_file.chmod(0o644)
+        with pytest.raises(ServeScriptMissing, match=r"\.symphony/serve"):
+            start_serve(str(workspace), hide_paths=[])
+
+    def test_serve_script_missing_is_workspace_error(self) -> None:
+        """ServeScriptMissing is a subclass of WorkspaceError."""
+        assert issubclass(ServeScriptMissing, WorkspaceError)
+
+    def test_serve_script_missing_message(self) -> None:
+        exc = ServeScriptMissing("missing at /some/path")
+        assert "missing at /some/path" in str(exc)
+
+
+# ---------------------------------------------------------------------------
+# Integration: start_serve — live Popen
+# ---------------------------------------------------------------------------
+
+
+@pytest.mark.integration
+class TestStartServeIntegration:
+    """start_serve returns a live Popen when the script exists and is executable."""
+
+    def test_returns_popen_for_executable_script(self, tmp_path: Path) -> None:
+        """A trivial 'sleep 60' serve script → Popen is returned and running."""
+        _require_bwrap()
+
+        workspace = tmp_path / "ws"
+        symphony_dir = workspace / ".symphony"
+        symphony_dir.mkdir(parents=True)
+        serve_file = symphony_dir / "serve"
+        serve_file.write_text("#!/bin/bash\nsleep 60\n")
+        serve_file.chmod(serve_file.stat().st_mode | stat.S_IEXEC)
+
+        proc = start_serve(str(workspace), hide_paths=[])
+        try:
+            # Process should still be running (sleep 60).
+            assert proc.poll() is None, "serve process exited prematurely"
+            # Both pipes should be open.
+            assert proc.stdout is not None
+            assert proc.stderr is not None
+        finally:
+            proc.kill()
+            proc.wait()
+
+    def test_returns_popen_with_extra_rw_paths(self, tmp_path: Path) -> None:
+        """extra_rw_paths is forwarded to the sandbox without error."""
+        _require_bwrap()
+
+        workspace = tmp_path / "ws"
+        symphony_dir = workspace / ".symphony"
+        symphony_dir.mkdir(parents=True)
+        serve_file = symphony_dir / "serve"
+        serve_file.write_text("#!/bin/bash\nsleep 60\n")
+        serve_file.chmod(serve_file.stat().st_mode | stat.S_IEXEC)
+
+        extra_dir = tmp_path / "extra"
+        extra_dir.mkdir()
+
+        proc = start_serve(str(workspace), hide_paths=[], extra_rw_paths=[str(extra_dir)])
+        try:
+            assert proc.poll() is None
+        finally:
+            proc.kill()
+            proc.wait()

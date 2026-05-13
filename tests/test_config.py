@@ -286,3 +286,30 @@ class TestLoadConfig:
             str(Path.home() / "projects" / "shared"),
             "/opt/tools",
         ]
+
+    def test_qa_state_defaults_to_none(self, tmp_path: Path) -> None:
+        """qa_state is optional and defaults to None."""
+        cfg = {
+            "linear": {
+                "api_key": "test-key",
+                "bot_user_email": "bot@example.com",
+            },
+        }
+        _write_yaml(tmp_path / "config.yaml", cfg)
+
+        config = load_config(tmp_path)
+        assert config.linear.qa_state is None
+
+    def test_qa_state_round_trips_through_yaml(self, tmp_path: Path) -> None:
+        """qa_state is accepted and preserved when set in YAML."""
+        cfg = {
+            "linear": {
+                "api_key": "test-key",
+                "bot_user_email": "bot@example.com",
+                "qa_state": "In Review",
+            },
+        }
+        _write_yaml(tmp_path / "config.yaml", cfg)
+
+        config = load_config(tmp_path)
+        assert config.linear.qa_state == "In Review"

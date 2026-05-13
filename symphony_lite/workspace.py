@@ -1,7 +1,8 @@
-"""Per-ticket workspace lifecycle: clone, branch, setup, remove.
+"""Per-ticket workspace lifecycle: clone, branch, setup, serve, remove.
 
 Git operations run outside the sandbox using the daemon's credentials.
-The ``.symphony/setup`` script runs inside the sandbox via the sandbox wrapper.
+The ``.symphony/setup`` and ``.symphony/serve`` scripts run inside the sandbox
+via the sandbox wrapper.
 """
 
 from __future__ import annotations
@@ -55,6 +56,10 @@ class SetupFailed(WorkspaceError):
 
 class PathContainmentError(WorkspaceError):
     """Computed workspace path escapes the workspace root (security invariant)."""
+
+
+class ServeScriptMissing(WorkspaceError):
+    """The ``.symphony/serve`` script is absent or not executable."""
 
 
 # ---------------------------------------------------------------------------
@@ -205,6 +210,54 @@ def _run_setup_script(
         )
 
     logger.info(".symphony/setup completed successfully for workspace %s", workspace_path)
+
+
+def start_serve(
+    workspace_path: str,
+    hide_paths: list[str],
+    extra_rw_paths: list[str] | None = None,
+) -> subprocess.Popen[bytes]:
+    """Launch ``.symphony/serve`` inside the sandbox and return the Popen handle.
+
+    Unlike :func:`_run_setup_script`, this function does **not** wait for the
+    process to finish — ``.symphony/serve`` is expected to be a long-running
+    process.  The caller is responsible for managing the process lifetime
+    (draining/closing pipes, killing, waiting).
+
+    Args:
+        workspace_path: Host path to the workspace directory.
+        hide_paths: Paths to conceal inside the sandbox.
+        extra_rw_paths: Additional host paths to bind read-write inside the
+            sandbox.
+
+    Returns:
+        A :class:`~subprocess.Popen` instance for the sandboxed serve process.
+        Both ``stdout`` and ``stderr`` are :data:`subprocess.PIPE` so the
+        caller can capture stderr tail on early failure.
+
+    Raises:
+        ServeScriptMissing: If ``.symphony/serve`` is absent or not executable.
+        FileNotFoundError: If ``bwrap`` is not available on ``$PATH``.
+    """
+    serve_path = os.path.join(workspace_path, ".symphony", "serve")
+    if not os.path.isfile(serve_path) or not os.access(serve_path, os.X_OK):
+        raise ServeScriptMissing(
+            f".symphony/serve is missing or not executable at {serve_path}"
+        )
+
+    logger.info("Launching .symphony/serve for workspace %s", workspace_path)
+
+    return run_in_sandbox(
+        cmd=["./.symphony/serve"],
+        workspace_path=workspace_path,
+        hide_paths=hide_paths,
+        env={
+            "HOME": os.environ.get("HOME", str(Path.home())),
+        },
+        stdout=subprocess.PIPE,
+        stderr=subprocess.PIPE,
+        extra_rw_paths=extra_rw_paths or [],
+    )
 
 
 def _tail(text: str, lines: int = 20) -> str:

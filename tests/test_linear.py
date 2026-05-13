@@ -64,6 +64,7 @@ def sample_issue_raw() -> dict[str, Any]:
         "id": "abc-123",
         "identifier": "TEAM-42",
         "title": "Fix the thing",
+        "updatedAt": "2025-06-01T00:00:00Z",
         "state": {"name": "In Progress"},
         "labels": {"nodes": [{"name": "agent"}, {"name": "bug"}]},
         "branchName": "team-42-fix-thing",
@@ -206,6 +207,7 @@ class TestListTriggeredIssues:
                             "id": "i-1",
                             "identifier": "TEA-1",
                             "title": "Do A",
+                            "updatedAt": "2025-06-01T00:00:00Z",
                             "state": {"name": "In Progress"},
                             "labels": {"nodes": [{"name": "agent"}]},
                             "branchName": "tea-1-do-a",
@@ -215,6 +217,7 @@ class TestListTriggeredIssues:
                             "id": "i-2",
                             "identifier": "TEA-2",
                             "title": "Do B",
+                            "updatedAt": "2025-06-01T00:00:00Z",
                             "state": {"name": "In Progress"},
                             "labels": {"nodes": [{"name": "agent"}]},
                             "branchName": None,
@@ -247,6 +250,7 @@ class TestListTriggeredIssues:
                             "id": "i-1",
                             "identifier": "TEA-1",
                             "title": "A",
+                            "updatedAt": "2025-06-01T00:00:00Z",
                             "state": {"name": "In Progress"},
                             "labels": {"nodes": [{"name": "agent"}]},
                             "branchName": None,
@@ -256,6 +260,7 @@ class TestListTriggeredIssues:
                             "id": "i-2",
                             "identifier": "TEA-2",
                             "title": "B",
+                            "updatedAt": "2025-06-01T00:00:00Z",
                             "state": {"name": "Backlog"},
                             "labels": {"nodes": [{"name": "agent"}]},
                             "branchName": None,
@@ -319,6 +324,7 @@ class TestGetIssue:
             "id": "abc-123",
             "identifier": "TEAM-42",
             "title": "Fix the thing",
+            "updatedAt": "2025-06-01T00:00:00Z",
             "archivedAt": "2025-01-01T00:00:00.000Z",
             "state": {"name": "Done"},
             "labels": {"nodes": []},
@@ -712,12 +718,13 @@ class TestIssueModel:
     def test_branch_name_alias(self) -> None:
         issue = Issue(
             id="i", identifier="T-1", title="T", state="S",
-            branchName="feat/x",
+            branchName="feat/x", updatedAt="2025-06-01T00:00:00Z",
         )
         assert issue.branch_name == "feat/x"
 
     def test_defaults(self) -> None:
-        issue = Issue(id="i", identifier="T-1", title="T", state="S")
+        issue = Issue(id="i", identifier="T-1", title="T", state="S",
+                      updatedAt="2025-06-01T00:00:00Z")
         assert issue.labels == []
         assert issue.comments == []
         assert issue.branch_name is None

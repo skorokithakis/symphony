@@ -8,6 +8,7 @@ import subprocess
 import threading
 import time
 from concurrent.futures import Future, ThreadPoolExecutor
+from dataclasses import dataclass, field
 from datetime import datetime, timezone
 from pathlib import Path
 from typing import Any
@@ -28,7 +29,7 @@ from symphony_lite.opencode import (
     run_resume,
 )
 from symphony_lite.state import StateManager, TicketState, TicketStatus
-from symphony_lite.workspace import WorkspaceError, prepare, remove
+from symphony_lite.workspace import ServeScriptMissing, WorkspaceError, prepare, remove, start_serve
 
 logger = logging.getLogger(__name__)
 
@@ -89,6 +90,39 @@ def _format_comments_message(comments: list[Comment]) -> str:
 
 
 # ---------------------------------------------------------------------------
+# QA serve container
+# ---------------------------------------------------------------------------
+
+_DRAINER_CAP = 1000  # bytes captured per pipe
+
+
+@dataclass
+class _ActiveServe:
+    """Mutable container for a running QA serve process."""
+
+    ticket_id: str
+    ticket_identifier: str
+    proc: subprocess.Popen[bytes]
+    start_monotonic: float
+    stdout_head: bytearray = field(default_factory=bytearray)
+    stderr_head: bytearray = field(default_factory=bytearray)
+    intentional_kill: threading.Event = field(default_factory=threading.Event)
+    failure_comment_posted: bool = False
+
+
+def _format_serve_died_comment(rc: int | None, stdout: str, stderr: str) -> str:
+    """Format the 'QA serve exited' Linear comment body."""
+    stdout_body = stdout[:_DRAINER_CAP] if stdout else "(empty)"
+    stderr_body = stderr[:_DRAINER_CAP] if stderr else "(empty)"
+    return (
+        f"**Symphony**: QA serve exited (rc={rc}). "
+        "Transitioning ticket back to Needs Input — re-enter QA to retry.\n\n"
+        f"**stdout** (first 1000 chars):\n```\n{stdout_body}\n```\n\n"
+        f"**stderr** (first 1000 chars):\n```\n{stderr_body}\n```"
+    )
+
+
+# ---------------------------------------------------------------------------
 # Orchestrator
 # ---------------------------------------------------------------------------
 
@@ -110,6 +144,10 @@ class Orchestrator:
         # Active task guard.
         self._active_tasks: dict[str, Future[None]] = {}
         self._task_lock = threading.Lock()
+
+        # Active QA serve process (in-memory only; not persisted).
+        self._active_serve: _ActiveServe | None = None
+        self._serve_lock = threading.Lock()
 
         # Serialises upsert+save pairs.
         self._state_lock = threading.Lock()
@@ -206,6 +244,12 @@ class Orchestrator:
 
         # --- Step 2: new tickets + setup-error / failed-no-session retries ---
         for issue in issues:
+            # Skip any pipeline scheduling while the ticket is in QA — the serve
+            # handles it; the agent should not run concurrently.
+            if self._config.linear.qa_state is not None and issue.state == self._config.linear.qa_state:
+                logger.debug("Skipping step-2 scheduling for %s: ticket is in QA state", issue.id)
+                continue
+
             existing = self._state.get(issue.id)
             if existing is not None:
                 # Retry setup-error tickets if user commented.
@@ -276,10 +320,23 @@ class Orchestrator:
                 logger.exception("Failed to remove workspace for %s", tid)
             self._state.save()
 
+        # --- Step 3b: QA serve reconciliation ---
+        self._reconcile_serve(issues, issues_by_id)
+
         # --- Step 4: per-status tasks ---
         for ticket_state in self._state.tickets:
             tid = ticket_state.ticket_id
             st = ticket_state.status
+
+            # Skip ALL per-status scheduling while the ticket is in QA state.
+            # The serve is managed by _reconcile_serve; no agent pipeline should
+            # run concurrently (it would clobber the human's QA move).
+            fetched = issues_by_id.get(tid)
+            if (fetched is not None
+                    and self._config.linear.qa_state is not None
+                    and fetched.state == self._config.linear.qa_state):
+                logger.debug("Skipping step-4 scheduling for %s: ticket is in QA state", tid)
+                continue
 
             if st == TicketStatus.failed and ticket_state.setup_error is not None:
                 continue
@@ -291,6 +348,273 @@ class Orchestrator:
                 if ticket_state.session_id:
                     self._schedule_task(tid, self._resume_pipeline, ticket_state)
                 # no-session + no setup_error: handled in step 2 (gated on new comment)
+
+    # ==================================================================
+    # QA serve reconciliation
+    # ==================================================================
+
+    def _reconcile_serve(self, issues: list[Issue], issues_by_id: dict[str, Issue]) -> None:
+        """Reconcile the active QA serve process against the current set of issues.
+
+        Called once per tick after pipeline scheduling.  No-op when qa_state is
+        not configured.
+        """
+        qa_state = self._config.linear.qa_state
+        if qa_state is None:
+            return
+
+        # Fix 5: if the active serve process has already exited (without the
+        # watchdog noticing — e.g. it exited after the 10s window), post a
+        # 'serve died' comment, transition the ticket back to needs_input, and
+        # prune it from qa_tickets so we don't re-serve it this tick.
+        qa_tickets = [i for i in issues if i.state == qa_state]
+        qa_ids = {i.id for i in qa_tickets}
+
+        with self._serve_lock:
+            av = self._active_serve
+        if av is not None and av.proc.poll() is not None:
+            rc = av.proc.returncode
+            logger.info(
+                "QA serve for %s exited (rc=%s) post-watchdog — notifying",
+                av.ticket_identifier, rc,
+            )
+            if not av.failure_comment_posted:
+                stdout_text = bytes(av.stdout_head).decode(errors="replace")
+                stderr_text = bytes(av.stderr_head).decode(errors="replace")
+                body = _format_serve_died_comment(rc, stdout_text, stderr_text)
+                try:
+                    self._linear.post_comment(av.ticket_id, body)
+                except Exception:
+                    logger.exception("Failed to post serve-died comment for %s", av.ticket_id)
+            try:
+                self._linear.transition_to_state(av.ticket_id, self._config.linear.needs_input_state)
+            except Exception:
+                logger.exception("Failed to transition %s after serve died", av.ticket_id)
+            # Prune from qa_tickets so we don't re-serve this tick.
+            qa_tickets = [t for t in qa_tickets if t.id != av.ticket_id]
+            qa_ids = {t.id for t in qa_tickets}
+            with self._serve_lock:
+                if self._active_serve is av:
+                    self._active_serve = None
+
+        with self._serve_lock:
+            active_id = self._active_serve.ticket_id if self._active_serve else None
+
+        # 1. Kill the active serve if its owner left QA.
+        if active_id is not None and active_id not in qa_ids:
+            logger.info("QA serve owner %s left QA — killing serve", active_id)
+            self._kill_active_serve()
+
+        if not qa_tickets:
+            return
+
+        # 2. Determine the winner: the ticket with the most recent updated_at.
+        winner = max(qa_tickets, key=lambda i: i.updated_at)
+        winner_id = winner.id
+
+        # Re-read active_id (may have been cleared by kill above).
+        with self._serve_lock:
+            active_id = self._active_serve.ticket_id if self._active_serve else None
+
+        # If the winner changed, kill the current serve so we can start a new one.
+        if active_id is not None and active_id != winner_id:
+            logger.info(
+                "QA winner changed from %s to %s — killing old serve",
+                active_id, winner_id,
+            )
+            self._kill_active_serve()
+            active_id = None
+
+        # 3. Bump losers: Fix 3 — transition first, comment only on success.
+        for loser in qa_tickets:
+            if loser.id == winner_id:
+                continue
+            logger.info(
+                "Bumping %s out of QA — %s is the winner",
+                loser.identifier, winner.identifier,
+            )
+            try:
+                self._linear.transition_to_state(loser.id, self._config.linear.needs_input_state)
+            except LinearError:
+                logger.exception("Failed to transition bumped ticket %s to needs_input", loser.id)
+                continue  # skip comment — loser still in QA, will retry next tick
+            try:
+                self._linear.post_comment(
+                    loser.id,
+                    f"**Symphony**: Bumped out of QA — {winner.identifier} took over.",
+                )
+            except LinearError:
+                logger.exception("Failed to post bump comment for %s", loser.id)
+
+        # 4. Start serve for winner if not already running.
+        if active_id == winner_id:
+            return  # already serving the winner
+
+        ts = self._state.get(winner_id)
+        if ts is None:
+            logger.warning("QA winner %s has no state entry — cannot start serve", winner_id)
+            return
+
+        workspace_path = ts.workspace_path
+        if not workspace_path:
+            logger.warning("QA winner %s has empty workspace_path — cannot start serve", winner_id)
+            return
+
+        # Cancel any in-flight agent task for the winner before starting the serve.
+        with self._task_lock:
+            has_inflight = winner_id in self._active_tasks and not self._active_tasks[winner_id].done()
+        if has_inflight:
+            logger.info(
+                "Cancelling in-flight task for QA winner %s before starting serve",
+                winner.identifier,
+            )
+            self._cancel_ticket(winner_id)
+
+        logger.info("Starting QA serve for %s (workspace=%s)", winner.identifier, workspace_path)
+        try:
+            proc = start_serve(
+                workspace_path=workspace_path,
+                hide_paths=self._config.sandbox.hide_paths,
+                extra_rw_paths=self._config.sandbox.extra_rw_paths,
+            )
+        except (ServeScriptMissing, WorkspaceError, FileNotFoundError) as exc:
+            logger.error("Failed to start QA serve for %s: %s", winner.identifier, exc)
+            self._post_comment_safe(
+                winner_id,
+                f"**Symphony**: QA serve failed to start:\n```\n{exc}\n```",
+            )
+            return
+
+        av = _ActiveServe(
+            ticket_id=winner_id,
+            ticket_identifier=winner.identifier,
+            proc=proc,
+            start_monotonic=time.monotonic(),
+        )
+        with self._serve_lock:
+            self._active_serve = av
+
+        # Fix 4: start drainer threads immediately so pipes never block.
+        self._start_drainers(av)
+
+        # Spawn watchdog thread: monitors the first 10s of the serve process.
+        t = threading.Thread(
+            target=self._serve_watchdog,
+            args=(av,),
+            daemon=True,
+            name=f"serve-watchdog-{winner.identifier}",
+        )
+        t.start()
+
+    def _serve_watchdog(self, av: _ActiveServe) -> None:
+        """Watch the serve process for the first 10 seconds.
+
+        - If it exits with rc != 0 within 10s and was NOT intentionally killed:
+          post a failure comment and clear _active_serve.
+        - If it exits with rc == 0 within 10s: clear _active_serve silently.
+        - If still alive after 10s: exit the watchdog (drainers are already running).
+        """
+        try:
+            av.proc.wait(timeout=10)
+        except subprocess.TimeoutExpired:
+            # Serve is still alive after 10s — healthy.  Drainers are already
+            # running (started immediately after start_serve returned).
+            return
+
+        # Process exited within 10s.
+        rc = av.proc.returncode
+        if rc == 0:
+            logger.info("QA serve for %s exited cleanly (rc=0) within 10s", av.ticket_identifier)
+        elif av.intentional_kill.is_set():
+            # Fix 1: we killed it ourselves — suppress the failure comment.
+            logger.info(
+                "QA serve for %s killed intentionally (rc=%s) — suppressing comment",
+                av.ticket_identifier, rc,
+            )
+        else:
+            # Brief pause to let drainers capture post-mortem output.
+            time.sleep(0.2)
+            stderr_text = bytes(av.stderr_head).decode(errors="replace")
+            stdout_text = bytes(av.stdout_head).decode(errors="replace")
+            body = _format_serve_died_comment(rc, stdout_text, stderr_text)
+            logger.error("QA serve for %s exited with rc=%s within 10s", av.ticket_identifier, rc)
+            self._post_comment_safe(av.ticket_id, body)
+            av.failure_comment_posted = True
+            # Transition the ticket out of QA so the next tick doesn't respawn the serve.
+            try:
+                self._linear.transition_to_state(av.ticket_id, self._config.linear.needs_input_state)
+            except LinearError:
+                logger.exception(
+                    "Failed to transition %s out of QA after serve failure", av.ticket_id
+                )
+
+        # Clear _active_serve (only if it still points to this _ActiveServe).
+        with self._serve_lock:
+            if self._active_serve is av:
+                self._active_serve = None
+
+    def _start_drainers(self, av: _ActiveServe) -> None:
+        """Start two daemon threads that drain stdout and stderr of *av.proc*.
+
+        Each thread reads in chunks, appending to the corresponding head buffer
+        until _DRAINER_CAP bytes have been captured, then continues reading and
+        discarding to prevent pipe-buffer deadlock.
+        """
+        for pipe_attr, buf_attr, name in (
+            ("stdout", "stdout_head", "stdout"),
+            ("stderr", "stderr_head", "stderr"),
+        ):
+            pipe = getattr(av.proc, pipe_attr)
+            if pipe is None:
+                continue
+            buf: bytearray = getattr(av, buf_attr)
+            t = threading.Thread(
+                target=self._pipe_drainer,
+                args=(pipe, buf),
+                daemon=True,
+                name=f"serve-drainer-{av.ticket_identifier}-{name}",
+            )
+            t.start()
+
+    def _pipe_drainer(self, pipe: Any, buf: bytearray) -> None:
+        """Read *pipe* in chunks until EOF, appending to *buf* up to _DRAINER_CAP bytes.
+
+        Buffer reads from the watchdog and the dead-proc path in _reconcile_serve
+        are intentionally lock-free.  ``bytes(bytearray)`` is atomic under the GIL,
+        so readers always see a consistent snapshot; at worst they see a slightly
+        truncated capture if a read races with an append.  This is an accepted
+        tradeoff — the comment may show partial output, which is fine for diagnostics.
+        """
+        try:
+            while True:
+                chunk = pipe.read(4096)
+                if not chunk:
+                    break
+                if len(buf) < _DRAINER_CAP:
+                    buf.extend(chunk[: _DRAINER_CAP - len(buf)])
+        except Exception:
+            pass
+
+    def _kill_active_serve(self) -> None:
+        """Kill the active serve process and clear _active_serve (under _serve_lock).
+
+        Sets intentional_kill before killing so the watchdog suppresses the
+        failure comment.
+        """
+        with self._serve_lock:
+            if self._active_serve is None:
+                return
+            av = self._active_serve
+            self._active_serve = None
+
+        if av.proc.returncode is None:
+            logger.info("Killing active QA serve process")
+            av.intentional_kill.set()
+            try:
+                av.proc.kill()
+                av.proc.wait(timeout=5)
+            except Exception:
+                pass
 
     # ==================================================================
     # Task scheduling
@@ -329,6 +653,22 @@ class Orchestrator:
             try:
                 proc.kill()
                 proc.wait(timeout=5)
+            except Exception:
+                pass
+
+        # Also kill the QA serve if this ticket owns it.
+        with self._serve_lock:
+            if self._active_serve is not None and self._active_serve.ticket_id == ticket_id:
+                serve_av = self._active_serve
+                self._active_serve = None
+            else:
+                serve_av = None
+        if serve_av is not None and serve_av.proc.returncode is None:
+            logger.info("Cancelling QA serve for %s", ticket_id)
+            serve_av.intentional_kill.set()
+            try:
+                serve_av.proc.kill()
+                serve_av.proc.wait(timeout=5)
             except Exception:
                 pass
 
@@ -532,6 +872,11 @@ class Orchestrator:
         if self._is_cancelled(tid):
             return
 
+        # Fix 2: guard before edit_comment — a cancelled agent must not write to Linear.
+        if self._is_cancelled(tid):
+            logger.info("Ticket %s cancelled before metadata edit — skipping", tid)
+            return
+
         # --- Edit metadata comment ---
         if meta_comment is not None:
             try:
@@ -545,7 +890,9 @@ class Orchestrator:
             self._state.upsert(ticket_state)
             self._state.save()
 
+        # Fix 2: guard before _post_final_message.
         if self._is_cancelled(tid):
+            logger.info("Ticket %s cancelled before final message — skipping", tid)
             return
 
         # --- Post final message ---
@@ -553,6 +900,12 @@ class Orchestrator:
         if last_comment is None:
             return  # state saved as failed inside _post_final_message
         ticket_state.last_seen_comment_id = last_comment.id
+
+        # Guard: if cancelled between final message and transition (e.g. ticket moved
+        # to QA state by a human), do not clobber the QA state with needs_input.
+        if self._is_cancelled(tid):
+            logger.info("Ticket %s cancelled before final transition — skipping", tid)
+            return
 
         # --- Transition to Needs Input ---
         transition_ok = True
@@ -663,10 +1016,21 @@ class Orchestrator:
         if self._is_cancelled(tid):
             return
 
+        # Fix 2: guard before _post_final_message — cancelled agent must not write to Linear.
+        if self._is_cancelled(tid):
+            logger.info("Ticket %s cancelled before final message — skipping", tid)
+            return
+
         last_comment = self._post_final_message(tid, final_message)
         if last_comment is None:
             return
         ticket_state.last_seen_comment_id = last_comment.id
+
+        # Guard: if cancelled between final message and transition (e.g. ticket moved
+        # to QA state by a human), do not clobber the QA state with needs_input.
+        if self._is_cancelled(tid):
+            logger.info("Ticket %s cancelled before final transition — skipping", tid)
+            return
 
         transition_ok = True
         try:
@@ -779,6 +1143,19 @@ class Orchestrator:
                 except Exception:
                     pass
 
+        # Kill the active QA serve process (if any).
+        with self._serve_lock:
+            active_serve = self._active_serve
+            self._active_serve = None
+        if active_serve is not None:
+            if active_serve.proc.returncode is None:
+                logger.info("Killing QA serve process on shutdown")
+                active_serve.intentional_kill.set()
+                try:
+                    active_serve.proc.kill()
+                except Exception:
+                    pass
+
         deadline = time.monotonic() + _SHUTDOWN_GRACE_SECONDS
         while time.monotonic() < deadline:
             if all(p.returncode is not None for _, p in procs):
@@ -810,12 +1187,15 @@ class Orchestrator:
 
     def _fetch_triggered_issues(self) -> list[Issue]:
         try:
+            active_states = [
+                self._config.linear.in_progress_state,
+                self._config.linear.needs_input_state,
+            ]
+            if self._config.linear.qa_state is not None:
+                active_states.append(self._config.linear.qa_state)
             return self._linear.list_triggered_issues(
                 label=self._config.linear.trigger_label,
-                active_states=[
-                    self._config.linear.in_progress_state,
-                    self._config.linear.needs_input_state,
-                ],
+                active_states=active_states,
             )
         except Exception:
             logger.exception("Failed to fetch triggered issues")
@@ -831,6 +1211,8 @@ class Orchestrator:
         """
         cfg = self._config.linear
         active_states = {cfg.in_progress_state, cfg.needs_input_state}
+        if cfg.qa_state is not None:
+            active_states.add(cfg.qa_state)
         return (
             cfg.trigger_label in issue.labels
             and issue.state in active_states

@@ -60,10 +60,12 @@ shutting down, or the ticket is no longer triggered — see `_is_still_triggered
 - **TicketStatus is daemon-internal**, distinct from Linear workflow states.
   Don't conflate `TicketStatus.needs_input` (in `state.json`) with the Linear
   state named "Needs Input".
-- **The daemon polls tickets in both `in_progress_state` AND `needs_input_state`**
-  (see `_fetch_triggered_issues`). When a human comments on a `needs_input`
-  ticket, `_resume_pipeline` transitions it back to `in_progress` itself —
-  users don't need to do that manually.
+- **The daemon polls tickets in `in_progress_state`, `needs_input_state`, and
+  (if configured) `qa_state`** (see `_fetch_triggered_issues`). When a human
+  comments on a `needs_input` ticket, `_resume_pipeline` transitions it back
+  to `in_progress` itself — users don't need to do that manually. Comments on
+  a ticket in `qa_state` are **not** processed by the agent; the per-status
+  loop in `_tick` skips any ticket whose Linear state is `qa_state`.
 - **The bot's own comments are filtered out** via the bot user id (`viewer.id`
   cached on the Linear client). New "human" comments = comments whose
   `user_id != bot_user_id`. The `bot_user_email` in the config exists for
@@ -92,6 +94,19 @@ shutting down, or the ticket is no longer triggered — see `_is_still_triggered
 - **Setup errors are sticky.** `setup_error` is set when project/repo-link/
   workspace prep fails, and is cleared only when the user comments on the
   ticket. Don't clear it elsewhere.
+- **QA serve is a global singleton, in-memory only.** When `linear.qa_state`
+  is configured and a ticket enters that state, `_reconcile_serve` runs the
+  repo's `.symphony/serve` script in the sandbox and stores the Popen in
+  `Orchestrator._active_serve` (an `_ActiveServe` dataclass). At most one
+  serve runs across the whole daemon. The newest QA entrant always wins —
+  incumbents are killed and bumped back to `needs_input_state`. Nothing
+  about the serve is persisted to `state.json`; on daemon restart the
+  reconciliation loop sees the ticket still in `qa_state` and relaunches
+  the serve naturally. A serve that dies (within or after the 10s watchdog
+  window) gets a Linear comment with the rc and a stdout/stderr tail, and
+  the ticket is transitioned back to `needs_input_state` to avoid a respawn
+  loop — except clean exits within 10s, which are silent (the script is
+  assumed to have daemonized a child).
 
 ## Running and testing
 
