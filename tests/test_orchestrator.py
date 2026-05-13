@@ -634,7 +634,10 @@ class TestTick:
         assert orch._state.get("ticket-1") is not None
         assert ws_dir.exists()
 
-    # --- Correction 4: broad QA gate in step 2 and step 4 ---
+    # --- Correction 4: broad QA gate in step 2 only ---
+    # Step 4 no longer has a broad QA gate; _resume_pipeline falls through
+    # and handles its own early-return. _recover_working_ticket is still
+    # skipped for QA tickets (it has no comment gating).
 
     def test_working_ticket_in_qa_state_not_scheduled(
         self, tmp_path: Path, state_mgr: StateManager, linear: FakeLinearClient,
@@ -661,10 +664,10 @@ class TestTick:
 
         m_recover.assert_not_called()
 
-    def test_failed_with_session_in_qa_state_not_scheduled(
+    def test_failed_with_session_in_qa_state_resume_scheduled(
         self, tmp_path: Path, state_mgr: StateManager, linear: FakeLinearClient,
     ) -> None:
-        """status=failed+session_id + linear_state=qa_state → _resume_pipeline NOT scheduled."""
+        """status=failed+session_id + linear_state=qa_state → _resume_pipeline IS scheduled."""
         config = _make_config(tmp_path, linear={"qa_state": "In Review"})
         orch = Orchestrator(config=config, state=state_mgr, linear=linear, workspace=tmp_path / "ws")  # type: ignore[arg-type]
 
@@ -684,7 +687,61 @@ class TestTick:
                 orch._tick()
                 time.sleep(0.2)
 
-        m_resume.assert_not_called()
+        m_resume.assert_called_once()
+
+    def test_qa_ticket_no_new_comments_no_resume(
+        self, tmp_path: Path, state_mgr: StateManager, linear: FakeLinearClient,
+    ) -> None:
+        """QA ticket with no new comments → _resume_pipeline scheduled but run_resume not called."""
+        config = _make_config(tmp_path, linear={"qa_state": "In Review"})
+        orch = Orchestrator(config=config, state=state_mgr, linear=linear, workspace=tmp_path / "ws")  # type: ignore[arg-type]
+
+        ts = TicketState(
+            ticket_id="ticket-1", ticket_identifier="TEAM-1",
+            repo_url="https://x", workspace_path="/tmp/ws/TEAM-1",
+            branch="main", status=TicketStatus.needs_input,
+            session_id="ses-abc", last_seen_comment_id="cmt-seen-1",
+        )
+        orch._state.upsert(ts)
+
+        qa_issue = _make_issue(id="ticket-1", state="In Review", labels=["agent"])
+        linear.set_response("list_triggered_issues", [qa_issue])
+        linear.set_response("list_comments_since", [])  # no new comments
+
+        with mock.patch("symphony_lite.orchestrator.start_serve", return_value=_make_fake_proc()):
+            with mock.patch("symphony_lite.orchestrator.run_resume") as m_run_resume:
+                orch._tick()
+                time.sleep(0.2)
+
+        m_run_resume.assert_not_called()
+
+    def test_qa_ticket_bot_comment_only_no_resume(
+        self, tmp_path: Path, state_mgr: StateManager, linear: FakeLinearClient,
+    ) -> None:
+        """QA ticket with only a bot comment → run_resume not called."""
+        config = _make_config(tmp_path, linear={"qa_state": "In Review"})
+        orch = Orchestrator(config=config, state=state_mgr, linear=linear, workspace=tmp_path / "ws")  # type: ignore[arg-type]
+
+        ts = TicketState(
+            ticket_id="ticket-1", ticket_identifier="TEAM-1",
+            repo_url="https://x", workspace_path="/tmp/ws/TEAM-1",
+            branch="main", status=TicketStatus.needs_input,
+            session_id="ses-abc", last_seen_comment_id="cmt-seen-1",
+        )
+        orch._state.upsert(ts)
+
+        qa_issue = _make_issue(id="ticket-1", state="In Review", labels=["agent"])
+        linear.set_response("list_triggered_issues", [qa_issue])
+        linear.set_response("list_comments_since", [
+            _make_comment("c1", "Bot message", user_id="usr-bot"),
+        ])
+
+        with mock.patch("symphony_lite.orchestrator.start_serve", return_value=_make_fake_proc()):
+            with mock.patch("symphony_lite.orchestrator.run_resume") as m_run_resume:
+                orch._tick()
+                time.sleep(0.2)
+
+        m_run_resume.assert_not_called()
 
     def test_new_issue_in_qa_state_not_scheduled(
         self, tmp_path: Path, state_mgr: StateManager, linear: FakeLinearClient,
@@ -1228,10 +1285,10 @@ class TestReconcileServe:
         post_calls = linear.calls.get("post_comment", [])
         assert any("ticket-1" == tid for tid, _ in post_calls)
 
-    def test_qa_ticket_skips_resume_pipeline(
+    def test_qa_ticket_with_human_comment_triggers_resume(
         self, tmp_path: Path, state_mgr: StateManager, linear: FakeLinearClient,
     ) -> None:
-        """Comments on a QA-state ticket do not trigger _resume_pipeline."""
+        """QA-state ticket with a new human comment triggers _resume_pipeline."""
         config = _make_qa_config(tmp_path)
         orch = Orchestrator(config=config, state=state_mgr, linear=linear, workspace=tmp_path / "ws")  # type: ignore[arg-type]
         _add_ticket_state(orch, status=TicketStatus.needs_input)
@@ -1246,7 +1303,7 @@ class TestReconcileServe:
                 orch._tick()
                 time.sleep(0.2)
 
-        m_resume.assert_not_called()
+        m_resume.assert_called_once()
 
     def test_start_serve_raises_serve_script_missing(
         self, tmp_path: Path, state_mgr: StateManager, linear: FakeLinearClient,

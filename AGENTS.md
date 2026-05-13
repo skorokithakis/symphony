@@ -63,9 +63,11 @@ shutting down, or the ticket is no longer triggered — see `_is_still_triggered
 - **The daemon polls tickets in `in_progress_state`, `needs_input_state`, and
   (if configured) `qa_state`** (see `_fetch_triggered_issues`). When a human
   comments on a `needs_input` ticket, `_resume_pipeline` transitions it back
-  to `in_progress` itself — users don't need to do that manually. Comments on
-  a ticket in `qa_state` are **not** processed by the agent; the per-status
-  loop in `_tick` skips any ticket whose Linear state is `qa_state`.
+  to `in_progress` itself — users don't need to do that manually. Human
+  comments on a ticket in `qa_state` also trigger the normal resume pipeline:
+  the ticket is transitioned to `in_progress_state`, the agent runs, the
+  ticket lands in `needs_input_state`, and the existing `_reconcile_serve`
+  logic kills the active serve on the next tick because its owner left QA.
 - **The bot's own comments are filtered out** via the bot user id (`viewer.id`
   cached on the Linear client). New "human" comments = comments whose
   `user_id != bot_user_id`. The `bot_user_email` in the config exists for

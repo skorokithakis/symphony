@@ -273,8 +273,10 @@ script to your repo, moving a ticket into that workflow state launches the
 script inside the sandbox so you can interact with the agent's work (run a
 server, exercise a worker, etc.). Only one serve runs globally; moving a
 second ticket into QA bumps the first back to `Needs Input` and starts the
-new one. The agent doesn't process comments while a ticket is in QA — move
-it out of QA (or remove the trigger label) to resume the conversation.
+new one. Commenting on a QA ticket pulls it out of QA into `In Progress`,
+kills the serve (on the next poll tick, via existing reconcile logic), runs
+the agent, and lands in `Needs Input`. To re-test after the agent's changes,
+move the ticket back to QA.
 If the script exits non-zero within 10s of launch, or exits later for any
 reason, the daemon posts a comment with the exit code and the first 1000
 chars of stdout/stderr and transitions the ticket back to `Needs Input`.

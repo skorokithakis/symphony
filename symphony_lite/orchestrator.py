@@ -328,19 +328,22 @@ class Orchestrator:
             tid = ticket_state.ticket_id
             st = ticket_state.status
 
-            # Skip ALL per-status scheduling while the ticket is in QA state.
-            # The serve is managed by _reconcile_serve; no agent pipeline should
-            # run concurrently (it would clobber the human's QA move).
-            fetched = issues_by_id.get(tid)
-            if (fetched is not None
-                    and self._config.linear.qa_state is not None
-                    and fetched.state == self._config.linear.qa_state):
-                logger.debug("Skipping step-4 scheduling for %s: ticket is in QA state", tid)
-                continue
+            # _resume_pipeline handles its own early-return when there are no new
+            # human comments, so QA tickets naturally fall through here — only
+            # tickets with actual new human comments will get an agent turn.
+            # _reconcile_serve on the next tick kills the serve when the ticket
+            # leaves QA.  Recovery, however, is unconditional (no comment gating),
+            # so we skip it for QA tickets to avoid clobbering the QA state.
 
             if st == TicketStatus.failed and ticket_state.setup_error is not None:
                 continue
             if st == TicketStatus.working:
+                fetched = issues_by_id.get(tid)
+                if (fetched is not None
+                        and self._config.linear.qa_state is not None
+                        and fetched.state == self._config.linear.qa_state):
+                    logger.debug("Skipping recovery for working QA ticket %s", tid)
+                    continue
                 self._schedule_task(tid, self._recover_working_ticket, ticket_state)
             elif st == TicketStatus.needs_input:
                 self._schedule_task(tid, self._resume_pipeline, ticket_state)
