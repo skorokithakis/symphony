@@ -109,6 +109,36 @@ limit; it stays running until the ticket leaves the QA state (or another
 ticket takes over QA). Only one serve runs globally at a time. See
 **Manual QA** below.
 
+### `.symphony/config.yaml` (optional)
+
+If your repo has a file at `.symphony/config.yaml`, the daemon reads it to
+override select global settings for tickets in that project. If the file is
+missing or empty, the daemon silently falls back to the global config.
+
+Only these keys are supported; unknown keys cause a hard error (see below).
+
+| Key                    | Type      | Default | Notes                                           |
+|------------------------|-----------|---------|-------------------------------------------------|
+| `auto_branch`          | bool      | global  | Applied only on first clone, not on resume.     |
+| `turn_timeout_seconds` | int (> 0) | global  | Re-read on every turn (initial and resume).     |
+
+Example:
+
+```yaml
+# .symphony/config.yaml (in your project repo)
+auto_branch: false
+turn_timeout_seconds: 600
+```
+
+**Precedence.** Per-project values take priority over the equivalent global
+config. When a key is absent from the project config, the global value is
+used.
+
+**Invalid config.** If the file contains unknown keys, invalid YAML, or
+values that fail validation, the daemon posts an error comment on the ticket
+and blocks the run (same as other setup errors). Edit the file and comment
+on the ticket to trigger a retry.
+
 ---
 
 ## Configuration

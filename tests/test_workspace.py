@@ -24,6 +24,8 @@ from symphony_linear.workspace import (
     WorkspaceError,
     _check_containment,
     _sanitize_identifier,
+    clone_workspace,
+    finalize_workspace,
     prepare,
     remove,
     start_serve,
@@ -597,6 +599,289 @@ class TestPrepareRemoveIntegration:
         assert os.path.realpath(result_path) == os.path.realpath(expected_dir)
 
         remove("Team/With Spaces", str(workspace_root))
+
+
+# ---------------------------------------------------------------------------
+# Unit: clone_workspace — standalone clone/fetch step
+# ---------------------------------------------------------------------------
+
+
+class TestCloneWorkspace:
+    """clone_workspace handles sanitization, containment, and clone/fetch."""
+
+    def test_clones_fresh_repo(self, tmp_path: Path) -> None:
+        """A brand-new workspace clones the repo and returns the real path."""
+        _require_git()
+
+        workspace_root = tmp_path / "workspaces"
+        workspace_root.mkdir()
+
+        source_repo = tmp_path / "source"
+        _make_source_repo(source_repo)
+
+        result = clone_workspace(
+            ticket_identifier="CLONE-1",
+            repo_url=str(source_repo),
+            workspace_root=str(workspace_root),
+        )
+
+        assert os.path.isdir(result)
+        assert os.path.isdir(os.path.join(result, ".git"))
+        assert os.path.basename(os.path.realpath(result)) == "CLONE-1"
+
+        remove("CLONE-1", str(workspace_root))
+
+    def test_reuses_existing_workspace(self, tmp_path: Path) -> None:
+        """Re-calling clone_workspace on an existing directory fetches, not clones."""
+        _require_git()
+
+        workspace_root = tmp_path / "workspaces"
+        workspace_root.mkdir()
+
+        source_repo = tmp_path / "source"
+        _make_source_repo(source_repo)
+
+        # First call: clone.
+        result1 = clone_workspace(
+            ticket_identifier="REUSE-1",
+            repo_url=str(source_repo),
+            workspace_root=str(workspace_root),
+        )
+
+        # Second call: reuse (fetch).
+        result2 = clone_workspace(
+            ticket_identifier="REUSE-1",
+            repo_url=str(source_repo),
+            workspace_root=str(workspace_root),
+        )
+
+        assert result2 == result1
+
+        remove("REUSE-1", str(workspace_root))
+
+    def test_raises_clone_failed_for_bogus_url(self, tmp_path: Path) -> None:
+        """clone_workspace raises CloneFailed for a non-existent repo URL."""
+        _require_git()
+
+        workspace_root = tmp_path / "workspaces"
+        workspace_root.mkdir()
+
+        with pytest.raises(CloneFailed):
+            clone_workspace(
+                ticket_identifier="DEAD",
+                repo_url="/nonexistent/path/not-a-repo",
+                workspace_root=str(workspace_root),
+            )
+
+    def test_sanitized_directory_name(self, tmp_path: Path) -> None:
+        """The workspace directory uses the sanitized identifier."""
+        _require_git()
+
+        workspace_root = tmp_path / "workspaces"
+        workspace_root.mkdir()
+
+        source_repo = tmp_path / "source"
+        _make_source_repo(source_repo)
+
+        result = clone_workspace(
+            ticket_identifier="Team/With Spaces",
+            repo_url=str(source_repo),
+            workspace_root=str(workspace_root),
+        )
+
+        expected_dir = workspace_root / "Team_With_Spaces"
+        assert os.path.realpath(result) == os.path.realpath(expected_dir)
+
+        remove("Team/With Spaces", str(workspace_root))
+
+
+# ---------------------------------------------------------------------------
+# Integration: finalize_workspace — branch switch + setup
+# ---------------------------------------------------------------------------
+
+
+@pytest.mark.integration
+class TestFinalizeWorkspace:
+    """finalize_workspace handles branch switching and setup script execution."""
+
+    def test_branch_switch_and_setup(self, tmp_path: Path) -> None:
+        """finalize_workspace switches branch and runs .symphony/setup."""
+        _require_git()
+        _require_bwrap()
+
+        workspace_root = tmp_path / "workspaces"
+        workspace_root.mkdir()
+
+        source_repo = tmp_path / "source"
+        marker_file = tmp_path / "finalize_marker.txt"
+        _make_source_repo(
+            source_repo,
+            setup_script=(f"#!/bin/bash\necho 'finalize ran' > {marker_file}\n"),
+        )
+
+        # Clone first.
+        ws_path = clone_workspace(
+            ticket_identifier="FINALIZE-1",
+            repo_url=str(source_repo),
+            workspace_root=str(workspace_root),
+        )
+
+        # Then finalize.
+        finalize_workspace(
+            workspace_path=ws_path,
+            ticket_identifier="FINALIZE-1",
+            branch_name=None,  # default: symphony/finalize-1
+            sandbox_hide_paths=[],
+        )
+
+        # Verify branch.
+        branch_result = subprocess.run(
+            ["git", "branch", "--show-current"],
+            cwd=ws_path,
+            capture_output=True,
+            text=True,
+        )
+        assert branch_result.stdout.strip() == "symphony/finalize-1"
+
+        # Verify setup ran.
+        assert marker_file.exists()
+        assert marker_file.read_text().strip() == "finalize ran"
+
+        remove("FINALIZE-1", str(workspace_root))
+
+    def test_auto_branch_disabled_skips_switch(self, tmp_path: Path) -> None:
+        """When auto_branch=False, the branch is not switched."""
+        _require_git()
+
+        workspace_root = tmp_path / "workspaces"
+        workspace_root.mkdir()
+
+        source_repo = tmp_path / "source"
+        _make_source_repo(source_repo)
+
+        ws_path = clone_workspace(
+            ticket_identifier="NO-BRANCH",
+            repo_url=str(source_repo),
+            workspace_root=str(workspace_root),
+        )
+
+        finalize_workspace(
+            workspace_path=ws_path,
+            ticket_identifier="NO-BRANCH",
+            branch_name="symphony/no-branch",  # supplied but ignored
+            sandbox_hide_paths=[],
+            auto_branch=False,
+        )
+
+        branch_result = subprocess.run(
+            ["git", "branch", "--show-current"],
+            cwd=ws_path,
+            capture_output=True,
+            text=True,
+        )
+        assert branch_result.stdout.strip() == "main"
+
+        # Clean branch was NOT created.
+        list_result = subprocess.run(
+            ["git", "branch", "--list", "symphony/no-branch"],
+            cwd=ws_path,
+            capture_output=True,
+            text=True,
+        )
+        assert list_result.stdout.strip() == ""
+
+        remove("NO-BRANCH", str(workspace_root))
+
+    def test_no_setup_script_succeeds(self, tmp_path: Path) -> None:
+        """finalize_workspace succeeds when .symphony/setup is absent."""
+        _require_git()
+
+        workspace_root = tmp_path / "workspaces"
+        workspace_root.mkdir()
+
+        source_repo = tmp_path / "source"
+        _make_source_repo(source_repo)  # no setup script
+
+        ws_path = clone_workspace(
+            ticket_identifier="NO-SETUP-F",
+            repo_url=str(source_repo),
+            workspace_root=str(workspace_root),
+        )
+
+        # Should not raise.
+        finalize_workspace(
+            workspace_path=ws_path,
+            ticket_identifier="NO-SETUP-F",
+            branch_name="main",
+            sandbox_hide_paths=[],
+        )
+
+        remove("NO-SETUP-F", str(workspace_root))
+
+    def test_setup_script_failure_raises(self, tmp_path: Path) -> None:
+        """finalize_workspace raises SetupFailed when setup script fails."""
+        _require_git()
+        _require_bwrap()
+
+        workspace_root = tmp_path / "workspaces"
+        workspace_root.mkdir()
+
+        source_repo = tmp_path / "source"
+        _make_source_repo(
+            source_repo,
+            setup_script=("#!/bin/bash\necho 'fail' >&2\nexit 13\n"),
+        )
+
+        ws_path = clone_workspace(
+            ticket_identifier="FAIL-FIN",
+            repo_url=str(source_repo),
+            workspace_root=str(workspace_root),
+        )
+
+        with pytest.raises(SetupFailed) as exc_info:
+            finalize_workspace(
+                workspace_path=ws_path,
+                ticket_identifier="FAIL-FIN",
+                branch_name="main",
+                sandbox_hide_paths=[],
+            )
+
+        assert "13" in str(exc_info.value)
+
+        remove("FAIL-FIN", str(workspace_root))
+
+    def test_default_branch_naming(self, tmp_path: Path) -> None:
+        """When branch_name is None, default naming is used."""
+        _require_git()
+
+        workspace_root = tmp_path / "workspaces"
+        workspace_root.mkdir()
+
+        source_repo = tmp_path / "source"
+        _make_source_repo(source_repo)
+
+        ws_path = clone_workspace(
+            ticket_identifier="My-Team.42",
+            repo_url=str(source_repo),
+            workspace_root=str(workspace_root),
+        )
+
+        finalize_workspace(
+            workspace_path=ws_path,
+            ticket_identifier="My-Team.42",
+            branch_name=None,
+            sandbox_hide_paths=[],
+        )
+
+        branch_result = subprocess.run(
+            ["git", "branch", "--show-current"],
+            cwd=ws_path,
+            capture_output=True,
+            text=True,
+        )
+        assert branch_result.stdout.strip() == "symphony/my-team.42"
+
+        remove("My-Team.42", str(workspace_root))
 
 
 # ---------------------------------------------------------------------------

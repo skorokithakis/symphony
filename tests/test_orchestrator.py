@@ -31,6 +31,10 @@ from symphony_linear.orchestrator import (
     _format_comments_message,
     _maybe_rewrite_to_ssh,
 )
+from symphony_linear.project_config import (
+    ProjectConfig,
+    ProjectConfigError,
+)
 from symphony_linear.state import StateManager, TicketState, TicketStatus
 
 
@@ -219,9 +223,16 @@ class TestFormatCommentsMessage:
 
 class TestNewTicketPipeline:
     def _setup_mocks(
-        self, mock_prepare: Any, mock_run_initial: Any, linear: FakeLinearClient
+        self,
+        mock_clone: Any,
+        mock_finalize: Any,
+        mock_load_config: Any,
+        mock_run_initial: Any,
+        linear: FakeLinearClient,
     ) -> Issue:
-        mock_prepare.return_value = "/tmp/workspaces/TEAM-1"
+        mock_clone.return_value = "/tmp/workspaces/TEAM-1"
+        mock_finalize.return_value = None
+        mock_load_config.return_value = ProjectConfig()
         mock_run_initial.return_value = ("ses-abc", "I have done the work.")
         linear.set_response(
             "get_project",
@@ -240,10 +251,14 @@ class TestNewTicketPipeline:
         self, orchestrator: Orchestrator, linear: FakeLinearClient
     ) -> None:
         with (
-            mock.patch("symphony_linear.orchestrator.prepare") as mock_prepare,
+            mock.patch("symphony_linear.orchestrator.clone_workspace") as mock_clone,
+            mock.patch("symphony_linear.orchestrator.finalize_workspace") as mock_finalize,
+            mock.patch("symphony_linear.orchestrator.load_project_config") as mock_load_config,
             mock.patch("symphony_linear.orchestrator.run_initial") as mock_run_initial,
         ):
-            issue = self._setup_mocks(mock_prepare, mock_run_initial, linear)
+            issue = self._setup_mocks(
+                mock_clone, mock_finalize, mock_load_config, mock_run_initial, linear
+            )
             orchestrator._new_ticket_pipeline(issue)
 
         ts = orchestrator._state.get("ticket-1")
@@ -258,10 +273,14 @@ class TestNewTicketPipeline:
         _, kwargs = mock_run_initial.call_args
         assert kwargs.get("hide_paths") == ["/fake/secret"]
 
-        # B2: verify on_subprocess passed to prepare
-        mock_prepare.assert_called_once()
-        _, kw = mock_prepare.call_args
+        # Verify timeout_seconds defaults to global when project config has no override.
+        assert kwargs.get("timeout_seconds") == 30
+
+        # B2: verify on_subprocess passed to finalize_workspace
+        mock_finalize.assert_called_once()
+        _, kw = mock_finalize.call_args
         assert kw.get("on_subprocess") is not None
+        assert kw.get("auto_branch") is True  # global default
 
     def test_missing_repo_saves_setup_error(
         self, orchestrator: Orchestrator, linear: FakeLinearClient
@@ -300,7 +319,8 @@ class TestNewTicketPipeline:
             ),
         )
         with mock.patch(
-            "symphony_linear.orchestrator.prepare", side_effect=CloneFailed("fail")
+            "symphony_linear.orchestrator.clone_workspace",
+            side_effect=CloneFailed("fail"),
         ):
             orchestrator._new_ticket_pipeline(_make_issue())
         ts = orchestrator._state.get("ticket-1")
@@ -326,7 +346,15 @@ class TestNewTicketPipeline:
         linear.set_response("get_issue", _make_issue(description="Fix"))
         with (
             mock.patch(
-                "symphony_linear.orchestrator.prepare", return_value="/tmp/ws/TEAM-1"
+                "symphony_linear.orchestrator.clone_workspace",
+                return_value="/tmp/ws/TEAM-1",
+            ),
+            mock.patch(
+                "symphony_linear.orchestrator.finalize_workspace",
+            ),
+            mock.patch(
+                "symphony_linear.orchestrator.load_project_config",
+                return_value=ProjectConfig(),
             ),
             mock.patch(
                 "symphony_linear.orchestrator.run_initial",
@@ -357,7 +385,15 @@ class TestNewTicketPipeline:
         linear.set_response("get_issue", _make_issue(description="Fix"))
         with (
             mock.patch(
-                "symphony_linear.orchestrator.prepare", return_value="/tmp/ws/TEAM-1"
+                "symphony_linear.orchestrator.clone_workspace",
+                return_value="/tmp/ws/TEAM-1",
+            ),
+            mock.patch(
+                "symphony_linear.orchestrator.finalize_workspace",
+            ),
+            mock.patch(
+                "symphony_linear.orchestrator.load_project_config",
+                return_value=ProjectConfig(),
             ),
             mock.patch(
                 "symphony_linear.orchestrator.run_initial",
@@ -388,7 +424,15 @@ class TestNewTicketPipeline:
         linear.set_response("transition_to_state", LinearError("nope"))
         with (
             mock.patch(
-                "symphony_linear.orchestrator.prepare", return_value="/tmp/ws/TEAM-1"
+                "symphony_linear.orchestrator.clone_workspace",
+                return_value="/tmp/ws/TEAM-1",
+            ),
+            mock.patch(
+                "symphony_linear.orchestrator.finalize_workspace",
+            ),
+            mock.patch(
+                "symphony_linear.orchestrator.load_project_config",
+                return_value=ProjectConfig(),
             ),
             mock.patch(
                 "symphony_linear.orchestrator.run_initial",
@@ -404,7 +448,7 @@ class TestNewTicketPipeline:
     def test_cancelled_after_prepare_stops(
         self, orchestrator: Orchestrator, linear: FakeLinearClient
     ) -> None:
-        """B2: cancellation checked after prepare returns."""
+        """B2: cancellation checked after finalize returns."""
         linear.set_response(
             "get_project",
             Project(
@@ -417,14 +461,280 @@ class TestNewTicketPipeline:
         )
         linear.set_response("get_issue", _make_issue(description="Fix"))
 
-        with mock.patch(
-            "symphony_linear.orchestrator.prepare", return_value="/tmp/ws/TEAM-1"
+        with (
+            mock.patch(
+                "symphony_linear.orchestrator.clone_workspace",
+                return_value="/tmp/ws/TEAM-1",
+            ),
+            mock.patch(
+                "symphony_linear.orchestrator.finalize_workspace",
+            ),
+            mock.patch(
+                "symphony_linear.orchestrator.load_project_config",
+                return_value=ProjectConfig(),
+            ),
         ):
             with mock.patch("symphony_linear.orchestrator.run_initial") as mock_oc:
-                # Cancel after prepare is mocked to return.
+                # Cancel after clone/finalize/config are mocked to return.
                 orchestrator._cancel_ticket("ticket-1")
                 orchestrator._new_ticket_pipeline(_make_issue())
         mock_oc.assert_not_called()  # B2: OpenCode never launched
+
+    def test_finalize_failure_preserves_workspace_and_branch(
+        self, orchestrator: Orchestrator, linear: FakeLinearClient
+    ) -> None:
+        """_save_setup_error preserves workspace_path and effective branch from prior
+        successful clone + load_project_config steps."""
+        from symphony_linear.workspace import WorkspaceError
+
+        linear.set_response(
+            "get_project",
+            Project(
+                id="proj-1",
+                name="Test",
+                links=[
+                    ProjectLink(label="Repo", url="https://github.com/org/repo.git")
+                ],
+            ),
+        )
+        # Simulate clone succeeding with a custom workspace path and project
+        # config overriding auto_branch to False (so branch stays empty).
+        with (
+            mock.patch(
+                "symphony_linear.orchestrator.clone_workspace",
+                return_value="/tmp/ws/TEAM-1",
+            ),
+            mock.patch(
+                "symphony_linear.orchestrator.finalize_workspace",
+                side_effect=WorkspaceError("finalize boom"),
+            ),
+            mock.patch(
+                "symphony_linear.orchestrator.load_project_config",
+                return_value=ProjectConfig(auto_branch=False),
+            ),
+        ):
+            orchestrator._new_ticket_pipeline(_make_issue())
+
+        ts = orchestrator._state.get("ticket-1")
+        assert ts is not None
+        assert ts.setup_error is not None  # error saved
+        # Workspace path and branch must reflect the successful clone+config steps,
+        # NOT be clobbered to "" or re-derived from global auto_branch.
+        assert ts.workspace_path == "/tmp/ws/TEAM-1"
+        assert ts.branch == ""  # auto_branch=False override preserved
+        assert ts.status == TicketStatus.failed
+
+
+# ---------------------------------------------------------------------------
+# Project config integration in new-ticket pipeline
+# ---------------------------------------------------------------------------
+
+
+class TestNewTicketProjectConfig:
+    def test_auto_branch_override_false(
+        self, orchestrator: Orchestrator, linear: FakeLinearClient
+    ) -> None:
+        """Project config overrides auto_branch to False → branch stays empty."""
+        linear.set_response(
+            "get_project",
+            Project(
+                id="proj-1",
+                name="Test",
+                links=[
+                    ProjectLink(label="Repo", url="https://github.com/org/repo.git")
+                ],
+            ),
+        )
+        linear.set_response("get_issue", _make_issue(description="Fix"))
+        with (
+            mock.patch(
+                "symphony_linear.orchestrator.clone_workspace",
+                return_value="/tmp/ws/TEAM-1",
+            ) as mock_clone,
+            mock.patch(
+                "symphony_linear.orchestrator.finalize_workspace",
+            ) as mock_finalize,
+            mock.patch(
+                "symphony_linear.orchestrator.load_project_config",
+                return_value=ProjectConfig(auto_branch=False),
+            ),
+            mock.patch(
+                "symphony_linear.orchestrator.run_initial",
+                return_value=("ses-abc", "done"),
+            ),
+        ):
+            orchestrator._new_ticket_pipeline(_make_issue())
+
+        ts = orchestrator._state.get("ticket-1")
+        assert ts is not None
+        # Branch should be "" when auto_branch is overridden to False.
+        assert ts.branch == ""
+
+        # finalize_workspace should be called with auto_branch=False.
+        mock_finalize.assert_called_once()
+        _, kw = mock_finalize.call_args
+        assert kw.get("auto_branch") is False
+
+    def test_auto_branch_override_true(
+        self, orchestrator: Orchestrator, linear: FakeLinearClient
+    ) -> None:
+        """Project config auto_branch=True → branch computed from issue."""
+        linear.set_response(
+            "get_project",
+            Project(
+                id="proj-1",
+                name="Test",
+                links=[
+                    ProjectLink(label="Repo", url="https://github.com/org/repo.git")
+                ],
+            ),
+        )
+        linear.set_response("get_issue", _make_issue(description="Fix"))
+        with (
+            mock.patch(
+                "symphony_linear.orchestrator.clone_workspace",
+                return_value="/tmp/ws/TEAM-1",
+            ),
+            mock.patch(
+                "symphony_linear.orchestrator.finalize_workspace",
+            ) as mock_finalize,
+            mock.patch(
+                "symphony_linear.orchestrator.load_project_config",
+                return_value=ProjectConfig(auto_branch=True),
+            ),
+            mock.patch(
+                "symphony_linear.orchestrator.run_initial",
+                return_value=("ses-abc", "done"),
+            ),
+        ):
+            orchestrator._new_ticket_pipeline(_make_issue())
+
+        ts = orchestrator._state.get("ticket-1")
+        assert ts is not None
+        assert ts.branch == "feature/test"
+
+        mock_finalize.assert_called_once()
+        _, kw = mock_finalize.call_args
+        assert kw.get("auto_branch") is True
+
+    def test_turn_timeout_override_passed_to_run_initial(
+        self, orchestrator: Orchestrator, linear: FakeLinearClient
+    ) -> None:
+        """Project config turn_timeout_seconds passed to run_initial."""
+        linear.set_response(
+            "get_project",
+            Project(
+                id="proj-1",
+                name="Test",
+                links=[
+                    ProjectLink(label="Repo", url="https://github.com/org/repo.git")
+                ],
+            ),
+        )
+        linear.set_response("get_issue", _make_issue(description="Fix"))
+        with (
+            mock.patch(
+                "symphony_linear.orchestrator.clone_workspace",
+                return_value="/tmp/ws/TEAM-1",
+            ),
+            mock.patch(
+                "symphony_linear.orchestrator.finalize_workspace",
+            ),
+            mock.patch(
+                "symphony_linear.orchestrator.load_project_config",
+                return_value=ProjectConfig(turn_timeout_seconds=120),
+            ),
+            mock.patch(
+                "symphony_linear.orchestrator.run_initial",
+                return_value=("ses-abc", "done"),
+            ) as mock_run_initial,
+        ):
+            orchestrator._new_ticket_pipeline(_make_issue())
+
+        _, kwargs = mock_run_initial.call_args
+        assert kwargs.get("timeout_seconds") == 120
+
+    def test_project_config_error_triggers_setup_error(
+        self, orchestrator: Orchestrator, linear: FakeLinearClient
+    ) -> None:
+        """ProjectConfigError on new ticket → setup_error + Linear comment."""
+        linear.set_response(
+            "get_project",
+            Project(
+                id="proj-1",
+                name="Test",
+                links=[
+                    ProjectLink(label="Repo", url="https://github.com/org/repo.git")
+                ],
+            ),
+        )
+        with (
+            mock.patch(
+                "symphony_linear.orchestrator.clone_workspace",
+                return_value="/tmp/ws/TEAM-1",
+            ),
+            mock.patch(
+                "symphony_linear.orchestrator.load_project_config",
+                side_effect=ProjectConfigError("invalid YAML"),
+            ),
+            mock.patch(
+                "symphony_linear.orchestrator.run_initial",
+            ) as mock_run_initial,
+        ):
+            orchestrator._new_ticket_pipeline(_make_issue())
+
+        mock_run_initial.assert_not_called()
+
+        ts = orchestrator._state.get("ticket-1")
+        assert ts is not None
+        assert ts.status == TicketStatus.failed
+        assert ts.setup_error == "project_config_invalid"
+        assert ts.last_seen_comment_id is not None
+
+    def test_missing_project_config_falls_back_to_globals(
+        self, orchestrator: Orchestrator, linear: FakeLinearClient
+    ) -> None:
+        """No .symphony/config.yaml → global defaults used."""
+        linear.set_response(
+            "get_project",
+            Project(
+                id="proj-1",
+                name="Test",
+                links=[
+                    ProjectLink(label="Repo", url="https://github.com/org/repo.git")
+                ],
+            ),
+        )
+        linear.set_response("get_issue", _make_issue(description="Fix", branchName=None))
+        with (
+            mock.patch(
+                "symphony_linear.orchestrator.clone_workspace",
+                return_value="/tmp/ws/TEAM-1",
+            ),
+            mock.patch(
+                "symphony_linear.orchestrator.finalize_workspace",
+            ) as mock_finalize,
+            mock.patch(
+                "symphony_linear.orchestrator.load_project_config",
+                return_value=ProjectConfig(),  # empty = all None → fall back to globals
+            ),
+            mock.patch(
+                "symphony_linear.orchestrator.run_initial",
+                return_value=("ses-abc", "done"),
+            ) as mock_run_initial,
+        ):
+            orchestrator._new_ticket_pipeline(_make_issue())
+
+        # auto_branch falls back to global (True by default in test config).
+        _, kw = mock_finalize.call_args
+        assert kw.get("auto_branch") is True
+
+        # turn_timeout falls back to global (30s in test config).
+        _, kwargs = mock_run_initial.call_args
+        assert kwargs.get("timeout_seconds") == 30
+
+        ts = orchestrator._state.get("ticket-1")
+        assert ts is not None
 
 
 # ---------------------------------------------------------------------------
@@ -454,7 +764,10 @@ class TestResumePipeline:
         ts = self._make_ts()
         orchestrator._state.upsert(ts)
         linear.set_response("list_comments_since", [_make_comment("c1", "Fix please")])
-        with mock.patch("symphony_linear.orchestrator.run_resume", return_value="Done!"):
+        with (
+            mock.patch("symphony_linear.orchestrator.load_project_config", return_value=ProjectConfig()),
+            mock.patch("symphony_linear.orchestrator.run_resume", return_value="Done!"),
+        ):
             orchestrator._resume_pipeline(ts)
         updated = orchestrator._state.get("ticket-1")
         assert updated is not None and updated.status == TicketStatus.needs_input
@@ -471,9 +784,15 @@ class TestResumePipeline:
                 _make_comment("c2", "Human", "usr-human"),
             ],
         )
-        with mock.patch(
-            "symphony_linear.orchestrator.run_resume", return_value="Done!"
-        ) as m:
+        with (
+            mock.patch(
+                "symphony_linear.orchestrator.load_project_config",
+                return_value=ProjectConfig(),
+            ),
+            mock.patch(
+                "symphony_linear.orchestrator.run_resume", return_value="Done!"
+            ) as m,
+        ):
             orchestrator._resume_pipeline(ts)
         m.assert_called_once()
         msg = m.call_args.kwargs.get("message") or (
@@ -490,8 +809,14 @@ class TestResumePipeline:
         ts = self._make_ts()
         orchestrator._state.upsert(ts)
         linear.set_response("list_comments_since", [_make_comment("c1", "Go")])
-        with mock.patch(
-            "symphony_linear.orchestrator.run_resume", side_effect=OpenCodeTimeout("t")
+        with (
+            mock.patch(
+                "symphony_linear.orchestrator.load_project_config",
+                return_value=ProjectConfig(),
+            ),
+            mock.patch(
+                "symphony_linear.orchestrator.run_resume", side_effect=OpenCodeTimeout("t")
+            ),
         ):
             orchestrator._resume_pipeline(ts)
         updated = orchestrator._state.get("ticket-1")
@@ -504,15 +829,27 @@ class TestResumePipeline:
         ts = self._make_ts()
         orchestrator._state.upsert(ts)
         linear.set_response("list_comments_since", [_make_comment("c1", "Go")])
-        with mock.patch(
-            "symphony_linear.orchestrator.run_resume", side_effect=OpenCodeError("e")
+        with (
+            mock.patch(
+                "symphony_linear.orchestrator.load_project_config",
+                return_value=ProjectConfig(),
+            ),
+            mock.patch(
+                "symphony_linear.orchestrator.run_resume", side_effect=OpenCodeError("e")
+            ),
         ):
             orchestrator._resume_pipeline(ts)
         updated = orchestrator._state.get("ticket-1")
         assert updated is not None
         assert updated.status == TicketStatus.failed
         linear.set_response("list_comments_since", [])
-        with mock.patch("symphony_linear.orchestrator.run_resume") as m:
+        with (
+            mock.patch(
+                "symphony_linear.orchestrator.load_project_config",
+                return_value=ProjectConfig(),
+            ),
+            mock.patch("symphony_linear.orchestrator.run_resume") as m,
+        ):
             orchestrator._resume_pipeline(updated)
         m.assert_not_called()
 
@@ -524,9 +861,148 @@ class TestResumePipeline:
         orchestrator._state.upsert(ts)
         linear.set_response("current_user_id", LinearError("transient"))
         linear.set_response("list_comments_since", [_make_comment("c1", "Go")])
-        with mock.patch("symphony_linear.orchestrator.run_resume") as m:
+        with (
+            mock.patch(
+                "symphony_linear.orchestrator.load_project_config",
+                return_value=ProjectConfig(),
+            ),
+            mock.patch("symphony_linear.orchestrator.run_resume") as m,
+        ):
             orchestrator._resume_pipeline(ts)
         m.assert_not_called()  # skipped due to bot_id None
+
+
+# ---------------------------------------------------------------------------
+# Project config integration in resume pipeline
+# ---------------------------------------------------------------------------
+
+
+class TestResumeProjectConfig:
+    def _make_ts(self, **overrides: Any) -> TicketState:
+        defaults: dict[str, Any] = {
+            "ticket_id": "ticket-1",
+            "ticket_identifier": "TEAM-1",
+            "repo_url": "https://github.com/org/repo.git",
+            "workspace_path": "/tmp/ws/TEAM-1",
+            "branch": "feature/test",
+            "status": TicketStatus.needs_input,
+            "session_id": "ses-abc",
+            "last_seen_comment_id": "cmt-seen-1",
+            "metadata_comment_id": "cmt-meta-1",
+        }
+        defaults.update(overrides)
+        return TicketState(**defaults)
+
+    def test_turn_timeout_override_passed_to_run_resume(
+        self, orchestrator: Orchestrator, linear: FakeLinearClient
+    ) -> None:
+        """Project config turn_timeout_seconds override used by run_resume."""
+        ts = self._make_ts()
+        orchestrator._state.upsert(ts)
+        linear.set_response("list_comments_since", [_make_comment("c1", "Go")])
+        with (
+            mock.patch(
+                "symphony_linear.orchestrator.load_project_config",
+                return_value=ProjectConfig(turn_timeout_seconds=90),
+            ),
+            mock.patch(
+                "symphony_linear.orchestrator.run_resume", return_value="Done!"
+            ) as mock_run_resume,
+        ):
+            orchestrator._resume_pipeline(ts)
+
+        _, kwargs = mock_run_resume.call_args
+        assert kwargs.get("timeout_seconds") == 90
+
+    def test_project_config_error_on_resume_triggers_setup_error(
+        self, orchestrator: Orchestrator, linear: FakeLinearClient
+    ) -> None:
+        """ProjectConfigError on resume → setup_error + Linear comment."""
+        ts = self._make_ts()
+        orchestrator._state.upsert(ts)
+        linear.set_response("list_comments_since", [_make_comment("c1", "Go")])
+        with (
+            mock.patch(
+                "symphony_linear.orchestrator.load_project_config",
+                side_effect=ProjectConfigError("bad config"),
+            ),
+            mock.patch(
+                "symphony_linear.orchestrator.run_resume",
+            ) as mock_run_resume,
+        ):
+            orchestrator._resume_pipeline(ts)
+
+        mock_run_resume.assert_not_called()
+
+        updated = orchestrator._state.get("ticket-1")
+        assert updated is not None
+        assert updated.status == TicketStatus.failed
+        assert updated.setup_error == "project_config_invalid"
+        assert updated.last_seen_comment_id is not None
+
+    def test_project_config_error_does_not_transition_linear(
+        self, orchestrator: Orchestrator, linear: FakeLinearClient
+    ) -> None:
+        """ProjectConfigError on resume must NOT transition Linear to in_progress_state."""
+        ts = self._make_ts()
+        orchestrator._state.upsert(ts)
+        linear.set_response("list_comments_since", [_make_comment("c1", "Go")])
+        with (
+            mock.patch(
+                "symphony_linear.orchestrator.load_project_config",
+                side_effect=ProjectConfigError("bad config"),
+            ),
+        ):
+            orchestrator._resume_pipeline(ts)
+
+        # Linear transition_to_state must NOT have been called for this ticket.
+        transition_calls = linear.calls.get("transition_to_state", [])
+        in_progress_transitions = [
+            (tid, state)
+            for tid, state in transition_calls
+            if tid == "ticket-1"
+        ]
+        assert in_progress_transitions == [], (
+            f"Expected no transition for ticket-1, got: {in_progress_transitions}"
+        )
+
+    def test_missing_project_config_falls_back_to_globals_on_resume(
+        self, orchestrator: Orchestrator, linear: FakeLinearClient
+    ) -> None:
+        """No project config on resume → global turn_timeout used."""
+        ts = self._make_ts()
+        orchestrator._state.upsert(ts)
+        linear.set_response("list_comments_since", [_make_comment("c1", "Go")])
+        with (
+            mock.patch(
+                "symphony_linear.orchestrator.load_project_config",
+                return_value=ProjectConfig(),  # empty → fall back
+            ),
+            mock.patch(
+                "symphony_linear.orchestrator.run_resume", return_value="Done!"
+            ) as mock_run_resume,
+        ):
+            orchestrator._resume_pipeline(ts)
+
+        _, kwargs = mock_run_resume.call_args
+        assert kwargs.get("timeout_seconds") == 30  # global default
+
+    def test_project_config_re_read_on_every_resume(
+        self, orchestrator: Orchestrator, linear: FakeLinearClient
+    ) -> None:
+        """load_project_config is called fresh on each resume (no caching)."""
+        ts = self._make_ts()
+        orchestrator._state.upsert(ts)
+        linear.set_response("list_comments_since", [_make_comment("c1", "Go")])
+        with mock.patch(
+            "symphony_linear.orchestrator.load_project_config",
+            return_value=ProjectConfig(),
+        ) as mock_load:
+            with mock.patch(
+                "symphony_linear.orchestrator.run_resume", return_value="Done!"
+            ):
+                orchestrator._resume_pipeline(ts)
+        mock_load.assert_called_once_with("/tmp/ws/TEAM-1")
 
 
 # ---------------------------------------------------------------------------
@@ -572,10 +1048,12 @@ class TestTick:
     def test_setup_error_retried_on_comment(
         self, orchestrator: Orchestrator, linear: FakeLinearClient
     ) -> None:
+        """setup_error + human comment + no session_id → _new_ticket_pipeline."""
         self._add_state(
             orchestrator,
             status=TicketStatus.failed,
             setup_error="clone_failed",
+            session_id=None,
             last_seen_comment_id="cmt-old",
         )
         linear.set_response("list_triggered_issues", [_make_issue()])
@@ -584,6 +1062,34 @@ class TestTick:
             orchestrator._tick()
             time.sleep(0.2)
         m.assert_called_once()
+
+    def test_setup_error_with_session_retried_to_resume(
+        self, orchestrator: Orchestrator, linear: FakeLinearClient
+    ) -> None:
+        """setup_error + session_id + human comment → _resume_pipeline, session preserved."""
+        self._add_state(
+            orchestrator,
+            status=TicketStatus.failed,
+            setup_error="project_config_invalid",
+            session_id="ses-abc",
+            last_seen_comment_id="cmt-old",
+            workspace_path="/tmp/ws/TEAM-1",
+        )
+        linear.set_response("list_triggered_issues", [_make_issue()])
+        linear.set_response("list_comments_since", [_make_comment("c1", "fix config")])
+        with (
+            mock.patch.object(orchestrator, "_new_ticket_pipeline") as m_new,
+            mock.patch.object(orchestrator, "_resume_pipeline") as m_resume,
+        ):
+            orchestrator._tick()
+            time.sleep(0.2)
+        m_new.assert_not_called()
+        # _resume_pipeline may be called twice (step 2 setup-error retry + step 4
+        # failed-with-session scheduling), but must be called at least once.
+        assert m_resume.call_count >= 1
+        # The state passed to _resume_pipeline must have session_id preserved.
+        ts_passed = m_resume.call_args[0][0]
+        assert ts_passed.session_id == "ses-abc"
 
     def test_failed_no_session_retried_on_comment(
         self, orchestrator: Orchestrator, linear: FakeLinearClient
@@ -1196,17 +1702,28 @@ class TestCancellation:
             time.sleep(0.3)
             return ("ses-x", "out")
 
-        with mock.patch(
-            "symphony_linear.orchestrator.prepare", return_value="/tmp/ws/TEAM-1"
+        with (
+            mock.patch(
+                "symphony_linear.orchestrator.clone_workspace",
+                return_value="/tmp/ws/TEAM-1",
+            ),
+            mock.patch(
+                "symphony_linear.orchestrator.finalize_workspace",
+            ),
+            mock.patch(
+                "symphony_linear.orchestrator.load_project_config",
+                return_value=ProjectConfig(),
+            ),
+            mock.patch(
+                "symphony_linear.orchestrator.run_initial",
+                side_effect=slow_run_initial,
+            ),
         ):
-            with mock.patch(
-                "symphony_linear.orchestrator.run_initial", side_effect=slow_run_initial
-            ):
-                orchestrator._schedule_task(
-                    "ticket-1", orchestrator._new_ticket_pipeline, _make_issue()
-                )
-                done.wait()
-                orchestrator._cancel_ticket("ticket-1")
+            orchestrator._schedule_task(
+                "ticket-1", orchestrator._new_ticket_pipeline, _make_issue()
+            )
+            done.wait()
+            orchestrator._cancel_ticket("ticket-1")
         time.sleep(0.5)
         post_calls = linear.calls.get("post_comment", [])
         assert not any("out" in body for _, body in post_calls)
@@ -1242,7 +1759,15 @@ class TestHidePaths:
         linear.set_response("get_issue", _make_issue(description="Fix"))
         with (
             mock.patch(
-                "symphony_linear.orchestrator.prepare", return_value="/tmp/ws/TEAM-1"
+                "symphony_linear.orchestrator.clone_workspace",
+                return_value="/tmp/ws/TEAM-1",
+            ),
+            mock.patch(
+                "symphony_linear.orchestrator.finalize_workspace",
+            ),
+            mock.patch(
+                "symphony_linear.orchestrator.load_project_config",
+                return_value=ProjectConfig(),
             ),
             mock.patch(
                 "symphony_linear.orchestrator.run_initial", return_value=("ses", "msg")
@@ -1267,9 +1792,15 @@ class TestHidePaths:
         )
         orchestrator._state.upsert(ts)
         linear.set_response("list_comments_since", [_make_comment("c1", "Go")])
-        with mock.patch(
-            "symphony_linear.orchestrator.run_resume", return_value="Done!"
-        ) as m_oc:
+        with (
+            mock.patch(
+                "symphony_linear.orchestrator.load_project_config",
+                return_value=ProjectConfig(),
+            ),
+            mock.patch(
+                "symphony_linear.orchestrator.run_resume", return_value="Done!"
+            ) as m_oc,
+        ):
             orchestrator._resume_pipeline(ts)
         _, kwargs = m_oc.call_args
         assert kwargs.get("hide_paths") == ["/fake/secret"]
@@ -1281,10 +1812,10 @@ class TestHidePaths:
 
 
 class TestExtraRWPaths:
-    def test_extra_rw_passed_to_prepare(
+    def test_extra_rw_passed_to_finalize(
         self, orchestrator: Orchestrator, linear: FakeLinearClient
     ) -> None:
-        """prepare() is called with sandbox_extra_rw_paths from config."""
+        """finalize_workspace is called with sandbox_extra_rw_paths from config."""
         linear.set_response(
             "get_project",
             Project(
@@ -1298,14 +1829,22 @@ class TestExtraRWPaths:
         linear.set_response("get_issue", _make_issue(description="Fix"))
         with (
             mock.patch(
-                "symphony_linear.orchestrator.prepare", return_value="/tmp/ws/TEAM-1"
-            ) as m_prep,
+                "symphony_linear.orchestrator.clone_workspace",
+                return_value="/tmp/ws/TEAM-1",
+            ) as m_clone,
+            mock.patch(
+                "symphony_linear.orchestrator.finalize_workspace",
+            ) as m_finalize,
+            mock.patch(
+                "symphony_linear.orchestrator.load_project_config",
+                return_value=ProjectConfig(),
+            ),
             mock.patch(
                 "symphony_linear.orchestrator.run_initial", return_value=("ses", "msg")
             ),
         ):
             orchestrator._new_ticket_pipeline(_make_issue())
-        _, kwargs = m_prep.call_args
+        _, kwargs = m_finalize.call_args
         assert kwargs.get("sandbox_extra_rw_paths") == ["/fake/rw"]
 
     def test_extra_rw_passed_to_run_initial(
@@ -1324,7 +1863,15 @@ class TestExtraRWPaths:
         linear.set_response("get_issue", _make_issue(description="Fix"))
         with (
             mock.patch(
-                "symphony_linear.orchestrator.prepare", return_value="/tmp/ws/TEAM-1"
+                "symphony_linear.orchestrator.clone_workspace",
+                return_value="/tmp/ws/TEAM-1",
+            ),
+            mock.patch(
+                "symphony_linear.orchestrator.finalize_workspace",
+            ),
+            mock.patch(
+                "symphony_linear.orchestrator.load_project_config",
+                return_value=ProjectConfig(),
             ),
             mock.patch(
                 "symphony_linear.orchestrator.run_initial", return_value=("ses", "msg")
@@ -1349,9 +1896,15 @@ class TestExtraRWPaths:
         )
         orchestrator._state.upsert(ts)
         linear.set_response("list_comments_since", [_make_comment("c1", "Go")])
-        with mock.patch(
-            "symphony_linear.orchestrator.run_resume", return_value="Done!"
-        ) as m_oc:
+        with (
+            mock.patch(
+                "symphony_linear.orchestrator.load_project_config",
+                return_value=ProjectConfig(),
+            ),
+            mock.patch(
+                "symphony_linear.orchestrator.run_resume", return_value="Done!"
+            ) as m_oc,
+        ):
             orchestrator._resume_pipeline(ts)
         _, kwargs = m_oc.call_args
         assert kwargs.get("extra_rw_paths") == ["/fake/rw"]
@@ -2199,10 +2752,19 @@ class TestFix2CancelledAgentGuards:
 
         with (
             mock.patch(
-                "symphony_linear.orchestrator.prepare", return_value="/tmp/ws/TEAM-1"
+                "symphony_linear.orchestrator.clone_workspace",
+                return_value="/tmp/ws/TEAM-1",
             ),
             mock.patch(
-                "symphony_linear.orchestrator.run_initial", side_effect=cancel_then_return
+                "symphony_linear.orchestrator.finalize_workspace",
+            ),
+            mock.patch(
+                "symphony_linear.orchestrator.load_project_config",
+                return_value=ProjectConfig(),
+            ),
+            mock.patch(
+                "symphony_linear.orchestrator.run_initial",
+                side_effect=cancel_then_return,
             ),
         ):
             orchestrator._new_ticket_pipeline(_make_issue())
@@ -2234,10 +2796,19 @@ class TestFix2CancelledAgentGuards:
 
         with (
             mock.patch(
-                "symphony_linear.orchestrator.prepare", return_value="/tmp/ws/TEAM-1"
+                "symphony_linear.orchestrator.clone_workspace",
+                return_value="/tmp/ws/TEAM-1",
             ),
             mock.patch(
-                "symphony_linear.orchestrator.run_initial", side_effect=cancel_then_return
+                "symphony_linear.orchestrator.finalize_workspace",
+            ),
+            mock.patch(
+                "symphony_linear.orchestrator.load_project_config",
+                return_value=ProjectConfig(),
+            ),
+            mock.patch(
+                "symphony_linear.orchestrator.run_initial",
+                side_effect=cancel_then_return,
             ),
         ):
             orchestrator._new_ticket_pipeline(_make_issue())
@@ -2270,8 +2841,14 @@ class TestFix2CancelledAgentGuards:
             orchestrator._cancel_ticket("ticket-1")
             return "Done!"
 
-        with mock.patch(
-            "symphony_linear.orchestrator.run_resume", side_effect=cancel_then_return
+        with (
+            mock.patch(
+                "symphony_linear.orchestrator.load_project_config",
+                return_value=ProjectConfig(),
+            ),
+            mock.patch(
+                "symphony_linear.orchestrator.run_resume", side_effect=cancel_then_return
+            ),
         ):
             orchestrator._resume_pipeline(ts)
 
@@ -2547,10 +3124,19 @@ class TestCorrection3:
 
         with (
             mock.patch(
-                "symphony_linear.orchestrator.prepare", return_value="/tmp/ws/TEAM-1"
+                "symphony_linear.orchestrator.clone_workspace",
+                return_value="/tmp/ws/TEAM-1",
             ),
             mock.patch(
-                "symphony_linear.orchestrator.run_initial", side_effect=cancel_then_return
+                "symphony_linear.orchestrator.finalize_workspace",
+            ),
+            mock.patch(
+                "symphony_linear.orchestrator.load_project_config",
+                return_value=ProjectConfig(),
+            ),
+            mock.patch(
+                "symphony_linear.orchestrator.run_initial",
+                side_effect=cancel_then_return,
             ),
         ):
             orchestrator._new_ticket_pipeline(_make_issue())
@@ -2591,8 +3177,14 @@ class TestCorrection3:
             orchestrator._cancel_ticket("ticket-1")
             return "Done!"
 
-        with mock.patch(
-            "symphony_linear.orchestrator.run_resume", side_effect=cancel_then_return
+        with (
+            mock.patch(
+                "symphony_linear.orchestrator.load_project_config",
+                return_value=ProjectConfig(),
+            ),
+            mock.patch(
+                "symphony_linear.orchestrator.run_resume", side_effect=cancel_then_return
+            ),
         ):
             orchestrator._resume_pipeline(ts)
 

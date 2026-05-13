@@ -29,11 +29,16 @@ from symphony_linear.opencode import (
     run_initial,
     run_resume,
 )
+from symphony_linear.project_config import (
+    ProjectConfigError,
+    load_project_config,
+)
 from symphony_linear.state import StateManager, TicketState, TicketStatus
 from symphony_linear.workspace import (
     ServeScriptMissing,
     WorkspaceError,
-    prepare,
+    clone_workspace,
+    finalize_workspace,
     remove,
     start_serve,
 )
@@ -329,7 +334,17 @@ class Orchestrator:
                             existing.updated_at = _iso_now()
                             self._state.upsert(existing)
                             self._state.save()
-                        self._schedule_task(issue.id, self._new_ticket_pipeline, issue)
+                        # Route to resume if the existing state already has a
+                        # session (e.g. ProjectConfigError fired during a resume
+                        # turn).  Otherwise start a fresh initial pipeline.
+                        if existing.session_id:
+                            self._schedule_task(
+                                issue.id, self._resume_pipeline, existing
+                            )
+                        else:
+                            self._schedule_task(
+                                issue.id, self._new_ticket_pipeline, issue
+                            )
                 # Retry failed-no-session tickets if user commented (B1).
                 elif (
                     existing.status == TicketStatus.failed
@@ -885,19 +900,14 @@ class Orchestrator:
             return
 
         # --- Save bootstrapping state EARLY (B2) ---
-        # When auto_branch is disabled we don't pick a branch — record empty
-        # rather than a misleading placeholder. The field is informational.
-        if self._config.auto_branch:
-            branch = issue.branch_name or f"symphony/{issue.identifier.lower()}"
-        else:
-            branch = ""
+        # Branch is computed after loading project config; use "" as placeholder.
         ticket_state = TicketState(
             ticket_id=tid,
             ticket_identifier=issue.identifier,
             project_id=issue.project.id if issue.project else None,
             repo_url=repo_url,
             workspace_path="",  # not yet known
-            branch=branch,
+            branch="",  # will be updated after loading project config
             status=TicketStatus.bootstrapping,
         )
         with self._state_lock:
@@ -907,22 +917,77 @@ class Orchestrator:
         if self._is_cancelled(tid):
             return
 
-        # --- Prepare workspace (B2: pass on_subprocess for setup script) ---
+        # --- Clone workspace ---
         try:
-            workspace_path = prepare(
+            workspace_path = clone_workspace(
                 ticket_identifier=issue.identifier,
                 repo_url=repo_url,
-                branch_name=issue.branch_name,
                 workspace_root=str(self._workspace),
+            )
+        except (WorkspaceError, FileNotFoundError) as exc:
+            logger.error("Workspace clone failed for %s: %s", tid, exc)
+            err_comment = self._post_comment_safe(
+                tid,
+                f"**Symphony error**: Workspace clone failed:\n```\n{exc}\n```",
+                return_comment=True,
+            )
+            self._save_setup_error(tid, issue, str(exc), err_comment)
+            return
+
+        # B2: check cancellation after clone returns.
+        if self._is_cancelled(tid):
+            return
+
+        ticket_state.workspace_path = workspace_path
+        with self._state_lock:
+            self._state.upsert(ticket_state)
+            self._state.save()
+
+        # --- Load per-project config ---
+        try:
+            project_config = load_project_config(workspace_path)
+        except ProjectConfigError as exc:
+            logger.error("Project config invalid for %s: %s", tid, exc)
+            err_comment = self._post_comment_safe(
+                tid,
+                f"**Symphony error**: Invalid project config:\n```\n{exc}\n```",
+                return_comment=True,
+            )
+            self._save_setup_error(tid, issue, "project_config_invalid", err_comment)
+            return
+
+        # Compute effective auto_branch from project config, falling back to global.
+        effective_auto_branch = (
+            project_config.auto_branch
+            if project_config.auto_branch is not None
+            else self._config.auto_branch
+        )
+
+        # Compute branch name from effective auto_branch and update state.
+        if effective_auto_branch:
+            branch = issue.branch_name or f"symphony/{issue.identifier.lower()}"
+        else:
+            branch = ""
+        ticket_state.branch = branch
+        with self._state_lock:
+            self._state.upsert(ticket_state)
+            self._state.save()
+
+        # --- Finalize workspace (B2: pass on_subprocess for setup script) ---
+        try:
+            finalize_workspace(
+                workspace_path=workspace_path,
+                ticket_identifier=issue.identifier,
+                branch_name=issue.branch_name,
                 sandbox_hide_paths=self._config.sandbox.hide_paths,
                 on_subprocess=lambda proc: (self._register_subprocess(tid, proc), None)[
                     1
                 ],
                 sandbox_extra_rw_paths=self._config.sandbox.extra_rw_paths,
-                auto_branch=self._config.auto_branch,
+                auto_branch=effective_auto_branch,
             )
         except (WorkspaceError, FileNotFoundError) as exc:
-            logger.error("Workspace preparation failed for %s: %s", tid, exc)
+            logger.error("Workspace finalization failed for %s: %s", tid, exc)
             err_comment = self._post_comment_safe(
                 tid,
                 f"**Symphony error**: Workspace preparation failed:\n```\n{exc}\n```",
@@ -931,14 +996,9 @@ class Orchestrator:
             self._save_setup_error(tid, issue, str(exc), err_comment)
             return
 
-        # B2: check cancellation after prepare returns.
+        # B2: check cancellation after finalize returns.
         if self._is_cancelled(tid):
             return
-
-        ticket_state.workspace_path = workspace_path
-        with self._state_lock:
-            self._state.upsert(ticket_state)
-            self._state.save()
 
         # --- Transition Linear to In Progress ---
         try:
@@ -986,11 +1046,16 @@ class Orchestrator:
             self._state.upsert(ticket_state)
             self._state.save()
 
+        # Compute effective turn timeout from project config, falling back to global.
+        effective_turn_timeout = (
+            project_config.turn_timeout_seconds or self._config.turn_timeout_seconds
+        )
+
         try:
             session_id, final_message = run_initial(
                 workspace_path=workspace_path,
                 prompt=prompt,
-                timeout_seconds=self._config.turn_timeout_seconds,
+                timeout_seconds=effective_turn_timeout,
                 on_subprocess=lambda proc: (self._register_subprocess(tid, proc), None)[
                     1
                 ],
@@ -1002,7 +1067,7 @@ class Orchestrator:
             err_comment = self._post_comment_safe(
                 tid,
                 f"**Symphony error**: The AI turn timed out after "
-                f"{self._config.turn_timeout_seconds}s.",
+                f"{effective_turn_timeout}s.",
                 return_comment=True,
             )
             with self._state_lock:
@@ -1131,6 +1196,37 @@ class Orchestrator:
         )
         message = _format_comments_message(human_comments)
 
+        # Load per-project config BEFORE transitioning Linear (re-read on every
+        # resume to pick up in-repo changes).  A malformed config aborts early so
+        # the ticket doesn't flap between states.
+        #
+        # load_project_config now reads directly from origin/HEAD via git show,
+        # so repo-side config fixes are picked up regardless of which branch the
+        # workspace is on — no working-tree refresh needed.
+        try:
+            project_config = load_project_config(ticket_state.workspace_path)
+        except ProjectConfigError as exc:
+            logger.error(
+                "Project config invalid for %s on resume: %s", tid, exc
+            )
+            err_comment = self._post_comment_safe(
+                tid,
+                f"**Symphony error**: Invalid project config:\n```\n{exc}\n```",
+                return_comment=True,
+            )
+            with self._state_lock:
+                ticket_state.status = TicketStatus.failed
+                ticket_state.setup_error = "project_config_invalid"
+                ticket_state.updated_at = _iso_now()
+                if err_comment is not None:
+                    ticket_state.last_seen_comment_id = err_comment.id
+                self._state.upsert(ticket_state)
+                self._state.save()
+            return
+
+        if self._is_cancelled(tid):
+            return
+
         try:
             self._linear.transition_to_state(tid, self._config.linear.in_progress_state)
         except Exception:
@@ -1149,12 +1245,17 @@ class Orchestrator:
         if self._is_cancelled(tid):
             return
 
+        # Compute effective turn timeout from project config, falling back to global.
+        effective_turn_timeout = (
+            project_config.turn_timeout_seconds or self._config.turn_timeout_seconds
+        )
+
         try:
             final_message = run_resume(
                 workspace_path=ticket_state.workspace_path,
                 session_id=ticket_state.session_id or "",
                 message=message,
-                timeout_seconds=self._config.turn_timeout_seconds,
+                timeout_seconds=effective_turn_timeout,
                 on_subprocess=lambda proc: (self._register_subprocess(tid, proc), None)[
                     1
                 ],
@@ -1166,7 +1267,7 @@ class Orchestrator:
             err_comment = self._post_comment_safe(
                 tid,
                 f"**Symphony error**: The AI turn timed out after "
-                f"{self._config.turn_timeout_seconds}s.",
+                f"{effective_turn_timeout}s.",
                 return_comment=True,
             )
             with self._state_lock:
@@ -1275,22 +1376,42 @@ class Orchestrator:
         error_code: str,
         error_comment: Comment | None = None,
     ) -> None:
-        """Save failed state with setup_error, using error comment id as baseline (S3)."""
-        if self._config.auto_branch:
-            branch = issue.branch_name or f"symphony/{issue.identifier.lower()}"
+        """Save failed state with setup_error, using error comment id as baseline (S3).
+
+        When a state entry already exists (e.g. clone succeeded but finalize
+        failed), preserve its workspace_path, branch, project_id, repo_url, and
+        session_id.  Only overwrite the setup-error-related fields.
+        """
+        existing = self._state.get(tid)
+        if existing is not None:
+            ts = existing.model_copy(
+                update={
+                    "status": TicketStatus.failed,
+                    "setup_error": error_code,
+                    "last_seen_comment_id": (
+                        error_comment.id
+                        if error_comment
+                        else existing.last_seen_comment_id
+                    ),
+                    "updated_at": _iso_now(),
+                }
+            )
         else:
-            branch = ""
-        ts = TicketState(
-            ticket_id=tid,
-            ticket_identifier=issue.identifier,
-            project_id=issue.project.id if issue.project else None,
-            repo_url="",
-            workspace_path="",
-            branch=branch,
-            status=TicketStatus.failed,
-            setup_error=error_code,
-            last_seen_comment_id=error_comment.id if error_comment else None,
-        )
+            if self._config.auto_branch:
+                branch = issue.branch_name or f"symphony/{issue.identifier.lower()}"
+            else:
+                branch = ""
+            ts = TicketState(
+                ticket_id=tid,
+                ticket_identifier=issue.identifier,
+                project_id=issue.project.id if issue.project else None,
+                repo_url="",
+                workspace_path="",
+                branch=branch,
+                status=TicketStatus.failed,
+                setup_error=error_code,
+                last_seen_comment_id=error_comment.id if error_comment else None,
+            )
         with self._state_lock:
             self._state.upsert(ts)
             self._state.save()
