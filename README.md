@@ -1,5 +1,7 @@
 # Symphony
 
+<img src="misc/screenshot1.png" alt="Symphony screenshot" width="400" align="right">
+
 Symphony turns Linear into the front end for a fleet of AI coding agents.
 Label a ticket, walk away, and read the agent's reply when you have a moment;
 when you reply, the agent picks the thread back up. It runs as a single
