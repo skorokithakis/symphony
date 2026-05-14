@@ -11,6 +11,7 @@ from symphony_linear.config import AppConfig, load_config
 from symphony_linear.linear import LinearClient
 from symphony_linear.logging import get_logger, setup_logging
 from symphony_linear.orchestrator import Orchestrator
+from symphony_linear.provisioning import provision_trigger_label
 from symphony_linear.state import load_state
 
 logger = get_logger(__name__)
@@ -77,6 +78,9 @@ def main(argv: list[str] | None = None) -> None:
     # Load state and create the Linear client.
     state = load_state(workspace)
     linear = LinearClient(api_key=config.linear.api_key)
+
+    # Auto-provision the trigger label on startup.
+    provision_trigger_label(linear, state, config.linear.trigger_label)
 
     # Create and run the orchestrator daemon.
     orchestrator = Orchestrator(

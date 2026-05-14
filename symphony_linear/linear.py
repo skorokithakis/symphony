@@ -456,6 +456,47 @@ class LinearClient:
                 f"Failed to transition issue {issue_id} to state '{state_name}'"
             )
 
+    def find_workspace_label(self, name: str) -> str | None:
+        """Return the id of a workspace-wide label with the exact *name*, or ``None``.
+
+        Filters to labels where the ``team`` field is null (workspace scope).
+        """
+        query = """
+        query($name: String!) {
+          issueLabels(filter: { name: { eq: $name }, team: { null: true } }) {
+            nodes {
+              id
+            }
+          }
+        }
+        """
+        data = self._query(query, {"name": name})
+        nodes: list[dict[str, str]] = data.get("issueLabels", {}).get("nodes", [])
+        if nodes:
+            return nodes[0]["id"]
+        return None
+
+    def create_workspace_label(self, name: str) -> str:
+        """Create a workspace-wide label with *name* (no teamId).
+
+        Returns the new label's id. Raises ``LinearError`` on failure.
+        """
+        mutation = """
+        mutation($input: IssueLabelCreateInput!) {
+          issueLabelCreate(input: $input) {
+            success
+            issueLabel {
+              id
+            }
+          }
+        }
+        """
+        data = self._query(mutation, {"input": {"name": name}})
+        payload = data["issueLabelCreate"]
+        if not payload.get("success"):
+            raise LinearError(f"Failed to create workspace label '{name}'")
+        return payload["issueLabel"]["id"]
+
     def _resolve_state_id(self, issue_id: str, state_name: str) -> str:
         """Query the issue's team workflow states and return the id for *state_name*.
 

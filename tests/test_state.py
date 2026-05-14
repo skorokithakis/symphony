@@ -232,3 +232,25 @@ class TestLoadState:
         mgr = load_state(Path("/nonexistent"))
         assert isinstance(mgr, StateManager)
         assert mgr.tickets == []
+
+
+# ---------------------------------------------------------------------------
+# Backward compatibility
+# ---------------------------------------------------------------------------
+
+
+class TestBackwardCompat:
+    def test_old_state_json_without_provisioned_label_loads(
+        self, tmp_path: Path
+    ) -> None:
+        """A state.json without provisioned_label_name must load cleanly."""
+        old_state: dict[str, Any] = {"tickets": []}
+        path = tmp_path / "state.json"
+        import json
+
+        path.write_text(json.dumps(old_state))
+
+        mgr = StateManager(path)
+        store = mgr.load()
+        assert store.tickets == []
+        assert store.provisioned_label_name is None

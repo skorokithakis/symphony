@@ -74,6 +74,9 @@ class StateStore(BaseModel):
     """Container that holds all tracked ticket states."""
 
     tickets: list[TicketState] = Field(default_factory=list)
+    provisioned_label_name: str | None = Field(
+        None, description="The last trigger label name we successfully provisioned"
+    )
 
 
 # ---------------------------------------------------------------------------
@@ -180,6 +183,16 @@ class StateManager:
     def clear(self) -> None:
         """Remove all tracked tickets from the in-memory store."""
         self._store.tickets.clear()
+
+    @property
+    def provisioned_label_name(self) -> str | None:
+        """Return the currently provisioned label name, if any."""
+        return self._store.provisioned_label_name
+
+    def set_provisioned_label_name(self, name: str) -> None:
+        """Record that a trigger label has been provisioned and persist."""
+        self._store.provisioned_label_name = name
+        self.save()
 
 
 # ---------------------------------------------------------------------------

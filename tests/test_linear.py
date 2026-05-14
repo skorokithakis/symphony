@@ -732,3 +732,63 @@ class TestIssueModel:
         assert issue.comments == []
         assert issue.branch_name is None
         assert issue.project is None
+
+
+# ---------------------------------------------------------------------------
+# find_workspace_label
+# ---------------------------------------------------------------------------
+
+
+class TestFindWorkspaceLabel:
+    def test_returns_id_when_label_exists(self) -> None:
+        raw = {"data": {"issueLabels": {"nodes": [{"id": "lbl-agent"}]}}}
+        transport = _make_transport(lambda req: _json_response(raw))
+        client = _client(transport)
+        assert client.find_workspace_label("Agent") == "lbl-agent"
+
+    def test_returns_none_when_no_matches(self) -> None:
+        raw: dict[str, Any] = {"data": {"issueLabels": {"nodes": []}}}
+        transport = _make_transport(lambda req: _json_response(raw))
+        client = _client(transport)
+        assert client.find_workspace_label("Agent") is None
+
+    def test_returns_none_when_key_missing(self) -> None:
+        """Gracefully handle a response without the issueLabels key."""
+        raw: dict[str, Any] = {"data": {}}
+        transport = _make_transport(lambda req: _json_response(raw))
+        client = _client(transport)
+        assert client.find_workspace_label("Agent") is None
+
+
+# ---------------------------------------------------------------------------
+# create_workspace_label
+# ---------------------------------------------------------------------------
+
+
+class TestCreateWorkspaceLabel:
+    def test_creates_and_returns_label_id(self) -> None:
+        raw = {
+            "data": {
+                "issueLabelCreate": {
+                    "success": True,
+                    "issueLabel": {"id": "lbl-new"},
+                }
+            }
+        }
+        transport = _make_transport(lambda req: _json_response(raw))
+        client = _client(transport)
+        assert client.create_workspace_label("Agent") == "lbl-new"
+
+    def test_failure_raises_linear_error(self) -> None:
+        raw = {
+            "data": {
+                "issueLabelCreate": {
+                    "success": False,
+                    "issueLabel": None,
+                }
+            }
+        }
+        transport = _make_transport(lambda req: _json_response(raw))
+        client = _client(transport)
+        with pytest.raises(LinearError, match="Failed to create workspace label"):
+            client.create_workspace_label("Agent")
