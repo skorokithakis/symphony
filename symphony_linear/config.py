@@ -12,7 +12,14 @@ from pathlib import Path
 from typing import Any
 
 import yaml
-from pydantic import BaseModel, ConfigDict, Field, ValidationError, model_validator
+from pydantic import (
+    BaseModel,
+    ConfigDict,
+    Field,
+    ValidationError,
+    field_validator,
+    model_validator,
+)
 
 
 # ---------------------------------------------------------------------------
@@ -83,6 +90,47 @@ class _LinearConfig(BaseModel):
     bot_user_email: str = Field(..., description="Email of the bot user in Linear")
 
 
+# Compile once to share between config-level and tracker-level validation.
+_GITHUB_PROJECT_REF_RE = re.compile(r"^(orgs|users)/([^/]+)/projects/(\d+)$")
+
+
+class _GitHubConfig(BaseModel):
+    """GitHub Projects v2 backend configuration."""
+
+    token: str = Field(..., description="GitHub personal-access or installation token")
+    project: str = Field(
+        ...,
+        description="Project reference: orgs/<org>/projects/<n> or users/<user>/projects/<n>",
+    )
+    trigger_field: str = Field(
+        "Symphony", description="Single-select field name that triggers the bot"
+    )
+    status_field: str = Field(
+        "Status", description="Single-select field name for workflow state"
+    )
+    in_progress_status: str = Field(
+        "In Progress", description="Status option name for in-progress work"
+    )
+    needs_input_status: str = Field(
+        "Needs Input", description="Status option name when input is needed"
+    )
+    qa_status: str | None = Field(
+        None,
+        description="Optional status option name for QA; polled in addition to in_progress and needs_input",
+    )
+
+    @field_validator("project")
+    @classmethod
+    def _validate_project_ref(cls, v: str) -> str:
+        if not _GITHUB_PROJECT_REF_RE.match(v):
+            raise ValueError(
+                f"Invalid project ref: {v!r}. "
+                f"Expected format: orgs/<org>/projects/<number> or "
+                f"users/<user>/projects/<number>"
+            )
+        return v
+
+
 class _SandboxConfig(BaseModel):
     hide_paths: list[str] = Field(
         default_factory=lambda: list(DEFAULT_HIDE_PATHS),
@@ -95,21 +143,29 @@ class _SandboxConfig(BaseModel):
 
 
 class AppConfig(BaseModel):
-    """Top-level application configuration."""
+    """Top-level application configuration.
+
+    Exactly one of ``linear`` or ``github`` must be set.
+    """
 
     model_config = ConfigDict(extra="forbid")
 
-    linear: _LinearConfig
+    linear: _LinearConfig | None = Field(
+        None, description="Linear backend configuration block"
+    )
+    github: _GitHubConfig | None = Field(
+        None, description="GitHub Projects v2 backend configuration block"
+    )
     sandbox: _SandboxConfig = Field(default_factory=_SandboxConfig)
     poll_interval_seconds: int = Field(
-        30, gt=0, description="Seconds between Linear poll cycles"
+        30, gt=0, description="Seconds between poll cycles"
     )
     turn_timeout_seconds: int = Field(1800, gt=0, description="Max seconds per AI turn")
     auto_branch: bool = Field(
         True,
         description=(
             "If true (default), switch the workspace to a per-ticket branch "
-            "during prepare() — Linear's branchName, or symphony/<id> as "
+            "during prepare() — the tracker's branchName, or symphony/<id> as "
             "fallback. If false, no branch switch runs and the workspace "
             "stays on whatever git clone checked out (the remote default "
             "branch). Useful when the agent commits straight to the default "
@@ -127,6 +183,60 @@ class AppConfig(BaseModel):
             if "sandbox" in data and data["sandbox"] is None:
                 del data["sandbox"]
         return data
+
+    @model_validator(mode="after")
+    def _exactly_one_tracker(self) -> AppConfig:
+        """Enforce that exactly one tracker backend block is configured."""
+        if self.linear is not None and self.github is not None:
+            raise ValueError(
+                "Both 'linear' and 'github' blocks are set in config.yaml. "
+                "Configure exactly one tracker backend."
+            )
+        if self.linear is None and self.github is None:
+            raise ValueError(
+                "No tracker backend configured. "
+                "Add either a 'linear:' or 'github:' block to config.yaml."
+            )
+        return self
+
+
+# ---------------------------------------------------------------------------
+# Env-var fallback helpers
+# ---------------------------------------------------------------------------
+
+
+def _apply_linear_env_fallback(expanded: dict[str, Any], path: Path) -> None:
+    """If a linear block is present but has no api_key, fill it from LINEAR_API_KEY."""
+    linear = expanded.get("linear")
+    if linear is None:
+        return
+    if isinstance(linear, dict) and not linear.get("api_key", ""):
+        env_key = os.environ.get("LINEAR_API_KEY", "")
+        if env_key:
+            linear["api_key"] = env_key
+        else:
+            raise ValueError(
+                f"Linear API key not set. Provide it in {path} "
+                f"(linear.api_key) or via the LINEAR_API_KEY "
+                f"environment variable."
+            )
+
+
+def _apply_github_env_fallback(expanded: dict[str, Any], path: Path) -> None:
+    """If a github block is present but has no token, fill it from GITHUB_TOKEN."""
+    github = expanded.get("github")
+    if github is None:
+        return
+    if isinstance(github, dict) and not github.get("token", ""):
+        env_key = os.environ.get("GITHUB_TOKEN", "")
+        if env_key:
+            github["token"] = env_key
+        else:
+            raise ValueError(
+                f"GitHub token not set. Provide it in {path} "
+                f"(github.token) or via the GITHUB_TOKEN "
+                f"environment variable."
+            )
 
 
 # ---------------------------------------------------------------------------
@@ -166,20 +276,30 @@ def load_config(workspace_dir: Path) -> AppConfig:
 
     expanded = _expand_values(raw)
 
-    # LINEAR_API_KEY environment variable fallback: if linear.api_key is
-    # missing or empty in the YAML, fall back to the LINEAR_API_KEY env var.
+    # Validate exactly-one-tracker constraint early, before credential
+    # fallbacks, so that setting both blocks (or neither) produces a clear
+    # error instead of a confusing "missing token" message.
     if isinstance(expanded, dict):
-        linear = expanded.setdefault("linear", {})
-        if isinstance(linear, dict) and not linear.get("api_key", ""):
-            env_key = os.environ.get("LINEAR_API_KEY", "")
-            if env_key:
-                linear["api_key"] = env_key
-            else:
-                raise ValueError(
-                    f"Linear API key not set. Provide it in {path} "
-                    f"(linear.api_key) or via the LINEAR_API_KEY "
-                    f"environment variable."
-                )
+        has_linear = expanded.get("linear") is not None
+        has_github = expanded.get("github") is not None
+        if has_linear and has_github:
+            raise ValueError(
+                "Both 'linear' and 'github' blocks are set in config.yaml. "
+                "Configure exactly one tracker backend."
+            )
+        if not has_linear and not has_github:
+            raise ValueError(
+                "No tracker backend configured. "
+                "Add either a 'linear:' or 'github:' block to config.yaml."
+            )
+
+    # Environment variable fallbacks: if the config block is present but its
+    # credential is missing or empty, fall back to the appropriate env var.
+    # We only run the fallback for blocks that actually appear in the YAML so
+    # that a github-only config does not demand a Linear API key.
+    if isinstance(expanded, dict):
+        _apply_linear_env_fallback(expanded, path)
+        _apply_github_env_fallback(expanded, path)
 
     try:
         return AppConfig.model_validate(expanded)

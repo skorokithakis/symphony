@@ -8,11 +8,14 @@ import sys
 from pathlib import Path
 
 from symphony_linear.config import AppConfig, load_config
+from symphony_linear.github import GitHubClient
+from symphony_linear.github_tracker import GitHubTracker, GitHubTrackerConfig
 from symphony_linear.linear import LinearClient
+from symphony_linear.linear_tracker import LinearTracker
 from symphony_linear.logging import get_logger, setup_logging
 from symphony_linear.orchestrator import Orchestrator
-from symphony_linear.provisioning import provision_trigger_label
 from symphony_linear.state import load_state
+from symphony_linear.tracker import Tracker
 
 logger = get_logger(__name__)
 
@@ -75,15 +78,36 @@ def main(argv: list[str] | None = None) -> None:
         logger.info("  poll_interval   = %s s", config.poll_interval_seconds)
         return
 
-    # Load state and create the Linear client.
+    # Load state and create the appropriate tracker backend.
     state = load_state(workspace)
-    linear = LinearClient(api_key=config.linear.api_key)
+    tracker = _create_tracker(config)
 
-    # Auto-provision the trigger label on startup.
-    provision_trigger_label(linear, state, config.linear.trigger_label)
+    # Auto-provision the trigger field/label on startup.
+    tracker.ensure_trigger_setup(state)
 
     # Create and run the orchestrator daemon.
     orchestrator = Orchestrator(
-        config=config, state=state, linear=linear, workspace=workspace
+        config=config, state=state, tracker=tracker, workspace=workspace
     )
     orchestrator.run()
+
+
+def _create_tracker(config: AppConfig) -> Tracker:
+    """Instantiate the correct tracker backend based on config."""
+    if config.linear is not None:
+        linear_client = LinearClient(api_key=config.linear.api_key)
+        return LinearTracker(linear=linear_client, config=config.linear)
+    if config.github is not None:
+        github_client = GitHubClient(token=config.github.token)
+        github_tracker_config = GitHubTrackerConfig(
+            token=config.github.token,
+            project_ref=config.github.project,
+            trigger_field=config.github.trigger_field,
+            status_field=config.github.status_field,
+            in_progress_status=config.github.in_progress_status,
+            needs_input_status=config.github.needs_input_status,
+            qa_status=config.github.qa_status,
+        )
+        return GitHubTracker(client=github_client, config=github_tracker_config)
+    # The model_validator guarantees this is unreachable, but be defensive.
+    raise RuntimeError("No tracker backend configured")

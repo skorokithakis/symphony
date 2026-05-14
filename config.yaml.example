@@ -1,5 +1,8 @@
 # config.yaml.example — fully annotated example for symphony-linear.
 # Copy this to your workspace directory as config.yaml and adjust to taste.
+#
+# Exactly one of `linear` or `github` must be configured.  Comment out or
+# remove the block you are not using.
 
 linear:
   # REQUIRED. Linear Personal API key from the bot account.
@@ -26,6 +29,45 @@ linear:
   # REQUIRED. Email address of the bot user in Linear.
   bot_user_email: yourname+symphony@gmail.com
 
+
+# ---------------------------------------------------------------------------
+# GitHub Projects v2 backend (comment out the `linear:` block above and
+# uncomment this block to use GitHub instead).
+# ---------------------------------------------------------------------------
+
+# github:
+#   # REQUIRED. GitHub personal-access token or installation token.
+#   # Classic PAT needs `repo` + `project` scopes (read+write).
+#   # Fine-grained PATs need read/write on Issues + Projects + read on Contents.
+#   # Use ${GITHUB_TOKEN} to read from the environment (or set GITHUB_TOKEN
+#   # env var — the daemon falls back to it if this field is missing or empty).
+#   token: ${GITHUB_TOKEN}
+#
+#   # REQUIRED. GitHub project reference.
+#   # Format: orgs/<org>/projects/<number> or users/<user>/projects/<number>.
+#   project: orgs/my-org/projects/1
+#   # Alternative: users/my-user/projects/2
+#
+#   # Name of the single-select field that triggers the bot (default: Symphony).
+#   trigger_field: Symphony
+#
+#   # Name of the single-select Status field on the project (default: Status).
+#   status_field: Status
+#
+#   # Status option name for in-progress work (default: In Progress).
+#   # Missing options on the Status field are created automatically at startup.
+#   in_progress_status: In Progress
+#
+#   # Status option name when input is needed from a human (default: Needs Input).
+#   needs_input_status: Needs Input
+#
+#   # Optional. Status option name that enables manual QA. When a ticket
+#   # enters this status, the daemon runs the repo's .symphony/serve script
+#   # inside the sandbox. Only one serve runs globally; moving a different
+#   # ticket into this status bumps the previous one back to needs_input_status.
+#   # Omit to disable the feature entirely.
+#   # qa_status: QA
+
 sandbox:
   # Paths to conceal inside the sandbox (defaults shown below).
   # Directories are overlaid with an empty tmpfs; files and sockets are
@@ -47,15 +89,15 @@ sandbox:
   #   - ~/projects/shared-tools
 
 
-# Seconds between Linear poll cycles (default: 30, minimum: 1).
+# Seconds between tracker poll cycles (default: 30, minimum: 1).
 poll_interval_seconds: 30
 
 # Max seconds per AI turn before the process is killed (default: 1800).
 turn_timeout_seconds: 1800
 
 # Whether to switch the workspace to a per-ticket branch (default: true).
-# When true, prepare() switches to Linear's suggested branchName, or
-# symphony/<id> as a fallback (creating it if needed).
+# When true, prepare() switches to the tracker's suggested branch name
+# (where available), or symphony/<id> as a fallback (creating it if needed).
 # When false, prepare() skips the branch switch entirely and the agent
 # works on whatever branch git clone checked out (i.e. the remote default
 # branch). Useful when you've arranged for the agent to commit directly to

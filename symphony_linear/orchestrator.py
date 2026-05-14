@@ -12,15 +12,11 @@ from dataclasses import dataclass, field
 from datetime import datetime, timezone
 from pathlib import Path
 from typing import Any
-from urllib.parse import urlparse
 
 from symphony_linear.config import AppConfig
 from symphony_linear.linear import (
     Comment,
     Issue,
-    LinearClient,
-    LinearError,
-    LinearNotFoundError,
 )
 from symphony_linear.opencode import (
     OpenCodeCancelled,
@@ -34,6 +30,12 @@ from symphony_linear.project_config import (
     load_project_config,
 )
 from symphony_linear.state import StateManager, TicketState, TicketStatus
+from symphony_linear.tracker import (
+    Tracker,
+    TrackerError,
+    TrackerNotFoundError,
+    TransitionTarget,
+)
 from symphony_linear.workspace import (
     ServeScriptMissing,
     WorkspaceError,
@@ -62,56 +64,6 @@ _RESTART_NOTICE_BODY = (
 
 def _iso_now() -> str:
     return datetime.now(timezone.utc).isoformat()
-
-
-def _maybe_rewrite_to_ssh(url: str) -> str:
-    """Rewrite GitHub browser-style HTTPS URLs to their SSH equivalents.
-
-    Passes through unchanged: HTTPS URLs ending in .git, SSH URLs
-    (``git@...``, ``ssh://...``), non-GitHub URLs, and local paths.
-    """
-    parsed = urlparse(url)
-
-    # Must be HTTPS (case-insensitive).
-    if parsed.scheme.lower() != "https":
-        return url
-
-    # Must be github.com (case-insensitive), no userinfo, no custom port.
-    if parsed.hostname is None or parsed.hostname.lower() != "github.com":
-        return url
-    if parsed.username is not None or parsed.password is not None:
-        return url
-    try:
-        if parsed.port is not None:
-            return url
-    except ValueError:
-        return url  # malformed/non-numeric/out-of-range port — pass through
-
-    # Path: strip trailing slash, then split into segments.
-    # Pass through .git URLs and paths that are not exactly <owner>/<repo>.
-    path = parsed.path.rstrip("/")
-    if path.endswith(".git"):
-        return url
-
-    parts = path.lstrip("/").split("/")
-    if len(parts) != 2:
-        return url
-
-    owner, repo = parts
-    if not owner or not repo:
-        return url
-
-    return f"git@github.com:{owner}/{repo}.git"
-
-
-def _find_repo_link(project: Any, linear: LinearClient) -> str | None:
-    if project is None or project.id is None:
-        return None
-    fp = linear.get_project(project.id)
-    for link in fp.links:
-        if link.label.strip().lower() == "repo":
-            return _maybe_rewrite_to_ssh(link.url)
-    return None
 
 
 def _build_metadata_comment(workspace_path: str) -> str:
@@ -184,12 +136,12 @@ class Orchestrator:
         self,
         config: AppConfig,
         state: StateManager,
-        linear: LinearClient,
+        tracker: Tracker,
         workspace: Path,
     ) -> None:
         self._config = config
         self._state = state
-        self._linear = linear
+        self._tracker = tracker
         self._workspace = workspace
 
         self._executor = ThreadPoolExecutor(max_workers=5)
@@ -248,7 +200,7 @@ class Orchestrator:
                     # A metadata comment was already posted; edit it rather
                     # than leave it looking like a normal run.
                     try:
-                        self._linear.edit_comment(
+                        self._tracker.edit_comment(
                             ticket_state.metadata_comment_id,
                             _RESTART_NOTICE_BODY,
                         )
@@ -274,19 +226,19 @@ class Orchestrator:
         if ticket_state.metadata_comment_id:
             recovery_msg = (
                 "**Symphony**: Daemon restarted while I was working on this. "
-                "Reply to continue the conversation, or remove the `"
-                f"{self._config.linear.trigger_label}` label to stop."
+                "Reply to continue the conversation, or "
+                f"{self._tracker.human_trigger_description()} to stop."
             )
             try:
-                self._linear.post_comment(tid, recovery_msg)
-            except LinearError:
+                self._tracker.post_comment(tid, recovery_msg)
+            except TrackerError:
                 logger.exception("Failed to post recovery comment for %s", tid)
                 return
         if self._is_cancelled(tid):
             return
         try:
-            self._linear.transition_to_state(tid, self._config.linear.needs_input_state)
-        except LinearError:
+            self._tracker.transition_to(tid, TransitionTarget.needs_input)
+        except TrackerError:
             logger.exception("Failed to transition %s during recovery", tid)
             return
         if self._is_cancelled(tid):
@@ -310,10 +262,7 @@ class Orchestrator:
         for issue in issues:
             # Skip any pipeline scheduling while the ticket is in QA — the serve
             # handles it; the agent should not run concurrently.
-            if (
-                self._config.linear.qa_state is not None
-                and issue.state == self._config.linear.qa_state
-            ):
+            if self._tracker.is_in_qa(issue):
                 logger.debug(
                     "Skipping step-2 scheduling for %s: ticket is in QA state", issue.id
                 )
@@ -378,8 +327,8 @@ class Orchestrator:
                 continue
 
             try:
-                current = self._linear.get_issue(tid)
-            except LinearNotFoundError:
+                current = self._tracker.get_issue(tid)
+            except TrackerNotFoundError:
                 logger.info("Ticket %s not found — cleaning up", tid)
                 self._cancel_ticket(tid)
                 identifier = ticket_state.ticket_identifier
@@ -390,8 +339,8 @@ class Orchestrator:
                     logger.exception("Failed to remove workspace for %s", tid)
                 self._state.save()
                 continue
-            except LinearError:
-                logger.exception("Linear error fetching %s — skipping cleanup", tid)
+            except TrackerError:
+                logger.exception("Tracker error fetching %s — skipping cleanup", tid)
                 continue
 
             if self._is_still_triggered(current):
@@ -432,11 +381,7 @@ class Orchestrator:
                 continue
             if st == TicketStatus.working:
                 fetched = issues_by_id.get(tid)
-                if (
-                    fetched is not None
-                    and self._config.linear.qa_state is not None
-                    and fetched.state == self._config.linear.qa_state
-                ):
+                if fetched is not None and self._tracker.is_in_qa(fetched):
                     logger.debug("Skipping recovery for working QA ticket %s", tid)
                     continue
                 self._schedule_task(tid, self._recover_working_ticket, ticket_state)
@@ -456,18 +401,17 @@ class Orchestrator:
     ) -> None:
         """Reconcile the active QA serve process against the current set of issues.
 
-        Called once per tick after pipeline scheduling.  No-op when qa_state is
+        Called once per tick after pipeline scheduling.  No-op when QA is
         not configured.
         """
-        qa_state = self._config.linear.qa_state
-        if qa_state is None:
+        if not self._tracker.qa_enabled:
             return
 
         # Fix 5: if the active serve process has already exited (without the
         # watchdog noticing — e.g. it exited after the 10s window), post a
         # 'serve died' comment, transition the ticket back to needs_input, and
         # prune it from qa_tickets so we don't re-serve it this tick.
-        qa_tickets = [i for i in issues if i.state == qa_state]
+        qa_tickets = [i for i in issues if self._tracker.is_in_qa(i)]
         qa_ids = {i.id for i in qa_tickets}
 
         with self._serve_lock:
@@ -484,15 +428,13 @@ class Orchestrator:
                 stderr_text = bytes(av.stderr_head).decode(errors="replace")
                 body = _format_serve_died_comment(rc, stdout_text, stderr_text)
                 try:
-                    self._linear.post_comment(av.ticket_id, body)
+                    self._tracker.post_comment(av.ticket_id, body)
                 except Exception:
                     logger.exception(
                         "Failed to post serve-died comment for %s", av.ticket_id
                     )
             try:
-                self._linear.transition_to_state(
-                    av.ticket_id, self._config.linear.needs_input_state
-                )
+                self._tracker.transition_to(av.ticket_id, TransitionTarget.needs_input)
             except Exception:
                 logger.exception(
                     "Failed to transition %s after serve died", av.ticket_id
@@ -543,20 +485,18 @@ class Orchestrator:
                 winner.identifier,
             )
             try:
-                self._linear.transition_to_state(
-                    loser.id, self._config.linear.needs_input_state
-                )
-            except LinearError:
+                self._tracker.transition_to(loser.id, TransitionTarget.needs_input)
+            except TrackerError:
                 logger.exception(
                     "Failed to transition bumped ticket %s to needs_input", loser.id
                 )
                 continue  # skip comment — loser still in QA, will retry next tick
             try:
-                self._linear.post_comment(
+                self._tracker.post_comment(
                     loser.id,
                     f"**Symphony**: Bumped out of QA — {winner.identifier} took over.",
                 )
-            except LinearError:
+            except TrackerError:
                 logger.exception("Failed to post bump comment for %s", loser.id)
 
         # 4. Start serve for winner if not already running.
@@ -632,10 +572,8 @@ class Orchestrator:
         """
         logger.warning("QA winner %s %s — cannot start serve", ticket_id, log_reason)
         try:
-            self._linear.transition_to_state(
-                ticket_id, self._config.linear.needs_input_state
-            )
-        except LinearError:
+            self._tracker.transition_to(ticket_id, TransitionTarget.needs_input)
+        except TrackerError:
             logger.exception(
                 "Failed to transition QA winner %s to needs_input (%s)",
                 ticket_id,
@@ -647,7 +585,8 @@ class Orchestrator:
             f"**Symphony**: Can't start QA — no workspace exists for this ticket. "
             f"This usually happens after the ticket was moved out of an active state "
             f"(e.g. to Done), which cleans up the workspace. "
-            f"Transitioning back to `{self._config.linear.needs_input_state}`; "
+            f"Transitioning back to "
+            f"`{self._tracker.transition_name_for(TransitionTarget.needs_input)}`; "
             f"re-trigger the agent to reclone, then move to QA again.",
         )
 
@@ -692,10 +631,8 @@ class Orchestrator:
             av.failure_comment_posted = True
             # Transition the ticket out of QA so the next tick doesn't respawn the serve.
             try:
-                self._linear.transition_to_state(
-                    av.ticket_id, self._config.linear.needs_input_state
-                )
-            except LinearError:
+                self._tracker.transition_to(av.ticket_id, TransitionTarget.needs_input)
+            except TrackerError:
                 logger.exception(
                     "Failed to transition %s out of QA after serve failure",
                     av.ticket_id,
@@ -856,7 +793,7 @@ class Orchestrator:
         if self._bot_user_id is not None:
             return self._bot_user_id
         try:
-            uid = self._linear.current_user_id()
+            uid = self._tracker.current_user_id()
             self._bot_user_id = uid
             return uid
         except Exception:
@@ -873,27 +810,17 @@ class Orchestrator:
         if self._is_cancelled(tid):
             return
 
-        # --- Check project + Repo link ---
-        if issue.project is None or issue.project.id is None:
-            logger.warning("Ticket %s has no project", tid)
+        # --- Resolve repository URL ---
+        try:
+            repo_url = self._tracker.repo_url_for(issue)
+        except TrackerError as exc:
+            logger.warning("Ticket %s has no resolvable repo: %s", tid, exc)
             err_comment = self._post_comment_safe(
                 tid,
-                "**Symphony error**: No project linked to this ticket.",
+                f"**Symphony error**: {exc}",
                 return_comment=True,
             )
-            self._save_setup_error(tid, issue, "no_project", err_comment)
-            return
-
-        repo_url = _find_repo_link(issue.project, self._linear)
-        if repo_url is None:
-            logger.warning("Ticket %s has no Repo link", tid)
-            err_comment = self._post_comment_safe(
-                tid,
-                "**Symphony error**: No `Repo` link found on the project. "
-                "Add one and re-trigger.",
-                return_comment=True,
-            )
-            self._save_setup_error(tid, issue, "no_repo_link", err_comment)
+            self._save_setup_error(tid, issue, "no_repo", err_comment)
             return
 
         if self._is_cancelled(tid):
@@ -1002,12 +929,12 @@ class Orchestrator:
 
         # --- Transition Linear to In Progress ---
         try:
-            self._linear.transition_to_state(tid, self._config.linear.in_progress_state)
+            self._tracker.transition_to(tid, TransitionTarget.in_progress)
         except Exception:
             logger.exception(
                 "Failed to transition %s to '%s'",
                 tid,
-                self._config.linear.in_progress_state,
+                TransitionTarget.in_progress.value,
             )
 
         if self._is_cancelled(tid):
@@ -1017,7 +944,7 @@ class Orchestrator:
         meta_comment: Comment | None = None
         meta_body = _build_metadata_comment(workspace_path)
         try:
-            meta_comment = self._linear.post_comment(tid, meta_body)
+            meta_comment = self._tracker.post_comment(tid, meta_body)
             ticket_state.metadata_comment_id = meta_comment.id
             with self._state_lock:
                 self._state.upsert(ticket_state)
@@ -1030,9 +957,9 @@ class Orchestrator:
 
         # --- Fetch description + build prompt ---
         try:
-            full_issue = self._linear.get_issue(tid)
+            full_issue = self._tracker.get_issue(tid)
             description = full_issue.description
-        except LinearError:
+        except TrackerError:
             logger.exception("Failed to fetch issue %s for description", tid)
             description = None
         prompt = _build_initial_prompt(issue.title, description)
@@ -1111,7 +1038,7 @@ class Orchestrator:
         if meta_comment is not None:
             try:
                 final_meta = _build_metadata_comment_final(workspace_path, session_id)
-                self._linear.edit_comment(meta_comment.id, final_meta)
+                self._tracker.edit_comment(meta_comment.id, final_meta)
             except Exception:
                 logger.exception("Failed to edit metadata comment for %s", tid)
 
@@ -1140,12 +1067,12 @@ class Orchestrator:
         # --- Transition to Needs Input ---
         transition_ok = True
         try:
-            self._linear.transition_to_state(tid, self._config.linear.needs_input_state)
+            self._tracker.transition_to(tid, TransitionTarget.needs_input)
         except Exception:
             logger.exception(
                 "Failed to transition %s to '%s'",
                 tid,
-                self._config.linear.needs_input_state,
+                TransitionTarget.needs_input.value,
             )
             transition_ok = False
 
@@ -1173,7 +1100,7 @@ class Orchestrator:
             return
 
         try:
-            new_comments = self._linear.list_comments_since(
+            new_comments = self._tracker.list_comments_since(
                 tid,
                 ticket_state.last_seen_comment_id,
             )
@@ -1226,12 +1153,12 @@ class Orchestrator:
             return
 
         try:
-            self._linear.transition_to_state(tid, self._config.linear.in_progress_state)
+            self._tracker.transition_to(tid, TransitionTarget.in_progress)
         except Exception:
             logger.exception(
                 "Failed to transition %s to '%s'",
                 tid,
-                self._config.linear.in_progress_state,
+                TransitionTarget.in_progress.value,
             )
 
         with self._state_lock:
@@ -1316,12 +1243,12 @@ class Orchestrator:
 
         transition_ok = True
         try:
-            self._linear.transition_to_state(tid, self._config.linear.needs_input_state)
+            self._tracker.transition_to(tid, TransitionTarget.needs_input)
         except Exception:
             logger.exception(
                 "Failed to transition %s to '%s'",
                 tid,
-                self._config.linear.needs_input_state,
+                TransitionTarget.needs_input.value,
             )
             transition_ok = False
 
@@ -1343,7 +1270,7 @@ class Orchestrator:
         self, tid: str, body: str, *, return_comment: bool = False
     ) -> Comment | None:
         try:
-            comment = self._linear.post_comment(tid, body)
+            comment = self._tracker.post_comment(tid, body)
             return comment if return_comment else None
         except Exception:
             logger.exception("Failed to post comment for %s", tid)
@@ -1353,7 +1280,7 @@ class Orchestrator:
         if self._is_cancelled(tid):
             return None
         try:
-            return self._linear.post_comment(
+            return self._tracker.post_comment(
                 tid, final_message if final_message else "_(No output from the AI.)_"
             )
         except Exception:
@@ -1419,18 +1346,11 @@ class Orchestrator:
         if bot_id is None:  # S2: transient failure → skip
             return False
         try:
-            comments = self._linear.list_comments_since(issue_id, last_seen)
+            comments = self._tracker.list_comments_since(issue_id, last_seen)
         except Exception:
             logger.exception("Failed to list comments for %s", issue_id)
             return False
         return any(c.user_id != bot_id for c in comments)
-
-    def _get_issue_safe(self, issue_id: str) -> Issue | None:
-        try:
-            return self._linear.get_issue(issue_id)
-        except Exception:
-            logger.exception("Failed to fetch issue %s", issue_id)
-            return None
 
     # ==================================================================
     # Signal handling and shutdown
@@ -1504,34 +1424,10 @@ class Orchestrator:
 
     def _fetch_triggered_issues(self) -> list[Issue]:
         try:
-            active_states = [
-                self._config.linear.in_progress_state,
-                self._config.linear.needs_input_state,
-            ]
-            if self._config.linear.qa_state is not None:
-                active_states.append(self._config.linear.qa_state)
-            return self._linear.list_triggered_issues(
-                label=self._config.linear.trigger_label,
-                active_states=active_states,
-            )
+            return self._tracker.list_triggered_issues()
         except Exception:
             logger.exception("Failed to fetch triggered issues")
             return []
 
     def _is_still_triggered(self, issue: Issue) -> bool:
-        """Return True if *issue* should remain tracked and not be cleaned up.
-
-        An issue is triggered when all of these hold:
-        - the trigger label is present
-        - the Linear state is one of the configured active states
-        - the issue is not archived
-        """
-        cfg = self._config.linear
-        active_states = {cfg.in_progress_state, cfg.needs_input_state}
-        if cfg.qa_state is not None:
-            active_states.add(cfg.qa_state)
-        return (
-            cfg.trigger_label in issue.labels
-            and issue.state in active_states
-            and issue.archived_at is None
-        )
+        return self._tracker.is_still_triggered(issue)

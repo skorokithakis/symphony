@@ -1,14 +1,16 @@
 # Symphony
 
-Symphony turns Linear into the front end for a fleet of AI coding agents.
-Label a ticket, walk away, and read the agent's reply when you have a moment;
-when you reply, the agent picks the thread back up. It runs as a single
-daemon on your own machine, clones each ticket's repo into its own sandbox,
-hands the work to [OpenCode](https://opencode.ai/), and posts the result
-back to Linear as a comment. Several tickets can be in flight at once, so
-you can keep planning while the agents type.
+Symphony turns Linear or GitHub Projects into the front end for a fleet of
+AI coding agents. Label a ticket (or toggle a project field), walk away,
+and read the agent's reply when you have a moment; when you reply, the agent
+picks the thread back up. It runs as a single daemon on your own machine,
+clones each ticket's repo into its own sandbox, hands the work to
+[OpenCode](https://opencode.ai/), and posts the result back as a comment.
+Several tickets can be in flight at once, so you can keep planning while the
+agents type.
 
-The daemon is small, self-hosted, and has no UI of its own. Linear is the UI.
+The daemon is small, self-hosted, and has no UI of its own. Your issue
+tracker is the UI.
 
 ## Screenshots
 
@@ -28,20 +30,27 @@ uvx symphony-linear --help
 
 # 2. Create a workspace directory and a minimal config inside it
 mkdir ~/symphony && cd ~/symphony
+# For Linear:
 cat > config.yaml <<'YAML'
 linear:
   api_key: ${LINEAR_API_KEY}
   bot_user_email: you+symphony@example.com
 YAML
+# Or for GitHub Projects v2 (everything else has sensible defaults):
+cat > config.yaml <<'YAML'
+github:
+  token: ${GITHUB_TOKEN}
+  project: users/your-username/projects/1
+YAML
 
-# 3. Provide the bot's Linear API key and run
-export LINEAR_API_KEY=lin_api_...
+# 3. Provide the bot's API key and run
+export LINEAR_API_KEY=lin_api_...   # or GITHUB_TOKEN=ghp_...
 uvx symphony-linear
 ```
 
 That gets you a running daemon. To actually trigger work you still need to
-do the [Linear setup](#linear-setup) (create a bot user, add a label, attach
-a repo link to a project) and add the `Agent` label to a ticket.
+set up your tracker: see [Linear setup](#linear-setup) or
+[GitHub setup](#github-setup).
 
 ## Installation
 
@@ -149,6 +158,87 @@ For each repository you want Symphony to work on:
 
 That link is how the daemon discovers which repo belongs to which ticket.
 
+## GitHub setup
+
+This is the one-off plumbing to connect Symphony to a GitHub project. You do
+it once per project. The daemon uses the GitHub Projects v2 (beta) API; the
+older Projects v1 is not supported.
+
+### Create a bot account
+
+Create a separate GitHub user for the bot so its comments and state changes
+are easy to spot. Add the bot as a collaborator (with at least read access)
+to every repository the bot should clone.
+
+### Generate a token
+
+The bot needs read/write access to Issues, Projects, and read access to
+repository Contents:
+
+- **Classic personal access token.** Enable the `repo` and `project`
+  scopes.
+- **Fine-grained personal access token.** Grant read/write on Issues,
+  read/write on Projects, and read on Contents for the repositories.
+- **GitHub App** with equivalent permissions.
+
+Supply the token as `GITHUB_TOKEN` in the environment, or put it directly
+under `github.token` in your config. When the config field is empty or
+absent the daemon falls back to the `GITHUB_TOKEN` environment variable.
+
+### Create a project
+
+Create a GitHub Projects v2 project on your user or organization account.
+Note its reference in the format `orgs/<org>/projects/<number>` or
+`users/<user>/projects/<number>`. That string goes into `github.project`
+in your config — for example:
+
+```yaml
+github:
+  project: users/my-username/projects/1
+  # or: orgs/my-org/projects/1
+```
+
+### Configure Status
+
+Every GitHub project starts with a built-in single-select field called
+`Status`. The daemon expects this field to exist (it does by default on
+every new project) and will auto-create any missing options on it at
+startup — just set the option names you want in `github.in_progress_status`,
+`github.needs_input_status`, and optionally `github.qa_status`, and the
+daemon handles the rest.
+
+If your project uses a custom Status field with a different name, set
+`github.status_field` to that name.
+
+### The Symphony trigger field
+
+On startup the daemon auto-creates a single-select field called `Symphony`
+on the project (configurable via `github.trigger_field`). It comes with
+one option, `on`.
+
+- To **trigger** an issue: set its `Symphony` field to `on`. The daemon
+  picks it up on the next poll and starts working.
+- To **untick** an issue: set the field to empty, or remove the item from
+  the project entirely.
+
+Untriggering or moving the issue out of an active Status causes Symphony
+to cancel any in-flight subprocesses, delete the workspace, and remove
+the issue from its internal state on the next poll tick — just like
+removing the trigger label on Linear.
+
+### Multi-repo projects
+
+GitHub Projects v2 can contain items from any repository that the project
+references. Each issue remembers its own repository; Symphony clones from
+that repo's SSH URL. There is no per-project "Repo" link to configure.
+
+### Identifier convention
+
+Symphony uses `<owner>-<repo>-<number>` as the identifier for GitHub
+issues — for example `my-org-my-repo-42`. This appears in workspace
+directory names and metadata comments, and is used to derive the branch
+name when `auto_branch` is enabled.
+
 ## Configuration
 
 Symphony reads `config.yaml` from its workspace directory, which defaults to
@@ -158,21 +248,38 @@ daemon refuses to start without a valid config; validate it any time with
 
 ### Minimal config
 
+For Linear:
+
 ```yaml
 linear:
   api_key: ${LINEAR_API_KEY}
   bot_user_email: yourname+symphony@gmail.com
 ```
 
-You can omit `api_key` entirely and let the daemon read the `LINEAR_API_KEY`
-environment variable directly; that is often nicer for systemd or secret
-managers.
+For GitHub:
+
+```yaml
+github:
+  token: ${GITHUB_TOKEN}
+  project: users/your-username/projects/1
+  # Optional: enable manual QA by uncommenting.
+  # qa_status: QA
+```
+
+You can omit the credential entirely and let the daemon read the
+appropriate environment variable (`LINEAR_API_KEY` or `GITHUB_TOKEN`)
+directly; that is often nicer for systemd or secret managers.
 
 ### Full annotated config
+
+The annotated config below shows the Linear backend. For the GitHub
+version see `config.yaml.example` in the repo root — both blocks are
+documented there side by side.
 
 ```yaml
 # config.yaml (placed in the workspace directory)
 
+# Choose exactly one backend — linear or github.
 linear:
   # REQUIRED. Linear Personal API key from the bot account.
   # Use ${LINEAR_API_KEY} to read from the environment, or omit this field
@@ -217,7 +324,7 @@ sandbox:
   # extra_rw_paths:
   #   - ~/projects/shared-tools
 
-# Seconds between Linear poll cycles (default: 30, minimum: 1).
+# Seconds between poll cycles (default: 30, minimum: 1).
 poll_interval_seconds: 30
 
 # Max seconds per AI turn before the process is killed (default: 1800).
@@ -246,7 +353,12 @@ After=network-online.target
 [Service]
 Type=simple
 WorkingDirectory=%h/symphony
+# Set the env var that matches your backend. Use exactly one of these two
+# Environment= lines (systemd does not support trailing `#` comments on
+# Environment= values — the `#` and everything after it become part of the
+# value).
 Environment=LINEAR_API_KEY=lin_api_...
+# Environment=GITHUB_TOKEN=ghp_...
 # systemd strips PATH; tell the sandbox where to find opencode, git, bwrap.
 Environment=SYMPHONY_SANDBOX_PATH=/usr/local/bin:/usr/bin:/bin
 ExecStart=%h/.local/bin/symphony-linear
@@ -269,8 +381,8 @@ Then `systemctl --user daemon-reload && systemctl --user enable --now symphony`.
 ### Startup behaviour
 
 On launch the daemon recovers any orphan tickets it was working on when it
-last stopped. It posts a recovery comment and parks the ticket in `Needs
-Input` so you can decide whether to retry. State is persisted at
+last stopped. It posts a recovery comment and parks the ticket in the
+needs-input state so you can decide whether to retry. State is persisted at
 `<workspace>/state.json` and rewritten atomically.
 
 ### Graceful shutdown
@@ -280,9 +392,9 @@ subprocesses are killed, state is persisted, and the daemon exits.
 
 ## How it works
 
-Every `poll_interval_seconds`, Symphony queries Linear for tickets that
-carry the trigger label and live in one of the active workflow states. New
-tickets enter the **initial pipeline**:
+Every `poll_interval_seconds`, Symphony queries the tracker (Linear or
+GitHub) for tickets that carry the trigger signal and live in one of the
+active workflow states. New tickets enter the **initial pipeline**:
 
 1. Find the project's `Repo` link to discover the git URL.
 2. Clone or update the repo into `<workspace>/<sanitised-identifier>`.
@@ -294,7 +406,7 @@ tickets enter the **initial pipeline**:
    description as the prompt.
 6. Post the agent's final message as a comment, plus a small metadata
    comment with the workspace path and OpenCode session id.
-7. Transition the ticket to `Needs Input`.
+7. Transition the ticket to the configured needs-input state.
 
 Tickets you've already replied to enter the **resume pipeline** instead:
 the daemon picks up the new human comments, runs `opencode run --session
@@ -302,7 +414,7 @@ the daemon picks up the new human comments, runs `opencode run --session
 
 Up to five turns run in parallel across different tickets, with per-ticket
 serialisation so a single ticket never has two turns in flight. The agent
-and you only ever communicate through Linear comments; the daemon has no
+and you only ever communicate through tracker comments; the daemon has no
 other channel.
 
 ### Sandbox
@@ -322,24 +434,24 @@ that yourself, after reviewing.
 
 ## Manual QA
 
-If you set `linear.qa_state` and add an executable `.symphony/serve` script
-to your repo, moving a ticket into that workflow state launches the script
-inside the sandbox. Use it to run a dev server, a worker, or anything else
-you want to exercise by hand.
+If you set `linear.qa_state` (or `github.qa_status`) and add an executable
+`.symphony/serve` script to your repo, moving a ticket into that workflow
+state launches the script inside the sandbox. Use it to run a dev server, a
+worker, or anything else you want to exercise by hand.
 
 Only one serve runs across the whole daemon. Dropping a second ticket into
-QA bumps the first back to `Needs Input` and starts the new one. Commenting
-on a ticket that is currently in QA pulls it back out into `In Progress`:
-on the next poll tick the serve is killed, the agent runs another turn on
-your comment, and the ticket lands in `Needs Input`. Move it back to QA to
-test again.
+QA bumps the first back to the needs-input state and starts the new one.
+Commenting on a ticket that is currently in QA pulls it back out into the
+in-progress state: on the next poll tick the serve is killed, the agent
+runs another turn on your comment, and the ticket lands in the needs-input
+state. Move it back to QA to test again.
 
 The script is given no time limit and the daemon does not interpret its
 output. If it exits non-zero within ten seconds, or exits later for any
 reason, the daemon posts a comment containing the exit code and a thousand
-characters of stdout/stderr, and the ticket goes back to `Needs Input`.
-Clean exits within ten seconds are treated as a parent that has daemonised
-a child, and are silent.
+characters of stdout/stderr, and the ticket goes back to the needs-input
+state. Clean exits within ten seconds are treated as a parent that has
+daemonised a child, and are silent.
 
 ## Repo conventions
 
@@ -392,8 +504,10 @@ this shape:
 - session: `ses_abc123`
 ```
 
-The workspace path is where the repo was cloned; the session id is the
-OpenCode session you can resume manually.
+The workspace path is where the repo was cloned (Linear tickets use the
+team key + number like `TEAM-42`; GitHub issues use
+`<owner>-<repo>-<number>`). The session id is the OpenCode session you can
+resume manually.
 
 ### Resume a session by hand
 
@@ -427,15 +541,16 @@ session id.
   there. Comment on the ticket to re-trigger.
 - **Single workspace per ticket.** A ticket's workspace is reused across
   turns; the agent works in the same clone every time.
-- **Label-only trigger.** The trigger label is the only way to enrol a
-  ticket. There is no manual nudge, slash command, or webhook.
-- **No priority.** Tickets are picked in whatever order Linear returns
+- **Trigger-only enrolment.** The trigger label (Linear) or trigger field
+  (GitHub) is the only way to enrol a ticket. There is no manual nudge,
+  slash command, or webhook.
+- **No priority.** Tickets are picked in whatever order the tracker returns
   them. There is no queue.
 - **One QA serve at a time.** A single `.symphony/serve` runs globally with
   no port allocation. Your script is responsible for binding to whichever
   port you (or your reverse proxy) expect.
-- **Free Linear plan caps.** Free workspaces are capped at 10 members and
-  250 issues; the bot counts against the member cap.
+- **Linear free plan caps.** Free Linear workspaces are capped at 10
+  members and 250 issues; the bot counts against the member cap.
 
 ## Development
 

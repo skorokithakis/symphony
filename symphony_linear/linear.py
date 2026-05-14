@@ -13,6 +13,14 @@ from typing import Any
 import httpx
 from pydantic import BaseModel, Field
 
+from symphony_linear.tracker import (
+    TrackerAuthError,
+    TrackerError,
+    TrackerNotFoundError,
+    TrackerRateLimitError,
+    TrackerTransientError,
+)
+
 logger = logging.getLogger(__name__)
 
 # ---------------------------------------------------------------------------
@@ -26,23 +34,23 @@ LINEAR_GRAPHQL_URL = "https://api.linear.app/graphql"
 # ---------------------------------------------------------------------------
 
 
-class LinearError(Exception):
+class LinearError(TrackerError):
     """Base exception for all Linear API errors."""
 
 
-class LinearAuthError(LinearError):
+class LinearAuthError(TrackerAuthError, LinearError):
     """Authentication failed (HTTP 401/403)."""
 
 
-class LinearRateLimitError(LinearError):
+class LinearRateLimitError(TrackerRateLimitError, LinearError):
     """Rate limited (HTTP 429)."""
 
 
-class LinearTransientError(LinearError):
+class LinearTransientError(TrackerTransientError, LinearError):
     """Transient server / network error (HTTP 5xx, timeouts)."""
 
 
-class LinearNotFoundError(LinearError):
+class LinearNotFoundError(TrackerNotFoundError, LinearError):
     """Resource not found (HTTP 404 or GraphQL-level not-found)."""
 
 
@@ -89,6 +97,10 @@ class Issue(BaseModel):
     comments: list[Comment] = Field(default_factory=list)
     archived_at: datetime | None = Field(None, alias="archivedAt")
     updated_at: datetime = Field(alias="updatedAt")
+    tracker_data: dict[str, Any] | None = Field(
+        None,
+        description="Opaque tracker-specific data; not used by the orchestrator.",
+    )
 
 
 # ---------------------------------------------------------------------------

@@ -21,6 +21,7 @@ from symphony_linear.linear import (
     Project,
     ProjectLink,
 )
+from symphony_linear.linear_tracker import LinearTracker
 from symphony_linear.opencode import (
     OpenCodeError,
     OpenCodeTimeout,
@@ -29,13 +30,13 @@ from symphony_linear.orchestrator import (
     Orchestrator,
     _ActiveServe,
     _format_comments_message,
-    _maybe_rewrite_to_ssh,
 )
 from symphony_linear.project_config import (
     ProjectConfig,
     ProjectConfigError,
 )
 from symphony_linear.state import StateManager, TicketState, TicketStatus
+from symphony_linear.tracker import TransitionTarget
 
 
 # ---------------------------------------------------------------------------
@@ -184,18 +185,23 @@ def linear() -> FakeLinearClient:
 
 
 @pytest.fixture
+def tracker(linear: FakeLinearClient, tmp_config: AppConfig) -> LinearTracker:
+    return LinearTracker(linear=linear, config=tmp_config.linear)  # type: ignore[arg-type]
+
+
+@pytest.fixture
 def orchestrator(
     tmp_config: AppConfig,
     state_mgr: StateManager,
-    linear: FakeLinearClient,
+    tracker: LinearTracker,
     tmp_path: Path,
 ) -> Orchestrator:
     return Orchestrator(
         config=tmp_config,
         state=state_mgr,
-        linear=linear,
+        tracker=tracker,
         workspace=tmp_path / "workspaces",
-    )  # type: ignore[arg-type]
+    )
 
 
 # ---------------------------------------------------------------------------
@@ -1287,7 +1293,10 @@ class TestTick:
         """_fetch_triggered_issues passes qa_state in active_states when configured."""
         config = _make_config(tmp_path, linear={"qa_state": "In Review"})
         orch = Orchestrator(
-            config=config, state=state_mgr, linear=linear, workspace=tmp_path / "ws"
+            config=config,
+            state=state_mgr,
+            tracker=LinearTracker(linear=linear, config=config.linear),
+            workspace=tmp_path / "ws",
         )  # type: ignore[arg-type]
         linear.set_response("list_triggered_issues", [])
         orch._fetch_triggered_issues()
@@ -1307,7 +1316,10 @@ class TestTick:
         """_fetch_triggered_issues does not add a None qa_state to active_states."""
         config = _make_config(tmp_path)  # qa_state defaults to None
         orch = Orchestrator(
-            config=config, state=state_mgr, linear=linear, workspace=tmp_path / "ws"
+            config=config,
+            state=state_mgr,
+            tracker=LinearTracker(linear=linear, config=config.linear),
+            workspace=tmp_path / "ws",
         )  # type: ignore[arg-type]
         linear.set_response("list_triggered_issues", [])
         orch._fetch_triggered_issues()
@@ -1325,7 +1337,10 @@ class TestTick:
         """_is_still_triggered returns True when issue is in qa_state."""
         config = _make_config(tmp_path, linear={"qa_state": "In Review"})
         orch = Orchestrator(
-            config=config, state=state_mgr, linear=linear, workspace=tmp_path / "ws"
+            config=config,
+            state=state_mgr,
+            tracker=LinearTracker(linear=linear, config=config.linear),
+            workspace=tmp_path / "ws",
         )  # type: ignore[arg-type]
         issue = _make_issue(state="In Review", labels=["Agent"])
         assert orch._is_still_triggered(issue) is True
@@ -1339,7 +1354,10 @@ class TestTick:
         """_is_still_triggered returns False for 'In Review' when qa_state is not configured."""
         config = _make_config(tmp_path)  # qa_state is None
         orch = Orchestrator(
-            config=config, state=state_mgr, linear=linear, workspace=tmp_path / "ws"
+            config=config,
+            state=state_mgr,
+            tracker=LinearTracker(linear=linear, config=config.linear),
+            workspace=tmp_path / "ws",
         )  # type: ignore[arg-type]
         issue = _make_issue(state="In Review", labels=["Agent"])
         assert orch._is_still_triggered(issue) is False
@@ -1358,7 +1376,10 @@ class TestTick:
         (ws_dir / "sentinel").write_text("x")
 
         orch = Orchestrator(
-            config=config, state=state_mgr, linear=linear, workspace=ws_root
+            config=config,
+            state=state_mgr,
+            tracker=LinearTracker(linear=linear, config=config.linear),
+            workspace=ws_root,
         )  # type: ignore[arg-type]
         ts = TicketState(
             ticket_id="ticket-1",
@@ -1399,7 +1420,10 @@ class TestTick:
         """status=working + linear_state=qa_state → _recover_working_ticket NOT scheduled."""
         config = _make_config(tmp_path, linear={"qa_state": "In Review"})
         orch = Orchestrator(
-            config=config, state=state_mgr, linear=linear, workspace=tmp_path / "ws"
+            config=config,
+            state=state_mgr,
+            tracker=LinearTracker(linear=linear, config=config.linear),
+            workspace=tmp_path / "ws",
         )  # type: ignore[arg-type]
 
         ts = TicketState(
@@ -1434,7 +1458,10 @@ class TestTick:
         """status=failed+session_id + linear_state=qa_state → _resume_pipeline IS scheduled."""
         config = _make_config(tmp_path, linear={"qa_state": "In Review"})
         orch = Orchestrator(
-            config=config, state=state_mgr, linear=linear, workspace=tmp_path / "ws"
+            config=config,
+            state=state_mgr,
+            tracker=LinearTracker(linear=linear, config=config.linear),
+            workspace=tmp_path / "ws",
         )  # type: ignore[arg-type]
 
         ts = TicketState(
@@ -1470,7 +1497,10 @@ class TestTick:
         """QA ticket with no new comments → _resume_pipeline scheduled but run_resume not called."""
         config = _make_config(tmp_path, linear={"qa_state": "In Review"})
         orch = Orchestrator(
-            config=config, state=state_mgr, linear=linear, workspace=tmp_path / "ws"
+            config=config,
+            state=state_mgr,
+            tracker=LinearTracker(linear=linear, config=config.linear),
+            workspace=tmp_path / "ws",
         )  # type: ignore[arg-type]
 
         ts = TicketState(
@@ -1507,7 +1537,10 @@ class TestTick:
         """QA ticket with only a bot comment → run_resume not called."""
         config = _make_config(tmp_path, linear={"qa_state": "In Review"})
         orch = Orchestrator(
-            config=config, state=state_mgr, linear=linear, workspace=tmp_path / "ws"
+            config=config,
+            state=state_mgr,
+            tracker=LinearTracker(linear=linear, config=config.linear),
+            workspace=tmp_path / "ws",
         )  # type: ignore[arg-type]
 
         ts = TicketState(
@@ -1549,7 +1582,10 @@ class TestTick:
         """New issue arriving in qa_state with trigger label → _new_ticket_pipeline NOT scheduled."""
         config = _make_config(tmp_path, linear={"qa_state": "In Review"})
         orch = Orchestrator(
-            config=config, state=state_mgr, linear=linear, workspace=tmp_path / "ws"
+            config=config,
+            state=state_mgr,
+            tracker=LinearTracker(linear=linear, config=config.linear),
+            workspace=tmp_path / "ws",
         )  # type: ignore[arg-type]
 
         # No existing state entry — this is a brand-new ticket landing directly in QA.
@@ -2072,7 +2108,7 @@ class TestReconcileServe:
         linear: FakeLinearClient,
     ) -> None:
         """When qa_state is not configured, _reconcile_serve is a no-op."""
-        assert orchestrator._config.linear.qa_state is None
+        assert orchestrator._tracker.qa_enabled is False
         issue = _make_issue(state="In Review")
         with mock.patch("symphony_linear.orchestrator.start_serve") as m:
             orchestrator._reconcile_serve([issue], {issue.id: issue})
@@ -2088,7 +2124,10 @@ class TestReconcileServe:
         """Single ticket in QA state → serve started, _active_serve populated."""
         config = _make_qa_config(tmp_path)
         orch = Orchestrator(
-            config=config, state=state_mgr, linear=linear, workspace=tmp_path / "ws"
+            config=config,
+            state=state_mgr,
+            tracker=LinearTracker(linear=linear, config=config.linear),
+            workspace=tmp_path / "ws",
         )  # type: ignore[arg-type]
         _add_ticket_state(orch)
 
@@ -2114,7 +2153,10 @@ class TestReconcileServe:
         """When the active serve owner leaves QA, the serve is killed."""
         config = _make_qa_config(tmp_path)
         orch = Orchestrator(
-            config=config, state=state_mgr, linear=linear, workspace=tmp_path / "ws"
+            config=config,
+            state=state_mgr,
+            tracker=LinearTracker(linear=linear, config=config.linear),
+            workspace=tmp_path / "ws",
         )  # type: ignore[arg-type]
 
         fake_proc = _make_fake_proc(returncode=None)
@@ -2136,7 +2178,10 @@ class TestReconcileServe:
         pruned from qa_tickets so no re-serve happens this tick."""
         config = _make_qa_config(tmp_path)
         orch = Orchestrator(
-            config=config, state=state_mgr, linear=linear, workspace=tmp_path / "ws"
+            config=config,
+            state=state_mgr,
+            tracker=LinearTracker(linear=linear, config=config.linear),
+            workspace=tmp_path / "ws",
         )  # type: ignore[arg-type]
         _add_ticket_state(orch)
 
@@ -2172,7 +2217,10 @@ class TestReconcileServe:
         """
         config = _make_qa_config(tmp_path)
         orch = Orchestrator(
-            config=config, state=state_mgr, linear=linear, workspace=tmp_path / "ws"
+            config=config,
+            state=state_mgr,
+            tracker=LinearTracker(linear=linear, config=config.linear),
+            workspace=tmp_path / "ws",
         )  # type: ignore[arg-type]
         _add_ticket_state(orch)
 
@@ -2227,7 +2275,10 @@ class TestReconcileServe:
         """Newer ticket (by updated_at) entering QA bumps the incumbent and takes over serving."""
         config = _make_qa_config(tmp_path)
         orch = Orchestrator(
-            config=config, state=state_mgr, linear=linear, workspace=tmp_path / "ws"
+            config=config,
+            state=state_mgr,
+            tracker=LinearTracker(linear=linear, config=config.linear),
+            workspace=tmp_path / "ws",
         )  # type: ignore[arg-type]
         _add_ticket_state(orch, ticket_id="ticket-1", identifier="TEAM-1")
         _add_ticket_state(orch, ticket_id="ticket-2", identifier="TEAM-2")
@@ -2275,7 +2326,10 @@ class TestReconcileServe:
         """Two QA tickets, no active serve → newest updated_at wins, loser is bumped."""
         config = _make_qa_config(tmp_path)
         orch = Orchestrator(
-            config=config, state=state_mgr, linear=linear, workspace=tmp_path / "ws"
+            config=config,
+            state=state_mgr,
+            tracker=LinearTracker(linear=linear, config=config.linear),
+            workspace=tmp_path / "ws",
         )  # type: ignore[arg-type]
         _add_ticket_state(orch, ticket_id="ticket-1", identifier="TEAM-1")
         _add_ticket_state(orch, ticket_id="ticket-2", identifier="TEAM-2")
@@ -2315,7 +2369,10 @@ class TestReconcileServe:
         """QA-state ticket with a new human comment triggers _resume_pipeline."""
         config = _make_qa_config(tmp_path)
         orch = Orchestrator(
-            config=config, state=state_mgr, linear=linear, workspace=tmp_path / "ws"
+            config=config,
+            state=state_mgr,
+            tracker=LinearTracker(linear=linear, config=config.linear),
+            workspace=tmp_path / "ws",
         )  # type: ignore[arg-type]
         _add_ticket_state(orch, status=TicketStatus.needs_input)
 
@@ -2344,7 +2401,10 @@ class TestReconcileServe:
 
         config = _make_qa_config(tmp_path)
         orch = Orchestrator(
-            config=config, state=state_mgr, linear=linear, workspace=tmp_path / "ws"
+            config=config,
+            state=state_mgr,
+            tracker=LinearTracker(linear=linear, config=config.linear),
+            workspace=tmp_path / "ws",
         )  # type: ignore[arg-type]
         _add_ticket_state(orch)
 
@@ -2369,7 +2429,10 @@ class TestReconcileServe:
         """FileNotFoundError (bwrap missing) → comment posted, _active_serve unchanged."""
         config = _make_qa_config(tmp_path)
         orch = Orchestrator(
-            config=config, state=state_mgr, linear=linear, workspace=tmp_path / "ws"
+            config=config,
+            state=state_mgr,
+            tracker=LinearTracker(linear=linear, config=config.linear),
+            workspace=tmp_path / "ws",
         )  # type: ignore[arg-type]
         _add_ticket_state(orch)
 
@@ -2393,7 +2456,10 @@ class TestReconcileServe:
         """QA winner with no state entry → transitioned to needs_input, then comment posted."""
         config = _make_qa_config(tmp_path)
         orch = Orchestrator(
-            config=config, state=state_mgr, linear=linear, workspace=tmp_path / "ws"
+            config=config,
+            state=state_mgr,
+            tracker=LinearTracker(linear=linear, config=config.linear),
+            workspace=tmp_path / "ws",
         )  # type: ignore[arg-type]
         # Deliberately do NOT call _add_ticket_state — state entry is missing.
 
@@ -2428,7 +2494,10 @@ class TestReconcileServe:
         """QA winner with empty workspace_path → transitioned to needs_input, then comment posted."""
         config = _make_qa_config(tmp_path)
         orch = Orchestrator(
-            config=config, state=state_mgr, linear=linear, workspace=tmp_path / "ws"
+            config=config,
+            state=state_mgr,
+            tracker=LinearTracker(linear=linear, config=config.linear),
+            workspace=tmp_path / "ws",
         )  # type: ignore[arg-type]
         _add_ticket_state(
             orch, workspace_path=""
@@ -2465,7 +2534,10 @@ class TestReconcileServe:
         """When transition raises LinearError, no comment is posted — avoids spam on flaky transitions."""
         config = _make_qa_config(tmp_path)
         orch = Orchestrator(
-            config=config, state=state_mgr, linear=linear, workspace=tmp_path / "ws"
+            config=config,
+            state=state_mgr,
+            tracker=LinearTracker(linear=linear, config=config.linear),
+            workspace=tmp_path / "ws",
         )  # type: ignore[arg-type]
         # No state entry → hits the _bail_qa_no_workspace path.
         linear.set_response("transition_to_state", LinearError("test transition error"))
@@ -2498,7 +2570,10 @@ class TestReconcileServe:
         AND ticket transitioned to needs_input to prevent respawn loop."""
         config = _make_qa_config(tmp_path)
         orch = Orchestrator(
-            config=config, state=state_mgr, linear=linear, workspace=tmp_path / "ws"
+            config=config,
+            state=state_mgr,
+            tracker=LinearTracker(linear=linear, config=config.linear),
+            workspace=tmp_path / "ws",
         )  # type: ignore[arg-type]
 
         fake_proc = mock.MagicMock(spec=subprocess.Popen)
@@ -2531,7 +2606,10 @@ class TestReconcileServe:
         """Fix 1: watchdog suppresses failure comment when intentional_kill is set."""
         config = _make_qa_config(tmp_path)
         orch = Orchestrator(
-            config=config, state=state_mgr, linear=linear, workspace=tmp_path / "ws"
+            config=config,
+            state=state_mgr,
+            tracker=LinearTracker(linear=linear, config=config.linear),
+            workspace=tmp_path / "ws",
         )  # type: ignore[arg-type]
 
         fake_proc = mock.MagicMock(spec=subprocess.Popen)
@@ -2558,7 +2636,10 @@ class TestReconcileServe:
         """Watchdog: proc exits with rc=0 within 10s → _active_serve cleared, no comment."""
         config = _make_qa_config(tmp_path)
         orch = Orchestrator(
-            config=config, state=state_mgr, linear=linear, workspace=tmp_path / "ws"
+            config=config,
+            state=state_mgr,
+            tracker=LinearTracker(linear=linear, config=config.linear),
+            workspace=tmp_path / "ws",
         )  # type: ignore[arg-type]
 
         fake_proc = mock.MagicMock(spec=subprocess.Popen)
@@ -2584,7 +2665,10 @@ class TestReconcileServe:
         """Watchdog: proc still alive after 10s → no comment, _active_serve not cleared."""
         config = _make_qa_config(tmp_path)
         orch = Orchestrator(
-            config=config, state=state_mgr, linear=linear, workspace=tmp_path / "ws"
+            config=config,
+            state=state_mgr,
+            tracker=LinearTracker(linear=linear, config=config.linear),
+            workspace=tmp_path / "ws",
         )  # type: ignore[arg-type]
 
         fake_proc = mock.MagicMock(spec=subprocess.Popen)
@@ -2612,7 +2696,10 @@ class TestReconcileServe:
         """_cancel_ticket on the serve owner kills the serve process."""
         config = _make_qa_config(tmp_path)
         orch = Orchestrator(
-            config=config, state=state_mgr, linear=linear, workspace=tmp_path / "ws"
+            config=config,
+            state=state_mgr,
+            tracker=LinearTracker(linear=linear, config=config.linear),
+            workspace=tmp_path / "ws",
         )  # type: ignore[arg-type]
 
         fake_proc = mock.MagicMock(spec=subprocess.Popen)
@@ -2633,7 +2720,10 @@ class TestReconcileServe:
         """_cancel_ticket on a non-owner ticket does not kill the serve."""
         config = _make_qa_config(tmp_path)
         orch = Orchestrator(
-            config=config, state=state_mgr, linear=linear, workspace=tmp_path / "ws"
+            config=config,
+            state=state_mgr,
+            tracker=LinearTracker(linear=linear, config=config.linear),
+            workspace=tmp_path / "ws",
         )  # type: ignore[arg-type]
 
         fake_proc = mock.MagicMock(spec=subprocess.Popen)
@@ -2654,7 +2744,10 @@ class TestReconcileServe:
         """Daemon shutdown kills the active serve process."""
         config = _make_qa_config(tmp_path)
         orch = Orchestrator(
-            config=config, state=state_mgr, linear=linear, workspace=tmp_path / "ws"
+            config=config,
+            state=state_mgr,
+            tracker=LinearTracker(linear=linear, config=config.linear),
+            workspace=tmp_path / "ws",
         )  # type: ignore[arg-type]
 
         fake_proc = mock.MagicMock(spec=subprocess.Popen)
@@ -2675,7 +2768,10 @@ class TestReconcileServe:
         """LinearError when posting bump comment is caught and logged; reconciliation continues."""
         config = _make_qa_config(tmp_path)
         orch = Orchestrator(
-            config=config, state=state_mgr, linear=linear, workspace=tmp_path / "ws"
+            config=config,
+            state=state_mgr,
+            tracker=LinearTracker(linear=linear, config=config.linear),
+            workspace=tmp_path / "ws",
         )  # type: ignore[arg-type]
         _add_ticket_state(orch, ticket_id="ticket-1", identifier="TEAM-1")
         _add_ticket_state(orch, ticket_id="ticket-2", identifier="TEAM-2")
@@ -2706,7 +2802,10 @@ class TestReconcileServe:
         """Watchdog failure comment includes captured stdout/stderr in fenced code blocks."""
         config = _make_qa_config(tmp_path)
         orch = Orchestrator(
-            config=config, state=state_mgr, linear=linear, workspace=tmp_path / "ws"
+            config=config,
+            state=state_mgr,
+            tracker=LinearTracker(linear=linear, config=config.linear),
+            workspace=tmp_path / "ws",
         )  # type: ignore[arg-type]
 
         fake_proc = mock.MagicMock(spec=subprocess.Popen)
@@ -2881,7 +2980,10 @@ class TestFix3TransitionFirst:
         """Fix 3: if transition_to_state fails for a loser, no bump comment is posted."""
         config = _make_qa_config(tmp_path)
         orch = Orchestrator(
-            config=config, state=state_mgr, linear=linear, workspace=tmp_path / "ws"
+            config=config,
+            state=state_mgr,
+            tracker=LinearTracker(linear=linear, config=config.linear),
+            workspace=tmp_path / "ws",
         )  # type: ignore[arg-type]
         _add_ticket_state(orch, ticket_id="ticket-1", identifier="TEAM-1")
         _add_ticket_state(orch, ticket_id="ticket-2", identifier="TEAM-2")
@@ -2920,7 +3022,10 @@ class TestFix3TransitionFirst:
         """Fix 3: if transition_to_state succeeds for a loser, bump comment IS posted."""
         config = _make_qa_config(tmp_path)
         orch = Orchestrator(
-            config=config, state=state_mgr, linear=linear, workspace=tmp_path / "ws"
+            config=config,
+            state=state_mgr,
+            tracker=LinearTracker(linear=linear, config=config.linear),
+            workspace=tmp_path / "ws",
         )  # type: ignore[arg-type]
         _add_ticket_state(orch, ticket_id="ticket-1", identifier="TEAM-1")
         _add_ticket_state(orch, ticket_id="ticket-2", identifier="TEAM-2")
@@ -2966,7 +3071,10 @@ class TestFix4Drainer:
 
         config = _make_qa_config(tmp_path)
         orch = Orchestrator(
-            config=config, state=state_mgr, linear=linear, workspace=tmp_path / "ws"
+            config=config,
+            state=state_mgr,
+            tracker=LinearTracker(linear=linear, config=config.linear),
+            workspace=tmp_path / "ws",
         )  # type: ignore[arg-type]
 
         # 2000 bytes of data — more than the cap.
@@ -2990,7 +3098,10 @@ class TestFix4Drainer:
 
         config = _make_qa_config(tmp_path)
         orch = Orchestrator(
-            config=config, state=state_mgr, linear=linear, workspace=tmp_path / "ws"
+            config=config,
+            state=state_mgr,
+            tracker=LinearTracker(linear=linear, config=config.linear),
+            workspace=tmp_path / "ws",
         )  # type: ignore[arg-type]
 
         # 3000 bytes — drainer must consume all of it without blocking.
@@ -3014,7 +3125,10 @@ class TestFix4Drainer:
         """Fix 4: drainer threads are started immediately when serve starts (not after 10s)."""
         config = _make_qa_config(tmp_path)
         orch = Orchestrator(
-            config=config, state=state_mgr, linear=linear, workspace=tmp_path / "ws"
+            config=config,
+            state=state_mgr,
+            tracker=LinearTracker(linear=linear, config=config.linear),
+            workspace=tmp_path / "ws",
         )  # type: ignore[arg-type]
         _add_ticket_state(orch)
 
@@ -3054,7 +3168,10 @@ class TestCorrection3:
         """_reconcile_serve cancels an in-flight agent task before starting the serve."""
         config = _make_qa_config(tmp_path)
         orch = Orchestrator(
-            config=config, state=state_mgr, linear=linear, workspace=tmp_path / "ws"
+            config=config,
+            state=state_mgr,
+            tracker=LinearTracker(linear=linear, config=config.linear),
+            workspace=tmp_path / "ws",
         )  # type: ignore[arg-type]
         _add_ticket_state(orch)
 
@@ -3094,7 +3211,10 @@ class TestCorrection3:
         """When there is no in-flight task, _reconcile_serve starts the serve without cancelling."""
         config = _make_qa_config(tmp_path)
         orch = Orchestrator(
-            config=config, state=state_mgr, linear=linear, workspace=tmp_path / "ws"
+            config=config,
+            state=state_mgr,
+            tracker=LinearTracker(linear=linear, config=config.linear),
+            workspace=tmp_path / "ws",
         )  # type: ignore[arg-type]
         _add_ticket_state(orch)
 
@@ -3155,10 +3275,11 @@ class TestCorrection3:
         # after the final message (the cancel happened mid-run).
         transition_calls = linear.calls.get("transition_to_state", [])
         # The only allowed transition is the early "In Progress" one; needs_input must not appear.
+        needs_input_name = orchestrator._tracker.transition_name_for(
+            TransitionTarget.needs_input
+        )
         needs_input_transitions = [
-            (tid, state)
-            for tid, state in transition_calls
-            if state == orchestrator._config.linear.needs_input_state
+            (tid, state) for tid, state in transition_calls if state == needs_input_name
         ]
         assert needs_input_transitions == [], (
             f"Expected no needs_input transition after cancellation, got: {needs_input_transitions}"
@@ -3200,10 +3321,11 @@ class TestCorrection3:
             orchestrator._resume_pipeline(ts)
 
         transition_calls = linear.calls.get("transition_to_state", [])
+        needs_input_name = orchestrator._tracker.transition_name_for(
+            TransitionTarget.needs_input
+        )
         needs_input_transitions = [
-            (tid, state)
-            for tid, state in transition_calls
-            if state == orchestrator._config.linear.needs_input_state
+            (tid, state) for tid, state in transition_calls if state == needs_input_name
         ]
         assert needs_input_transitions == [], (
             f"Expected no needs_input transition after cancellation, got: {needs_input_transitions}"
@@ -3275,7 +3397,10 @@ class TestIntegration:
 
         config = _make_config(tmp_path, **{"linear": {"api_key": "test"}})
         orch = Orchestrator(
-            config=config, state=state_mgr, linear=linear, workspace=ws_root
+            config=config,
+            state=state_mgr,
+            tracker=LinearTracker(linear=linear, config=config.linear),
+            workspace=ws_root,
         )  # type: ignore[arg-type]
 
         with mock.patch(
@@ -3291,104 +3416,3 @@ class TestIntegration:
         from symphony_linear.workspace import remove
 
         remove("TEAM-1", str(ws_root))
-
-
-# ---------------------------------------------------------------------------
-# _maybe_rewrite_to_ssh
-# ---------------------------------------------------------------------------
-
-
-class TestMaybeRewriteToSSH:
-    def test_bare_browser_url_rewritten(self) -> None:
-        assert (
-            _maybe_rewrite_to_ssh("https://github.com/owner/repo")
-            == "git@github.com:owner/repo.git"
-        )
-
-    def test_dot_git_url_unchanged(self) -> None:
-        url = "https://github.com/owner/repo.git"
-        assert _maybe_rewrite_to_ssh(url) == url
-
-    def test_ssh_git_url_unchanged(self) -> None:
-        url = "git@github.com:owner/repo.git"
-        assert _maybe_rewrite_to_ssh(url) == url
-
-    def test_ssh_ssh_url_unchanged(self) -> None:
-        url = "ssh://git@github.com/owner/repo.git"
-        assert _maybe_rewrite_to_ssh(url) == url
-
-    def test_non_github_url_unchanged(self) -> None:
-        url = "https://gitlab.com/owner/repo"
-        assert _maybe_rewrite_to_ssh(url) == url
-
-    def test_trailing_slash_rewritten(self) -> None:
-        assert (
-            _maybe_rewrite_to_ssh("https://github.com/owner/repo/")
-            == "git@github.com:owner/repo.git"
-        )
-
-    def test_uppercase_host_rewritten(self) -> None:
-        assert (
-            _maybe_rewrite_to_ssh("https://GITHUB.COM/owner/repo")
-            == "git@github.com:owner/repo.git"
-        )
-
-    def test_url_with_query_stripped_and_rewritten(self) -> None:
-        assert (
-            _maybe_rewrite_to_ssh("https://github.com/owner/repo?tab=readme")
-            == "git@github.com:owner/repo.git"
-        )
-
-    def test_url_with_fragment_stripped_and_rewritten(self) -> None:
-        assert (
-            _maybe_rewrite_to_ssh("https://github.com/owner/repo#readme")
-            == "git@github.com:owner/repo.git"
-        )
-
-    def test_url_with_query_and_fragment_stripped_and_rewritten(self) -> None:
-        assert (
-            _maybe_rewrite_to_ssh("https://github.com/owner/repo?tab=readme#section")
-            == "git@github.com:owner/repo.git"
-        )
-
-    def test_local_path_unchanged(self) -> None:
-        url = "/home/user/repo"
-        assert _maybe_rewrite_to_ssh(url) == url
-
-    def test_preserves_owner_repo_casing(self) -> None:
-        assert (
-            _maybe_rewrite_to_ssh("https://github.com/MyOrg/MyRepo")
-            == "git@github.com:MyOrg/MyRepo.git"
-        )
-
-    def test_dot_git_with_query_unchanged(self) -> None:
-        """HTTPS URL ending in .git (after stripping query) should pass through unchanged."""
-        url = "https://github.com/owner/repo.git?tab=readme"
-        assert _maybe_rewrite_to_ssh(url) == url
-
-    def test_unexpected_path_structure_unchanged(self) -> None:
-        """A GitHub URL with more than owner/repo in path should pass through."""
-        url = "https://github.com/owner/repo/tree/main"
-        assert _maybe_rewrite_to_ssh(url) == url
-
-    def test_uppercase_scheme_rewritten(self) -> None:
-        """HTTPS:// scheme (case-insensitive) should be rewritten."""
-        assert (
-            _maybe_rewrite_to_ssh("HTTPS://github.com/owner/repo")
-            == "git@github.com:owner/repo.git"
-        )
-
-    def test_userinfo_url_unchanged(self) -> None:
-        """URL with userinfo should pass through unchanged."""
-        url = "https://user@github.com/owner/repo"
-        assert _maybe_rewrite_to_ssh(url) == url
-
-    def test_custom_port_url_unchanged(self) -> None:
-        """URL with a custom port should pass through unchanged."""
-        url = "https://github.com:8443/owner/repo"
-        assert _maybe_rewrite_to_ssh(url) == url
-
-    def test_non_numeric_port_passes_through(self) -> None:
-        """Malformed/non-numeric port should pass through unchanged (no ValueError)."""
-        url = "https://github.com:bad/owner/repo"
-        assert _maybe_rewrite_to_ssh(url) == url

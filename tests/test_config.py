@@ -82,6 +82,7 @@ class TestLoadConfig:
 
         config = load_config(tmp_path)
         assert isinstance(config, AppConfig)
+        assert config.linear is not None
         assert config.linear.api_key == "test-key"
         assert config.linear.trigger_label == "Agent"  # default
         assert config.sandbox.hide_paths  # defaults populated
@@ -127,6 +128,7 @@ class TestLoadConfig:
         _write_yaml(tmp_path / "config.yaml", cfg)
 
         config = load_config(tmp_path)
+        assert config.linear is not None
         assert config.linear.api_key == "my-secret-token"
 
     def test_missing_config_file_raises(self) -> None:
@@ -166,6 +168,7 @@ class TestLoadConfig:
         _write_yaml(tmp_path / "config.yaml", cfg)
 
         config = load_config(tmp_path)
+        assert config.linear is not None
         assert config.linear.api_key == "env-provided-key"
 
     def test_linear_api_key_empty_string_fallback(
@@ -184,6 +187,7 @@ class TestLoadConfig:
         _write_yaml(tmp_path / "config.yaml", cfg)
 
         config = load_config(tmp_path)
+        assert config.linear is not None
         assert config.linear.api_key == "env-provided-key"
 
     def test_linear_api_key_neither_set_raises(self, tmp_path: Path) -> None:
@@ -284,6 +288,7 @@ class TestLoadConfig:
         _write_yaml(tmp_path / "config.yaml", cfg)
 
         config = load_config(tmp_path)
+        assert config.linear is not None
         assert config.linear.qa_state is None
 
     def test_qa_state_round_trips_through_yaml(self, tmp_path: Path) -> None:
@@ -298,4 +303,211 @@ class TestLoadConfig:
         _write_yaml(tmp_path / "config.yaml", cfg)
 
         config = load_config(tmp_path)
+        assert config.linear is not None
         assert config.linear.qa_state == "In Review"
+
+
+# ---------------------------------------------------------------------------
+# GitHub backend config tests
+# ---------------------------------------------------------------------------
+
+
+class TestLoadConfigGitHub:
+    def test_valid_minimal_github_config(self, tmp_path: Path) -> None:
+        cfg = {
+            "github": {
+                "token": "ghp_test",
+                "project": "orgs/my-org/projects/1",
+                "in_progress_status": "In Progress",
+                "needs_input_status": "Needs Input",
+            },
+        }
+        _write_yaml(tmp_path / "config.yaml", cfg)
+
+        config = load_config(tmp_path)
+        assert config.github is not None
+        assert config.github.token == "ghp_test"
+        assert config.github.project == "orgs/my-org/projects/1"
+        assert config.github.trigger_field == "Symphony"  # default
+        assert config.github.status_field == "Status"  # default
+        assert config.github.in_progress_status == "In Progress"
+        assert config.github.needs_input_status == "Needs Input"
+        assert config.github.qa_status is None  # default
+        assert config.linear is None
+
+    def test_minimal_github_config_defaults_statuses(self, tmp_path: Path) -> None:
+        """A GitHub config with only token and project validates, using
+        default In Progress / Needs Input status names."""
+        cfg = {
+            "github": {
+                "token": "ghp_test",
+                "project": "orgs/my-org/projects/1",
+            },
+        }
+        _write_yaml(tmp_path / "config.yaml", cfg)
+
+        config = load_config(tmp_path)
+        assert config.github is not None
+        assert config.github.in_progress_status == "In Progress"
+        assert config.github.needs_input_status == "Needs Input"
+        assert config.github.qa_status is None
+
+    def test_user_project_ref_accepted(self, tmp_path: Path) -> None:
+        cfg = {
+            "github": {
+                "token": "ghp_test",
+                "project": "users/alice/projects/42",
+                "in_progress_status": "In Progress",
+                "needs_input_status": "Needs Input",
+            },
+        }
+        _write_yaml(tmp_path / "config.yaml", cfg)
+
+        config = load_config(tmp_path)
+        assert config.github is not None
+        assert config.github.project == "users/alice/projects/42"
+
+    def test_invalid_project_ref_rejected(self, tmp_path: Path) -> None:
+        cfg = {
+            "github": {
+                "token": "ghp_test",
+                "project": "not-a-valid-ref",
+                "in_progress_status": "In Progress",
+                "needs_input_status": "Needs Input",
+            },
+        }
+        _write_yaml(tmp_path / "config.yaml", cfg)
+
+        with pytest.raises(ValueError, match="Invalid project ref"):
+            load_config(tmp_path)
+
+    def test_github_token_env_fallback(
+        self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        monkeypatch.setenv("GITHUB_TOKEN", "env-provided-token")
+        cfg = {
+            "github": {
+                "project": "orgs/my-org/projects/1",
+                "in_progress_status": "In Progress",
+                "needs_input_status": "Needs Input",
+            },
+        }
+        _write_yaml(tmp_path / "config.yaml", cfg)
+
+        config = load_config(tmp_path)
+        assert config.github is not None
+        assert config.github.token == "env-provided-token"
+
+    def test_github_token_empty_string_fallback(
+        self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        monkeypatch.setenv("GITHUB_TOKEN", "env-provided-token")
+        cfg = {
+            "github": {
+                "token": "",
+                "project": "orgs/my-org/projects/1",
+                "in_progress_status": "In Progress",
+                "needs_input_status": "Needs Input",
+            },
+        }
+        _write_yaml(tmp_path / "config.yaml", cfg)
+
+        config = load_config(tmp_path)
+        assert config.github is not None
+        assert config.github.token == "env-provided-token"
+
+    def test_github_token_neither_set_raises(self, tmp_path: Path) -> None:
+        cfg = {
+            "github": {
+                "project": "orgs/my-org/projects/1",
+                "in_progress_status": "In Progress",
+                "needs_input_status": "Needs Input",
+            },
+        }
+        _write_yaml(tmp_path / "config.yaml", cfg)
+
+        with pytest.raises(ValueError, match="GITHUB_TOKEN"):
+            load_config(tmp_path)
+
+    def test_github_qa_status_round_trips(self, tmp_path: Path) -> None:
+        cfg = {
+            "github": {
+                "token": "ghp_test",
+                "project": "orgs/my-org/projects/1",
+                "in_progress_status": "In Progress",
+                "needs_input_status": "Needs Input",
+                "qa_status": "In Review",
+            },
+        }
+        _write_yaml(tmp_path / "config.yaml", cfg)
+
+        config = load_config(tmp_path)
+        assert config.github is not None
+        assert config.github.qa_status == "In Review"
+
+
+class TestExactlyOneTracker:
+    def test_both_blocks_set_raises(self, tmp_path: Path) -> None:
+        cfg = {
+            "linear": {
+                "api_key": "key",
+                "bot_user_email": "bot@example.com",
+            },
+            "github": {
+                "token": "ghp_test",
+                "project": "orgs/my-org/projects/1",
+                "in_progress_status": "In Progress",
+                "needs_input_status": "Needs Input",
+            },
+        }
+        _write_yaml(tmp_path / "config.yaml", cfg)
+
+        with pytest.raises(ValueError, match="Both 'linear' and 'github'"):
+            load_config(tmp_path)
+
+    def test_neither_block_set_raises(self, tmp_path: Path) -> None:
+        cfg: dict[str, object] = {
+            "poll_interval_seconds": 60,
+        }
+        _write_yaml(tmp_path / "config.yaml", cfg)
+
+        with pytest.raises(ValueError, match="No tracker backend"):
+            load_config(tmp_path)
+
+    def test_github_only_does_not_require_linear_env(
+        self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        """A github-only config must not fail because LINEAR_API_KEY is unset."""
+        monkeypatch.delenv("LINEAR_API_KEY", raising=False)
+        monkeypatch.setenv("GITHUB_TOKEN", "ghp_test")
+        cfg = {
+            "github": {
+                "project": "orgs/my-org/projects/1",
+                "in_progress_status": "In Progress",
+                "needs_input_status": "Needs Input",
+            },
+        }
+        _write_yaml(tmp_path / "config.yaml", cfg)
+
+        config = load_config(tmp_path)
+        assert config.github is not None
+        assert config.github.token == "ghp_test"
+        assert config.linear is None
+
+    def test_linear_only_does_not_require_github_env(
+        self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        """A linear-only config must not fail because GITHUB_TOKEN is unset."""
+        monkeypatch.delenv("GITHUB_TOKEN", raising=False)
+        monkeypatch.setenv("LINEAR_API_KEY", "my-token")
+        cfg = {
+            "linear": {
+                "bot_user_email": "bot@example.com",
+            },
+        }
+        _write_yaml(tmp_path / "config.yaml", cfg)
+
+        config = load_config(tmp_path)
+        assert config.linear is not None
+        assert config.linear.api_key == "my-token"
+        assert config.github is None
