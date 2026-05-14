@@ -1,5 +1,23 @@
 # Changelog
 
+## [0.2.0](https://github.com/skorokithakis/symphony/compare/v0.1.0...v0.2.0) (2026-05-14)
+
+
+### ⚠ BREAKING CHANGES
+
+* The default trigger label has been renamed from "agent" to "Agent" to match Linear canonical capitalization. Existing deployments that use the lowercase "agent" label must either rename their Linear label to "Agent" or set `trigger_label: agent` in their config.yaml to preserve current behaviour.
+
+### Features
+
+* Add screenshot to README ([ac7b65f](https://github.com/skorokithakis/symphony/commit/ac7b65ff918add6104acfc251c0c76f0aa95072d))
+* auto-provision Linear trigger label on daemon startup ([9a087e0](https://github.com/skorokithakis/symphony/commit/9a087e01b7006dbe567af904a377cb0df0007da4))
+* rename default trigger label from "agent" to "Agent" ([33dec8d](https://github.com/skorokithakis/symphony/commit/33dec8d69deb9e51344e9d44bea89ae534c62dd6))
+
+
+### Documentation
+
+* Add new screenshot to README ([2cb4c91](https://github.com/skorokithakis/symphony/commit/2cb4c915bf02df979ad66bbaeed2aab6dc9ce9f0))
+
 ## 0.1.0 (2026-05-13)
 
 
