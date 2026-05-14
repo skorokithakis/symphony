@@ -1,7 +1,5 @@
 # Symphony
 
-<img src="misc/screenshot1.png" alt="Symphony screenshot" width="400" align="right">
-
 Symphony turns Linear into the front end for a fleet of AI coding agents.
 Label a ticket, walk away, and read the agent's reply when you have a moment;
 when you reply, the agent picks the thread back up. It runs as a single
@@ -11,6 +9,13 @@ back to Linear as a comment. Several tickets can be in flight at once, so
 you can keep planning while the agents type.
 
 The daemon is small, self-hosted, and has no UI of its own. Linear is the UI.
+
+## Screenshots
+
+<p>
+  <img src="misc/screenshot1.png" alt="Symphony screenshot" width="400">
+  <img src="misc/screenshot2.png" alt="Symphony ticket thread" width="400">
+</p>
 
 ## Quickstart
 
