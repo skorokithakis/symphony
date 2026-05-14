@@ -41,7 +41,7 @@ uvx symphony-linear
 
 That gets you a running daemon. To actually trigger work you still need to
 do the [Linear setup](#linear-setup) (create a bot user, add a label, attach
-a repo link to a project) and add the `agent` label to a ticket.
+a repo link to a project) and add the `Agent` label to a ticket.
 
 ## Installation
 
@@ -126,7 +126,7 @@ to reply. You can rename this state later; the name lives in `config.yaml`.
 
 ### Create the trigger label
 
-Add a label called **agent** to the team. Any ticket carrying this label
+Add a label called **Agent** to the team. Any ticket carrying this label
 becomes eligible for the agent. The label name is configurable.
 
 ### Optional: a QA workflow state
@@ -182,8 +182,8 @@ linear:
   # REQUIRED. Email address of the bot user in Linear.
   bot_user_email: yourname+symphony@gmail.com
 
-  # Name of the label that triggers the bot (default: agent).
-  trigger_label: agent
+  # Name of the label that triggers the bot (default: Agent).
+  trigger_label: Agent
 
   # Workflow state set while the AI is working (default: In Progress).
   in_progress_state: In Progress

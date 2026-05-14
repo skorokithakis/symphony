@@ -8,7 +8,7 @@ Orientation for AI agents working on this repo. Pair this with `README.md`
 `symphony-linear` is a single-process Python daemon that orchestrates AI work on
 Linear tickets. The loop:
 
-1. Poll Linear for issues with the trigger label (default `agent`).
+1. Poll Linear for issues with the trigger label (default `Agent`).
 2. For each new ticket: clone the project's repo into a per-ticket workspace,
    switch to the ticket branch, optionally run `.symphony/setup`, then run
    `opencode run` inside a bubblewrap sandbox with the ticket title +

@@ -47,7 +47,7 @@ def _make_config(tmp_path: Path, **overrides: Any) -> AppConfig:
     cfg_dict: dict[str, Any] = {
         "linear": {
             "api_key": "test-api-key",
-            "trigger_label": "agent",
+            "trigger_label": "Agent",
             "in_progress_state": "In Progress",
             "needs_input_state": "Needs Input",
             "bot_user_email": "bot@example.com",
@@ -70,7 +70,7 @@ def _make_issue(**overrides: Any) -> Issue:
         "identifier": "TEAM-1",
         "title": "Test ticket",
         "state": "In Progress",
-        "labels": ["agent"],
+        "labels": ["Agent"],
         "branchName": "feature/test",
         "project": Project(id="proj-1", name="Test Project"),
         "comments": [],
@@ -1240,7 +1240,7 @@ class TestTick:
             "get_issue",
             _make_issue(
                 state="Backlog",
-                labels=["agent"],  # trigger label still present
+                labels=["Agent"],  # trigger label still present
             ),
         )
 
@@ -1268,7 +1268,7 @@ class TestTick:
             "get_issue",
             _make_issue(
                 state="Done",
-                labels=["agent"],
+                labels=["Agent"],
             ),
         )
 
@@ -1327,7 +1327,7 @@ class TestTick:
         orch = Orchestrator(
             config=config, state=state_mgr, linear=linear, workspace=tmp_path / "ws"
         )  # type: ignore[arg-type]
-        issue = _make_issue(state="In Review", labels=["agent"])
+        issue = _make_issue(state="In Review", labels=["Agent"])
         assert orch._is_still_triggered(issue) is True
 
     def test_is_still_triggered_false_for_qa_state_when_unset(
@@ -1341,7 +1341,7 @@ class TestTick:
         orch = Orchestrator(
             config=config, state=state_mgr, linear=linear, workspace=tmp_path / "ws"
         )  # type: ignore[arg-type]
-        issue = _make_issue(state="In Review", labels=["agent"])
+        issue = _make_issue(state="In Review", labels=["Agent"])
         assert orch._is_still_triggered(issue) is False
 
     def test_qa_state_ticket_not_cleaned_up(
@@ -1376,7 +1376,7 @@ class TestTick:
         # but _is_still_triggered should keep it alive.
         linear.set_response("list_triggered_issues", [])
         linear.set_response(
-            "get_issue", _make_issue(state="In Review", labels=["agent"])
+            "get_issue", _make_issue(state="In Review", labels=["Agent"])
         )
 
         orch._tick()
@@ -1413,7 +1413,7 @@ class TestTick:
         )
         orch._state.upsert(ts)
 
-        qa_issue = _make_issue(id="ticket-1", state="In Review", labels=["agent"])
+        qa_issue = _make_issue(id="ticket-1", state="In Review", labels=["Agent"])
         linear.set_response("list_triggered_issues", [qa_issue])
 
         with mock.patch(
@@ -1449,7 +1449,7 @@ class TestTick:
         )
         orch._state.upsert(ts)
 
-        qa_issue = _make_issue(id="ticket-1", state="In Review", labels=["agent"])
+        qa_issue = _make_issue(id="ticket-1", state="In Review", labels=["Agent"])
         linear.set_response("list_triggered_issues", [qa_issue])
 
         with mock.patch(
@@ -1485,7 +1485,7 @@ class TestTick:
         )
         orch._state.upsert(ts)
 
-        qa_issue = _make_issue(id="ticket-1", state="In Review", labels=["agent"])
+        qa_issue = _make_issue(id="ticket-1", state="In Review", labels=["Agent"])
         linear.set_response("list_triggered_issues", [qa_issue])
         linear.set_response("list_comments_since", [])  # no new comments
 
@@ -1522,7 +1522,7 @@ class TestTick:
         )
         orch._state.upsert(ts)
 
-        qa_issue = _make_issue(id="ticket-1", state="In Review", labels=["agent"])
+        qa_issue = _make_issue(id="ticket-1", state="In Review", labels=["Agent"])
         linear.set_response("list_triggered_issues", [qa_issue])
         linear.set_response(
             "list_comments_since",
@@ -1553,7 +1553,7 @@ class TestTick:
         )  # type: ignore[arg-type]
 
         # No existing state entry — this is a brand-new ticket landing directly in QA.
-        qa_issue = _make_issue(id="ticket-1", state="In Review", labels=["agent"])
+        qa_issue = _make_issue(id="ticket-1", state="In Review", labels=["Agent"])
         linear.set_response("list_triggered_issues", [qa_issue])
 
         with mock.patch(
@@ -2002,7 +2002,7 @@ def _make_qa_issue(
     ticket_id: str = "ticket-1", identifier: str = "TEAM-1", state: str = "In Review"
 ) -> Issue:
     return _make_issue(
-        id=ticket_id, identifier=identifier, state=state, labels=["agent"]
+        id=ticket_id, identifier=identifier, state=state, labels=["Agent"]
     )
 
 
@@ -2244,7 +2244,7 @@ class TestReconcileServe:
             id="ticket-2",
             identifier="TEAM-2",
             state="In Review",
-            labels=["agent"],
+            labels=["Agent"],
             updatedAt="2025-07-01T00:00:00Z",  # newer than issue1's default 2025-06-01
         )
         issues_by_id = {"ticket-1": issue1, "ticket-2": issue2}
@@ -2286,7 +2286,7 @@ class TestReconcileServe:
             id="ticket-2",
             identifier="TEAM-2",
             state="In Review",
-            labels=["agent"],
+            labels=["Agent"],
             updatedAt="2025-07-01T00:00:00Z",  # newer than issue1's default 2025-06-01
         )
         issues_by_id = {"ticket-1": issue1, "ticket-2": issue2}
@@ -2891,7 +2891,7 @@ class TestFix3TransitionFirst:
             id="ticket-2",
             identifier="TEAM-2",
             state="In Review",
-            labels=["agent"],
+            labels=["Agent"],
             updatedAt="2025-07-01T00:00:00Z",
         )
         issues_by_id = {"ticket-1": issue1, "ticket-2": issue2}
@@ -2930,7 +2930,7 @@ class TestFix3TransitionFirst:
             id="ticket-2",
             identifier="TEAM-2",
             state="In Review",
-            labels=["agent"],
+            labels=["Agent"],
             updatedAt="2025-07-01T00:00:00Z",
         )
         issues_by_id = {"ticket-1": issue1, "ticket-2": issue2}

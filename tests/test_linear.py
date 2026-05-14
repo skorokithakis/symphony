@@ -66,7 +66,7 @@ def sample_issue_raw() -> dict[str, Any]:
         "title": "Fix the thing",
         "updatedAt": "2025-06-01T00:00:00Z",
         "state": {"name": "In Progress"},
-        "labels": {"nodes": [{"name": "agent"}, {"name": "bug"}]},
+        "labels": {"nodes": [{"name": "Agent"}, {"name": "bug"}]},
         "branchName": "team-42-fix-thing",
         "project": {"id": "proj-1", "name": "Backend"},
         "comments": {
@@ -205,7 +205,7 @@ class TestListTriggeredIssues:
                             "title": "Do A",
                             "updatedAt": "2025-06-01T00:00:00Z",
                             "state": {"name": "In Progress"},
-                            "labels": {"nodes": [{"name": "agent"}]},
+                            "labels": {"nodes": [{"name": "Agent"}]},
                             "branchName": "tea-1-do-a",
                             "project": {"id": "p-1", "name": "Core"},
                         },
@@ -215,7 +215,7 @@ class TestListTriggeredIssues:
                             "title": "Do B",
                             "updatedAt": "2025-06-01T00:00:00Z",
                             "state": {"name": "In Progress"},
-                            "labels": {"nodes": [{"name": "agent"}]},
+                            "labels": {"nodes": [{"name": "Agent"}]},
                             "branchName": None,
                             "project": None,
                         },
@@ -225,13 +225,13 @@ class TestListTriggeredIssues:
         }
         transport = _make_transport(lambda req: _json_response(raw))
         client = _client(transport)
-        issues = client.list_triggered_issues("agent", ["In Progress"])
+        issues = client.list_triggered_issues("Agent", ["In Progress"])
 
         assert len(issues) == 2
         assert issues[0].id == "i-1"
         assert issues[0].identifier == "TEA-1"
         assert issues[0].state == "In Progress"
-        assert issues[0].labels == ["agent"]
+        assert issues[0].labels == ["Agent"]
         assert issues[0].branch_name == "tea-1-do-a"
         assert issues[0].project is not None
         assert issues[0].project.id == "p-1"
@@ -248,7 +248,7 @@ class TestListTriggeredIssues:
                             "title": "A",
                             "updatedAt": "2025-06-01T00:00:00Z",
                             "state": {"name": "In Progress"},
-                            "labels": {"nodes": [{"name": "agent"}]},
+                            "labels": {"nodes": [{"name": "Agent"}]},
                             "branchName": None,
                             "project": None,
                         },
@@ -258,7 +258,7 @@ class TestListTriggeredIssues:
                             "title": "B",
                             "updatedAt": "2025-06-01T00:00:00Z",
                             "state": {"name": "Backlog"},
-                            "labels": {"nodes": [{"name": "agent"}]},
+                            "labels": {"nodes": [{"name": "Agent"}]},
                             "branchName": None,
                             "project": None,
                         },
@@ -268,7 +268,7 @@ class TestListTriggeredIssues:
         }
         transport = _make_transport(lambda req: _json_response(raw))
         client = _client(transport)
-        issues = client.list_triggered_issues("agent", ["In Progress"])
+        issues = client.list_triggered_issues("Agent", ["In Progress"])
         assert len(issues) == 1
         assert issues[0].id == "i-1"
 
@@ -276,7 +276,7 @@ class TestListTriggeredIssues:
         raw: dict[str, Any] = {"data": {"issues": {"nodes": []}}}
         transport = _make_transport(lambda req: _json_response(raw))
         client = _client(transport)
-        issues = client.list_triggered_issues("agent", ["In Progress"])
+        issues = client.list_triggered_issues("Agent", ["In Progress"])
         assert issues == []
 
 
@@ -297,7 +297,7 @@ class TestGetIssue:
         assert issue.identifier == "TEAM-42"
         assert issue.title == "Fix the thing"
         assert issue.state == "In Progress"
-        assert issue.labels == ["agent", "bug"]
+        assert issue.labels == ["Agent", "bug"]
         assert issue.branch_name == "team-42-fix-thing"
         assert issue.project is not None
         assert issue.project.id == "proj-1"

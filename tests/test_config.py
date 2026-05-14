@@ -83,7 +83,7 @@ class TestLoadConfig:
         config = load_config(tmp_path)
         assert isinstance(config, AppConfig)
         assert config.linear.api_key == "test-key"
-        assert config.linear.trigger_label == "agent"  # default
+        assert config.linear.trigger_label == "Agent"  # default
         assert config.sandbox.hide_paths  # defaults populated
         assert config.poll_interval_seconds == 30
         assert config.turn_timeout_seconds == 1800

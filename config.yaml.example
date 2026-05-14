@@ -7,8 +7,8 @@ linear:
   # env var — the daemon falls back to it if this field is missing or empty).
   api_key: ${LINEAR_API_KEY}
 
-  # Name of the label that triggers the bot (default: agent).
-  trigger_label: agent
+  # Name of the label that triggers the bot (default: Agent).
+  trigger_label: Agent
 
   # Linear workflow state set while the AI is working (default: In Progress).
   in_progress_state: In Progress

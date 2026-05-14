@@ -69,7 +69,7 @@ def _expand_values(obj: Any) -> Any:
 
 class _LinearConfig(BaseModel):
     api_key: str = Field(..., description="Linear API key (bearer token)")
-    trigger_label: str = Field("agent", description="Label that triggers the bot")
+    trigger_label: str = Field("Agent", description="Label that triggers the bot")
     in_progress_state: str = Field(
         "In Progress", description="Linear state for active work"
     )
