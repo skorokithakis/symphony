@@ -137,7 +137,16 @@ def run_in_sandbox(
             bwrap_args.extend(["--ro-bind", "/dev/null", path])
         # else: path does not exist on the host → nothing to conceal.
 
-    # 7. Essential pseudo-filesystems
+    # 7. Neutralize /etc/ssh/ssh_config.d.  systemd ships a symlink here
+    #    (e.g. 20-systemd-ssh-proxy.conf → /usr/lib/systemd/...) that, inside
+    #    bwrap's user namespace, appears owned by nobody:nogroup because root
+    #    on the host is unmapped.  OpenSSH refuses to read Include files whose
+    #    owner isn't root-or-self and aborts with "Bad owner or permissions".
+    #    Masking the dir with a tmpfs makes ssh inside the sandbox usable
+    #    whenever the user opts in by unhiding ~/.ssh.  Harmless otherwise.
+    bwrap_args.extend(["--tmpfs", "/etc/ssh/ssh_config.d"])
+
+    # 8. Essential pseudo-filesystems
     bwrap_args.extend(["--dev", "/dev"])
     bwrap_args.extend(["--proc", "/proc"])
 

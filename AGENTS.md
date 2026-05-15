@@ -173,8 +173,9 @@ behaviour, not ours. The NDJSON parser is unit-tested against a fixture.
 
 ## Things not to do
 
-- Don't add `git push` from inside the sandboxed agent — credentials are
-  deliberately hidden. Pushing is a human task.
+- Don't push from inside the sandboxed agent unless the user explicitly asked
+  for it. Credentials (`~/.ssh`, `~/.config/gh`, etc.) are hidden by default,
+  so pushing requires the user to opt in by unhiding those paths via config.
 - Don't widen the sandbox to bind extra host paths unless there's a clear
   reason; the credential-hiding logic depends on the current mount layout.
 - Don't add retries/backoff to tracker API calls without thinking through the
