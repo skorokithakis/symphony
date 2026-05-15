@@ -1,5 +1,17 @@
 # Changelog
 
+## [0.4.0](https://github.com/skorokithakis/symphony/compare/v0.3.0...v0.4.0) (2026-05-15)
+
+
+### Features
+
+* add optional webhook receiver to wake the poll loop on Linear updates ([571f5e8](https://github.com/skorokithakis/symphony/commit/571f5e8e8de1c26600577cc4e05c07b492d628cb))
+
+
+### Documentation
+
+* Require capitalized description in commit messages ([4d0053f](https://github.com/skorokithakis/symphony/commit/4d0053faed8adfecc131abe7ecf250fa890e8f6a))
+
 ## [0.3.0](https://github.com/skorokithakis/symphony/compare/v0.2.0...v0.3.0) (2026-05-15)
 
 
