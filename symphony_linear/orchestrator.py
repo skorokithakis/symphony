@@ -36,6 +36,7 @@ from symphony_linear.tracker import (
     TrackerNotFoundError,
     TransitionTarget,
 )
+from symphony_linear.webhook import WebhookServer
 from symphony_linear.workspace import (
     ServeScriptMissing,
     WorkspaceError,
@@ -138,11 +139,13 @@ class Orchestrator:
         state: StateManager,
         tracker: Tracker,
         workspace: Path,
+        webhook_server: WebhookServer | None = None,
     ) -> None:
         self._config = config
         self._state = state
         self._tracker = tracker
         self._workspace = workspace
+        self._webhook_server = webhook_server
 
         self._executor = ThreadPoolExecutor(max_workers=5)
 
@@ -163,11 +166,29 @@ class Orchestrator:
         self._state_lock = threading.Lock()
 
         self._shutdown = threading.Event()
+        self._wake = threading.Event()
+        self._tick_lock = threading.Lock()
         self._bot_user_id: str | None = None
 
     # ==================================================================
     # Public API
     # ==================================================================
+
+    def wake(self) -> None:
+        """Signal the poll loop to run a tick immediately.
+
+        Safe to call from any thread (e.g. a webhook handler).
+        """
+        self._wake.set()
+
+    def set_webhook_server(self, server: WebhookServer) -> None:
+        """Attach a WebhookServer to be started/stopped with the daemon.
+
+        Must be called before ``run()``.  The CLI uses this to break the
+        construction-order cycle: WebhookServer needs ``orchestrator.wake``
+        as its callback, but the orchestrator must exist first.
+        """
+        self._webhook_server = server
 
     def run(self) -> None:
         self._install_signal_handlers()
@@ -176,13 +197,29 @@ class Orchestrator:
             self._config.poll_interval_seconds,
         )
         self._recover_state()
+        if self._webhook_server is not None:
+            self._webhook_server.start()
+            logger.info(
+                "Webhook server listening on port %d at %s",
+                self._webhook_server.port,
+                "/webhooks/linear/",
+            )
+        else:
+            logger.info("Webhook disabled; relying on polling only")
         try:
             while not self._shutdown.is_set():
+                self._wake.clear()
+                # Check shutdown flag again after clearing the wake event.
+                # A signal landing between the loop-condition check and the
+                # clear/wait could otherwise still run one more tick before
+                # exiting.
+                if self._shutdown.is_set():
+                    break
                 try:
                     self._tick()
                 except Exception:
                     logger.exception("Unhandled error during poll tick")
-                self._shutdown.wait(timeout=self._config.poll_interval_seconds)
+                self._wake.wait(timeout=self._config.poll_interval_seconds)
         finally:
             self._shutdown_handler()
 
@@ -255,81 +292,110 @@ class Orchestrator:
     # ==================================================================
 
     def _tick(self) -> None:
-        logger.debug("Poll tick starting")
-        issues = self._fetch_triggered_issues()
+        with self._tick_lock:
+            logger.debug("Poll tick starting")
+            issues = self._fetch_triggered_issues()
 
-        # --- Step 2: new tickets + setup-error / failed-no-session retries ---
-        for issue in issues:
-            # Skip any pipeline scheduling while the ticket is in QA — the serve
-            # handles it; the agent should not run concurrently.
-            if self._tracker.is_in_qa(issue):
-                logger.debug(
-                    "Skipping step-2 scheduling for %s: ticket is in QA state", issue.id
-                )
-                continue
+            # --- Step 2: new tickets + setup-error / failed-no-session retries ---
+            for issue in issues:
+                # Skip any pipeline scheduling while the ticket is in QA — the serve
+                # handles it; the agent should not run concurrently.
+                if self._tracker.is_in_qa(issue):
+                    logger.debug(
+                        "Skipping step-2 scheduling for %s: ticket is in QA state",
+                        issue.id,
+                    )
+                    continue
 
-            existing = self._state.get(issue.id)
-            if existing is not None:
-                # Retry setup-error tickets if user commented.
-                if existing.setup_error is not None:
-                    if self._has_new_human_comment(
-                        issue.id, existing.last_seen_comment_id
-                    ):
-                        logger.info(
-                            "User commented on setup-error %s – retrying", issue.id
-                        )
-                        with self._state_lock:
-                            existing.setup_error = None
-                            existing.updated_at = _iso_now()
-                            self._state.upsert(existing)
-                            self._state.save()
-                        # Route to resume if the existing state already has a
-                        # session (e.g. ProjectConfigError fired during a resume
-                        # turn).  Otherwise start a fresh initial pipeline.
-                        if existing.session_id:
-                            self._schedule_task(
-                                issue.id, self._resume_pipeline, existing
+                existing = self._state.get(issue.id)
+                if existing is not None:
+                    # Retry setup-error tickets if user commented.
+                    if existing.setup_error is not None:
+                        if self._has_new_human_comment(
+                            issue.id, existing.last_seen_comment_id
+                        ):
+                            logger.info(
+                                "User commented on setup-error %s – retrying", issue.id
                             )
-                        else:
+                            with self._state_lock:
+                                existing.setup_error = None
+                                existing.updated_at = _iso_now()
+                                self._state.upsert(existing)
+                                self._state.save()
+                            # Route to resume if the existing state already has a
+                            # session (e.g. ProjectConfigError fired during a resume
+                            # turn).  Otherwise start a fresh initial pipeline.
+                            if existing.session_id:
+                                self._schedule_task(
+                                    issue.id, self._resume_pipeline, existing
+                                )
+                            else:
+                                self._schedule_task(
+                                    issue.id, self._new_ticket_pipeline, issue
+                                )
+                    # Retry failed-no-session tickets if user commented (B1).
+                    elif (
+                        existing.status == TicketStatus.failed
+                        and existing.session_id is None
+                        and existing.setup_error is None
+                    ):
+                        if self._has_new_human_comment(
+                            issue.id, existing.last_seen_comment_id
+                        ):
+                            logger.info(
+                                "User commented on failed-no-session %s – retrying initial",
+                                issue.id,
+                            )
                             self._schedule_task(
                                 issue.id, self._new_ticket_pipeline, issue
                             )
-                # Retry failed-no-session tickets if user commented (B1).
-                elif (
-                    existing.status == TicketStatus.failed
-                    and existing.session_id is None
-                    and existing.setup_error is None
-                ):
-                    if self._has_new_human_comment(
-                        issue.id, existing.last_seen_comment_id
-                    ):
-                        logger.info(
-                            "User commented on failed-no-session %s – retrying initial",
-                            issue.id,
-                        )
-                        self._schedule_task(issue.id, self._new_ticket_pipeline, issue)
-                continue  # known ticket
+                    continue  # known ticket
 
-            # Genuinely new ticket.
-            self._schedule_task(issue.id, self._new_ticket_pipeline, issue)
+                # Genuinely new ticket.
+                self._schedule_task(issue.id, self._new_ticket_pipeline, issue)
 
-        # --- Step 3: cleanup tickets that are no longer triggered ---
-        # Build a lookup from the trigger list.  Tickets that appear there
-        # already have the label, are in an active state, and are not archived
-        # (Linear excludes archived by default), so they are still triggered
-        # and we can skip the per-ticket get_issue call for them.
-        issues_by_id = {i.id: i for i in issues}
+            # --- Step 3: cleanup tickets that are no longer triggered ---
+            # Build a lookup from the trigger list.  Tickets that appear there
+            # already have the label, are in an active state, and are not archived
+            # (Linear excludes archived by default), so they are still triggered
+            # and we can skip the per-ticket get_issue call for them.
+            issues_by_id = {i.id: i for i in issues}
 
-        for ticket_state in list(self._state.tickets):
-            tid = ticket_state.ticket_id
+            for ticket_state in list(self._state.tickets):
+                tid = ticket_state.ticket_id
 
-            if tid in issues_by_id:
-                continue
+                if tid in issues_by_id:
+                    continue
 
-            try:
-                current = self._tracker.get_issue(tid)
-            except TrackerNotFoundError:
-                logger.info("Ticket %s not found — cleaning up", tid)
+                try:
+                    current = self._tracker.get_issue(tid)
+                except TrackerNotFoundError:
+                    logger.info("Ticket %s not found — cleaning up", tid)
+                    self._cancel_ticket(tid)
+                    identifier = ticket_state.ticket_identifier
+                    self._state.remove(tid)
+                    try:
+                        remove(identifier, str(self._workspace))
+                    except Exception:
+                        logger.exception("Failed to remove workspace for %s", tid)
+                    self._state.save()
+                    continue
+                except TrackerError:
+                    logger.exception(
+                        "Tracker error fetching %s — skipping cleanup", tid
+                    )
+                    continue
+
+                if self._is_still_triggered(current):
+                    continue
+
+                logger.info(
+                    "Ticket %s no longer triggered (state=%s labels=%s archived=%s) — cleaning up",
+                    tid,
+                    current.state,
+                    current.labels,
+                    current.archived_at is not None,
+                )
                 self._cancel_ticket(tid)
                 identifier = ticket_state.ticket_identifier
                 self._state.remove(tid)
@@ -338,59 +404,36 @@ class Orchestrator:
                 except Exception:
                     logger.exception("Failed to remove workspace for %s", tid)
                 self._state.save()
-                continue
-            except TrackerError:
-                logger.exception("Tracker error fetching %s — skipping cleanup", tid)
-                continue
 
-            if self._is_still_triggered(current):
-                continue
+            # --- Step 3b: QA serve reconciliation ---
+            self._reconcile_serve(issues, issues_by_id)
 
-            logger.info(
-                "Ticket %s no longer triggered (state=%s labels=%s archived=%s) — cleaning up",
-                tid,
-                current.state,
-                current.labels,
-                current.archived_at is not None,
-            )
-            self._cancel_ticket(tid)
-            identifier = ticket_state.ticket_identifier
-            self._state.remove(tid)
-            try:
-                remove(identifier, str(self._workspace))
-            except Exception:
-                logger.exception("Failed to remove workspace for %s", tid)
-            self._state.save()
+            # --- Step 4: per-status tasks ---
+            for ticket_state in self._state.tickets:
+                tid = ticket_state.ticket_id
+                st = ticket_state.status
 
-        # --- Step 3b: QA serve reconciliation ---
-        self._reconcile_serve(issues, issues_by_id)
+                # _resume_pipeline handles its own early-return when there are no new
+                # human comments, so QA tickets naturally fall through here — only
+                # tickets with actual new human comments will get an agent turn.
+                # _reconcile_serve on the next tick kills the serve when the ticket
+                # leaves QA.  Recovery, however, is unconditional (no comment gating),
+                # so we skip it for QA tickets to avoid clobbering the QA state.
 
-        # --- Step 4: per-status tasks ---
-        for ticket_state in self._state.tickets:
-            tid = ticket_state.ticket_id
-            st = ticket_state.status
-
-            # _resume_pipeline handles its own early-return when there are no new
-            # human comments, so QA tickets naturally fall through here — only
-            # tickets with actual new human comments will get an agent turn.
-            # _reconcile_serve on the next tick kills the serve when the ticket
-            # leaves QA.  Recovery, however, is unconditional (no comment gating),
-            # so we skip it for QA tickets to avoid clobbering the QA state.
-
-            if st == TicketStatus.failed and ticket_state.setup_error is not None:
-                continue
-            if st == TicketStatus.working:
-                fetched = issues_by_id.get(tid)
-                if fetched is not None and self._tracker.is_in_qa(fetched):
-                    logger.debug("Skipping recovery for working QA ticket %s", tid)
+                if st == TicketStatus.failed and ticket_state.setup_error is not None:
                     continue
-                self._schedule_task(tid, self._recover_working_ticket, ticket_state)
-            elif st == TicketStatus.needs_input:
-                self._schedule_task(tid, self._resume_pipeline, ticket_state)
-            elif st == TicketStatus.failed:
-                if ticket_state.session_id:
+                if st == TicketStatus.working:
+                    fetched = issues_by_id.get(tid)
+                    if fetched is not None and self._tracker.is_in_qa(fetched):
+                        logger.debug("Skipping recovery for working QA ticket %s", tid)
+                        continue
+                    self._schedule_task(tid, self._recover_working_ticket, ticket_state)
+                elif st == TicketStatus.needs_input:
                     self._schedule_task(tid, self._resume_pipeline, ticket_state)
-                # no-session + no setup_error: handled in step 2 (gated on new comment)
+                elif st == TicketStatus.failed:
+                    if ticket_state.session_id:
+                        self._schedule_task(tid, self._resume_pipeline, ticket_state)
+                    # no-session + no setup_error: handled in step 2 (gated on new comment)
 
     # ==================================================================
     # QA serve reconciliation
@@ -1364,8 +1407,13 @@ class Orchestrator:
         sig_name = signal.Signals(signum).name
         logger.info("Received %s – initiating shutdown", sig_name)
         self._shutdown.set()
+        self._wake.set()
 
     def _shutdown_handler(self) -> None:
+        self._wake.set()
+        if self._webhook_server is not None:
+            logger.info("Stopping webhook server")
+            self._webhook_server.stop()
         logger.info("Shutting down – killing all subprocesses")
         with self._subprocess_lock:
             procs = list(self._subprocesses.items())

@@ -333,6 +333,30 @@ turn_timeout_seconds: 1800
 
 A copy of this example lives at `config.yaml.example` in the repo root.
 
+### Webhook (optional)
+
+A webhook receiver cuts poll latency from up to `poll_interval_seconds` to
+~1 second; polling continues as a safety net. The feature is opt-in — omit the
+`webhook:` block to stay on polling only.
+
+```yaml
+webhook:
+  port: 8080
+  linear_secret: ${WEBHOOK_SECRET}
+```
+
+`linear_secret` is the HMAC-SHA256 signing secret. If the field is absent or
+empty the daemon falls back to the `SYMPHONY_LINEAR_WEBHOOK_SECRET` environment
+variable.
+
+In Linear's UI: **Settings** → **API** → **Webhooks** → **Create webhook**.
+Set the URL to `http://<your-host>:<port>/webhooks/linear/`, paste the same
+signing secret, and subscribe to **Issue** and **Comment** events.
+
+Symphony does not do TLS. Terminate TLS upstream (nginx, Caddy, Cloudflare)
+if exposing the port publicly. Linear can deliver to either plain HTTP or
+HTTPS, but production deployments should use HTTPS.
+
 ## Running
 
 ```bash

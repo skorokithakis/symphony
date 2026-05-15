@@ -37,6 +37,7 @@ from symphony_linear.project_config import (
 )
 from symphony_linear.state import StateManager, TicketState, TicketStatus
 from symphony_linear.tracker import TransitionTarget
+from symphony_linear.webhook import WebhookServer
 
 
 # ---------------------------------------------------------------------------
@@ -3330,6 +3331,296 @@ class TestCorrection3:
         assert needs_input_transitions == [], (
             f"Expected no needs_input transition after cancellation, got: {needs_input_transitions}"
         )
+
+
+# ---------------------------------------------------------------------------
+# Wake event and tick lock
+# ---------------------------------------------------------------------------
+
+
+class TestWake:
+    def test_wake_causes_immediate_tick(
+        self, orchestrator: Orchestrator, linear: FakeLinearClient
+    ) -> None:
+        """wake() causes the next _tick to run within ~1s instead of the full 30s poll."""
+        orchestrator._config.poll_interval_seconds = 30
+        linear.set_response("list_triggered_issues", [])
+
+        tick_times: list[float] = []
+        first_done = threading.Event()
+        second_done = threading.Event()
+        orig = orchestrator._tick
+
+        def counting_tick() -> None:
+            tick_times.append(time.monotonic())
+            if len(tick_times) == 1:
+                first_done.set()
+            elif len(tick_times) == 2:
+                second_done.set()
+            orig()
+
+        orchestrator._tick = counting_tick  # type: ignore[method-assign]
+
+        # signal.signal() only works in the main thread, so stub it out.
+        orchestrator._install_signal_handlers = lambda: None  # type: ignore[method-assign]
+
+        def do_run() -> None:
+            orchestrator.run()
+
+        t = threading.Thread(target=do_run, daemon=True)
+        t.start()
+
+        assert first_done.wait(timeout=3), "First tick never happened"
+
+        t0 = time.monotonic()
+        orchestrator.wake()
+        assert second_done.wait(timeout=5), "Second tick never arrived after wake"
+        latency = time.monotonic() - t0
+
+        # Should be well under the 30s poll interval
+        assert latency < 5.0, (
+            f"Tick latency {latency:.2f}s >> expected <5s (poll interval=30s)"
+        )
+
+        orchestrator._shutdown.set()
+        orchestrator._wake.set()
+        t.join(timeout=2)
+
+    def test_wake_does_not_cause_infinite_ticks(
+        self, orchestrator: Orchestrator, linear: FakeLinearClient
+    ) -> None:
+        """A single wake() causes exactly one extra tick — _wake is cleared each iteration."""
+        orchestrator._config.poll_interval_seconds = 10
+        linear.set_response("list_triggered_issues", [])
+
+        tick_count = 0
+        orig = orchestrator._tick
+
+        def counting_tick() -> None:
+            nonlocal tick_count
+            tick_count += 1
+            time.sleep(0.02)
+            orig()
+
+        orchestrator._tick = counting_tick  # type: ignore[method-assign]
+        orchestrator._install_signal_handlers = lambda: None  # type: ignore[method-assign]
+
+        def do_run() -> None:
+            orchestrator.run()
+
+        t = threading.Thread(target=do_run, daemon=True)
+        t.start()
+
+        # Wait for first tick
+        time.sleep(0.3)
+        assert tick_count >= 1, f"Expected at least 1 tick, got {tick_count}"
+
+        count_before = tick_count
+        orchestrator.wake()
+
+        # Wait for the extra tick from wake (should be fast)
+        time.sleep(0.5)
+        assert tick_count == count_before + 1, (
+            f"Expected {count_before + 1} ticks after wake, got {tick_count}"
+        )
+
+        # After more time, no additional ticks (not spinning)
+        time.sleep(0.5)
+        assert tick_count == count_before + 1, (
+            f"Expected still {count_before + 1} ticks, got {tick_count}"
+        )
+
+        orchestrator._shutdown.set()
+        orchestrator._wake.set()
+        t.join(timeout=2)
+
+    def test_shutdown_wakes_loop(
+        self, orchestrator: Orchestrator, linear: FakeLinearClient
+    ) -> None:
+        """Shutdown via _signal_handler wakes a sleeping run loop immediately."""
+        import signal
+
+        orchestrator._config.poll_interval_seconds = 30
+        linear.set_response("list_triggered_issues", [])
+
+        loop_exited = threading.Event()
+        tick_count = 0
+
+        def quick_tick() -> None:
+            nonlocal tick_count
+            tick_count += 1
+
+        orchestrator._tick = quick_tick  # type: ignore[method-assign]
+        orchestrator._install_signal_handlers = lambda: None  # type: ignore[method-assign]
+
+        def do_run() -> None:
+            orchestrator.run()
+            loop_exited.set()
+
+        t = threading.Thread(target=do_run, daemon=True)
+        t.start()
+
+        # Wait for first tick
+        time.sleep(0.3)
+        assert tick_count >= 1
+
+        # Trigger shutdown via signal handler
+        t0 = time.monotonic()
+        orchestrator._signal_handler(signal.SIGTERM, None)
+
+        # Loop should exit quickly (not after 30s)
+        assert loop_exited.wait(timeout=5), "Loop did not exit within 5s"
+        elapsed = time.monotonic() - t0
+        assert elapsed < 5.0, (
+            f"Shutdown took {elapsed:.2f}s, expected <5s (poll interval=30s)"
+        )
+
+        t.join(timeout=2)
+
+
+class TestTickLock:
+    def test_tick_lock_prevents_overlap(
+        self, orchestrator: Orchestrator, linear: FakeLinearClient
+    ) -> None:
+        """Two concurrent calls to _tick are serialized by _tick_lock."""
+        linear.set_response("list_triggered_issues", [])
+
+        fetch_calls: list[str] = []
+        t1_inside = threading.Event()
+        t1_release = threading.Event()
+
+        def slow_fetch() -> list[Any]:
+            fetch_calls.append(threading.current_thread().name)
+            t1_inside.set()
+            t1_release.wait()
+            return []
+
+        with mock.patch.object(orchestrator, "_fetch_triggered_issues", slow_fetch):
+            # Thread A: starts _tick, acquires lock, calls fetch, blocks
+            t1 = threading.Thread(target=orchestrator._tick, name="t1")
+            t1.start()
+            assert t1_inside.wait(timeout=2), "t1 never entered fetch"
+
+            # Thread B: starts _tick, should block on _tick_lock
+            t2 = threading.Thread(target=orchestrator._tick, name="t2")
+            t2.start()
+
+            # Give t2 time to try to acquire the lock
+            time.sleep(0.3)
+
+            # t2 should NOT have called fetch (still blocked on lock)
+            assert len(fetch_calls) == 1, (
+                f"_fetch_triggered_issues called {len(fetch_calls)} times "
+                f"(expected 1 — t2 should be blocked on _tick_lock)"
+            )
+
+            # Release t1
+            t1_release.set()
+            t1.join(timeout=2)
+            t2.join(timeout=2)
+
+            # Both threads should have called fetch
+            assert len(fetch_calls) == 2, (
+                f"Expected 2 fetch calls, got {len(fetch_calls)}"
+            )
+
+
+# ---------------------------------------------------------------------------
+# Webhook server integration in orchestrator
+# ---------------------------------------------------------------------------
+
+
+class TestWebhookServerIntegration:
+    def test_started_after_recovery(
+        self,
+        tmp_config: AppConfig,
+        state_mgr: StateManager,
+        linear: FakeLinearClient,
+        tmp_path: Path,
+    ) -> None:
+        """WebhookServer.start() is called after _recover_state() in run()."""
+        mock_ws = mock.MagicMock(spec=WebhookServer)
+        mock_ws.port = 8888
+
+        orch = Orchestrator(
+            config=tmp_config,
+            state=state_mgr,
+            tracker=LinearTracker(linear=linear, config=tmp_config.linear),
+            workspace=tmp_path / "ws",
+            webhook_server=mock_ws,
+        )  # type: ignore[arg-type]
+
+        # Quiet: no Linear calls during recovery (state is empty).
+        linear.set_response("list_triggered_issues", [])
+
+        # Avoid real signal handlers interfering.
+        orch._install_signal_handlers = lambda: None  # type: ignore[method-assign]
+
+        def do_run_then_shutdown() -> None:
+            orch.run()
+
+        t = threading.Thread(target=do_run_then_shutdown, daemon=True)
+        t.start()
+
+        # Give run() time to enter the loop, then signal shutdown.
+        time.sleep(0.15)
+        orch._shutdown.set()
+        orch._wake.set()
+        t.join(timeout=2)
+
+        # start() must have been called after _recover_state (which always runs first).
+        mock_ws.start.assert_called_once()
+        # stop() must have been called by _shutdown_handler.
+        mock_ws.stop.assert_called_once()
+
+    def test_no_webhook_server_does_not_crash(
+        self,
+        tmp_config: AppConfig,
+        state_mgr: StateManager,
+        linear: FakeLinearClient,
+        tmp_path: Path,
+    ) -> None:
+        """Without webhook_server (default), run() and _shutdown_handler() work fine."""
+        orch = Orchestrator(
+            config=tmp_config,
+            state=state_mgr,
+            tracker=LinearTracker(linear=linear, config=tmp_config.linear),
+            workspace=tmp_path / "ws",
+        )  # type: ignore[arg-type]
+        assert orch._webhook_server is None  # default
+
+        linear.set_response("list_triggered_issues", [])
+        orch._install_signal_handlers = lambda: None  # type: ignore[method-assign]
+
+        def do_run_then_shutdown() -> None:
+            orch.run()
+
+        t = threading.Thread(target=do_run_then_shutdown, daemon=True)
+        t.start()
+
+        time.sleep(0.15)
+        orch._shutdown.set()
+        orch._wake.set()
+        t.join(timeout=2)
+
+    def test_stop_called_during_shutdown(
+        self,
+        tmp_config: AppConfig,
+        state_mgr: StateManager,
+        linear: FakeLinearClient,
+        tmp_path: Path,
+    ) -> None:
+        """_shutdown_handler calls webhook_server.stop() when configured."""
+        mock_ws = mock.MagicMock(spec=WebhookServer)
+        orch = Orchestrator(
+            config=tmp_config,
+            state=state_mgr,
+            tracker=LinearTracker(linear=linear, config=tmp_config.linear),
+            workspace=tmp_path / "ws",
+            webhook_server=mock_ws,
+        )  # type: ignore[arg-type]
+        orch._shutdown_handler()
+        mock_ws.stop.assert_called_once()
 
 
 # ---------------------------------------------------------------------------

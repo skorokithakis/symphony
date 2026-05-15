@@ -511,3 +511,227 @@ class TestExactlyOneTracker:
         assert config.linear is not None
         assert config.linear.api_key == "my-token"
         assert config.github is None
+
+
+# ---------------------------------------------------------------------------
+# Webhook config tests
+# ---------------------------------------------------------------------------
+
+
+class TestWebhookConfig:
+    def test_block_absent_webhook_is_none(self, tmp_path: Path) -> None:
+        """When no webhook block is in config, config.webhook is None."""
+        cfg = {
+            "linear": {
+                "api_key": "test-key",
+                "bot_user_email": "bot@example.com",
+            },
+        }
+        _write_yaml(tmp_path / "config.yaml", cfg)
+
+        config = load_config(tmp_path)
+        assert config.webhook is None
+
+    def test_block_present_with_port_and_secret(self, tmp_path: Path) -> None:
+        """Webhook config loads with explicit port and secret."""
+        cfg = {
+            "linear": {
+                "api_key": "test-key",
+                "bot_user_email": "bot@example.com",
+            },
+            "webhook": {
+                "port": 4000,
+                "linear_secret": "my-secret",
+            },
+        }
+        _write_yaml(tmp_path / "config.yaml", cfg)
+
+        config = load_config(tmp_path)
+        assert config.webhook is not None
+        assert config.webhook.port == 4000
+        assert config.webhook.linear_secret == "my-secret"
+
+    def test_secret_empty_env_var_fallback(
+        self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        """If linear_secret is empty in YAML, fall back to env var."""
+        monkeypatch.setenv("SYMPHONY_LINEAR_WEBHOOK_SECRET", "env-secret")
+        cfg = {
+            "linear": {
+                "api_key": "test-key",
+                "bot_user_email": "bot@example.com",
+            },
+            "webhook": {
+                "port": 4000,
+                "linear_secret": "",
+            },
+        }
+        _write_yaml(tmp_path / "config.yaml", cfg)
+
+        config = load_config(tmp_path)
+        assert config.webhook is not None
+        assert config.webhook.linear_secret == "env-secret"
+
+    def test_secret_missing_env_var_fallback(
+        self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        """If linear_secret key is absent from YAML, fall back to env var."""
+        monkeypatch.setenv("SYMPHONY_LINEAR_WEBHOOK_SECRET", "env-secret")
+        cfg = {
+            "linear": {
+                "api_key": "test-key",
+                "bot_user_email": "bot@example.com",
+            },
+            "webhook": {
+                "port": 4000,
+            },
+        }
+        _write_yaml(tmp_path / "config.yaml", cfg)
+
+        config = load_config(tmp_path)
+        assert config.webhook is not None
+        assert config.webhook.linear_secret == "env-secret"
+
+    def test_secret_empty_env_var_unset_raises(self, tmp_path: Path) -> None:
+        """If linear_secret is empty and env var is unset, raise ValueError."""
+        cfg = {
+            "linear": {
+                "api_key": "test-key",
+                "bot_user_email": "bot@example.com",
+            },
+            "webhook": {
+                "port": 4000,
+                "linear_secret": "",
+            },
+        }
+        _write_yaml(tmp_path / "config.yaml", cfg)
+
+        with pytest.raises(ValueError, match="SYMPHONY_LINEAR_WEBHOOK_SECRET"):
+            load_config(tmp_path)
+
+    def test_secret_missing_env_var_unset_raises(self, tmp_path: Path) -> None:
+        """If linear_secret key is absent and env var unset, raise ValueError."""
+        cfg = {
+            "linear": {
+                "api_key": "test-key",
+                "bot_user_email": "bot@example.com",
+            },
+            "webhook": {
+                "port": 4000,
+            },
+        }
+        _write_yaml(tmp_path / "config.yaml", cfg)
+
+        with pytest.raises(ValueError, match="SYMPHONY_LINEAR_WEBHOOK_SECRET"):
+            load_config(tmp_path)
+
+    def test_secret_env_var_in_yaml_expanded(
+        self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        """$VAR expansion works for linear_secret in YAML."""
+        monkeypatch.setenv("MY_SECRET", "expanded-secret")
+        cfg = {
+            "linear": {
+                "api_key": "test-key",
+                "bot_user_email": "bot@example.com",
+            },
+            "webhook": {
+                "port": 4000,
+                "linear_secret": "$MY_SECRET",
+            },
+        }
+        _write_yaml(tmp_path / "config.yaml", cfg)
+
+        config = load_config(tmp_path)
+        assert config.webhook is not None
+        assert config.webhook.linear_secret == "expanded-secret"
+
+    def test_port_zero_raises_validation_error(self, tmp_path: Path) -> None:
+        """Port 0 is invalid (must be gt=0)."""
+        cfg = {
+            "linear": {
+                "api_key": "test-key",
+                "bot_user_email": "bot@example.com",
+            },
+            "webhook": {
+                "port": 0,
+                "linear_secret": "secret",
+            },
+        }
+        _write_yaml(tmp_path / "config.yaml", cfg)
+
+        with pytest.raises(ValueError, match="Config validation failed"):
+            load_config(tmp_path)
+
+    def test_port_negative_raises_validation_error(self, tmp_path: Path) -> None:
+        """Negative port is invalid."""
+        cfg = {
+            "linear": {
+                "api_key": "test-key",
+                "bot_user_email": "bot@example.com",
+            },
+            "webhook": {
+                "port": -1,
+                "linear_secret": "secret",
+            },
+        }
+        _write_yaml(tmp_path / "config.yaml", cfg)
+
+        with pytest.raises(ValueError, match="Config validation failed"):
+            load_config(tmp_path)
+
+    def test_port_above_65535_raises_validation_error(self, tmp_path: Path) -> None:
+        """Port > 65535 is invalid."""
+        cfg = {
+            "linear": {
+                "api_key": "test-key",
+                "bot_user_email": "bot@example.com",
+            },
+            "webhook": {
+                "port": 65536,
+                "linear_secret": "secret",
+            },
+        }
+        _write_yaml(tmp_path / "config.yaml", cfg)
+
+        with pytest.raises(ValueError, match="Config validation failed"):
+            load_config(tmp_path)
+
+    def test_webhook_null_in_yaml_becomes_none(self, tmp_path: Path) -> None:
+        """webhook: with no sub-fields is treated as absent (None)."""
+        cfg = {
+            "linear": {
+                "api_key": "test-key",
+                "bot_user_email": "bot@example.com",
+            },
+            "webhook": None,
+        }
+        _write_yaml(tmp_path / "config.yaml", cfg)
+
+        config = load_config(tmp_path)
+        assert config.webhook is None
+
+    def test_webhook_with_github_backend_raises(
+        self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        """Webhook block with GitHub backend is rejected — only Linear supports webhooks."""
+        monkeypatch.setenv("GITHUB_TOKEN", "ghp_test")
+        monkeypatch.setenv("SYMPHONY_LINEAR_WEBHOOK_SECRET", "env-secret")
+        cfg = {
+            "github": {
+                "project": "orgs/my-org/projects/1",
+                "in_progress_status": "In Progress",
+                "needs_input_status": "Needs Input",
+            },
+            "webhook": {
+                "port": 4000,
+                "linear_secret": "",
+            },
+        }
+        _write_yaml(tmp_path / "config.yaml", cfg)
+
+        with pytest.raises(
+            ValueError,
+            match="webhook block requires a 'linear:' backend",
+        ):
+            load_config(tmp_path)

@@ -142,6 +142,19 @@ class _SandboxConfig(BaseModel):
     )
 
 
+class _WebhookConfig(BaseModel):
+    """Optional webhook server configuration (Linear only)."""
+
+    port: int = Field(..., gt=0, le=65535, description="Port for the webhook server")
+    linear_secret: str = Field(
+        ...,
+        description=(
+            "Linear webhook secret for HMAC signature verification. "
+            "Fall back to SYMPHONY_LINEAR_WEBHOOK_SECRET env var if empty/missing."
+        ),
+    )
+
+
 class AppConfig(BaseModel):
     """Top-level application configuration.
 
@@ -157,6 +170,9 @@ class AppConfig(BaseModel):
         None, description="GitHub Projects v2 backend configuration block"
     )
     sandbox: _SandboxConfig = Field(default_factory=_SandboxConfig)
+    webhook: _WebhookConfig | None = Field(
+        None, description="Optional webhook server configuration"
+    )
     poll_interval_seconds: int = Field(
         30, gt=0, description="Seconds between poll cycles"
     )
@@ -182,6 +198,8 @@ class AppConfig(BaseModel):
         if isinstance(data, dict):
             if "sandbox" in data and data["sandbox"] is None:
                 del data["sandbox"]
+            if "webhook" in data and data["webhook"] is None:
+                del data["webhook"]
         return data
 
     @model_validator(mode="after")
@@ -196,6 +214,11 @@ class AppConfig(BaseModel):
             raise ValueError(
                 "No tracker backend configured. "
                 "Add either a 'linear:' or 'github:' block to config.yaml."
+            )
+        if self.webhook is not None and self.linear is None:
+            raise ValueError(
+                "webhook block requires a 'linear:' backend; "
+                "GitHub webhooks are not supported."
             )
         return self
 
@@ -235,6 +258,23 @@ def _apply_github_env_fallback(expanded: dict[str, Any], path: Path) -> None:
             raise ValueError(
                 f"GitHub token not set. Provide it in {path} "
                 f"(github.token) or via the GITHUB_TOKEN "
+                f"environment variable."
+            )
+
+
+def _apply_webhook_env_fallback(expanded: dict[str, Any], path: Path) -> None:
+    """If a webhook block is present but has no linear_secret, fill it from env."""
+    webhook = expanded.get("webhook")
+    if webhook is None:
+        return
+    if isinstance(webhook, dict) and not webhook.get("linear_secret", ""):
+        env_key = os.environ.get("SYMPHONY_LINEAR_WEBHOOK_SECRET", "")
+        if env_key:
+            webhook["linear_secret"] = env_key
+        else:
+            raise ValueError(
+                f"Webhook secret not set. Provide it in {path} "
+                f"(webhook.linear_secret) or via the SYMPHONY_LINEAR_WEBHOOK_SECRET "
                 f"environment variable."
             )
 
@@ -282,6 +322,7 @@ def load_config(workspace_dir: Path) -> AppConfig:
     if isinstance(expanded, dict):
         has_linear = expanded.get("linear") is not None
         has_github = expanded.get("github") is not None
+        has_webhook = expanded.get("webhook") is not None
         if has_linear and has_github:
             raise ValueError(
                 "Both 'linear' and 'github' blocks are set in config.yaml. "
@@ -292,6 +333,14 @@ def load_config(workspace_dir: Path) -> AppConfig:
                 "No tracker backend configured. "
                 "Add either a 'linear:' or 'github:' block to config.yaml."
             )
+        # Run the webhook+linear-only check BEFORE the secret-fallback so that
+        # github+webhook configs produce the scope error, not a misleading
+        # "missing webhook secret" error from the env fallback.
+        if has_webhook and not has_linear:
+            raise ValueError(
+                "webhook block requires a 'linear:' backend; "
+                "GitHub webhooks are not supported."
+            )
 
     # Environment variable fallbacks: if the config block is present but its
     # credential is missing or empty, fall back to the appropriate env var.
@@ -300,6 +349,7 @@ def load_config(workspace_dir: Path) -> AppConfig:
     if isinstance(expanded, dict):
         _apply_linear_env_fallback(expanded, path)
         _apply_github_env_fallback(expanded, path)
+        _apply_webhook_env_fallback(expanded, path)
 
     try:
         return AppConfig.model_validate(expanded)

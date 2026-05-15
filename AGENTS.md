@@ -54,6 +54,7 @@ symphony_linear/
   opencode.py       run_initial / run_resume; parses OpenCode's NDJSON event stream
   workspace.py      prepare() / remove(): clone, branch switch, .symphony/setup; path-containment check
   orchestrator.py   The brain: poll loop, per-ticket pipelines, ThreadPoolExecutor, cancellation
+  webhook.py        Optional webhook receiver; wakes poll loop on Linear updates. Absent config means polling only.
   logging.py        stderr logging setup
 tests/              pytest, mostly unit with mocks; integration tests marked `integration` (shell out to `bwrap`/`git` — they never call the real `opencode` binary or any LLM)
 ```

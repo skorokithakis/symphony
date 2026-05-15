@@ -16,6 +16,7 @@ from symphony_linear.logging import get_logger, setup_logging
 from symphony_linear.orchestrator import Orchestrator
 from symphony_linear.state import load_state
 from symphony_linear.tracker import Tracker
+from symphony_linear.webhook import WebhookServer
 
 logger = get_logger(__name__)
 
@@ -89,6 +90,13 @@ def main(argv: list[str] | None = None) -> None:
     orchestrator = Orchestrator(
         config=config, state=state, tracker=tracker, workspace=workspace
     )
+    if config.webhook is not None:
+        webhook_server = WebhookServer(
+            port=config.webhook.port,
+            linear_secret=config.webhook.linear_secret,
+            on_wake=orchestrator.wake,
+        )
+        orchestrator.set_webhook_server(webhook_server)
     orchestrator.run()
 
 

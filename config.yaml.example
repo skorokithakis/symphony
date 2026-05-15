@@ -89,6 +89,22 @@ sandbox:
   #   - ~/projects/shared-tools
 
 
+# ---------------------------------------------------------------------------
+# Optional webhook server (Linear only, no GitHub support).
+# Uncomment to enable a lightweight HTTP server that listens for Linear
+# webhook events so the daemon can react to ticket updates immediately
+# instead of waiting for the next poll cycle.
+# ---------------------------------------------------------------------------
+# webhook:
+#   # REQUIRED when the webhook block is present. Port for the webhook server.
+#   port: 4000
+#
+#   # REQUIRED when the webhook block is present. Linear webhook secret to
+#   # verify incoming HMAC signatures.  Use ${SYMPHONY_LINEAR_WEBHOOK_SECRET}
+#   # to read from the environment (or set SYMPHONY_LINEAR_WEBHOOK_SECRET
+#   # env var — the daemon falls back to it if this field is missing or empty).
+#   linear_secret: ${SYMPHONY_LINEAR_WEBHOOK_SECRET}
+
 # Seconds between tracker poll cycles (default: 30, minimum: 1).
 poll_interval_seconds: 30
 
