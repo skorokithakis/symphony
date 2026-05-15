@@ -154,12 +154,13 @@ behaviour, not ours. The NDJSON parser is unit-tested against a fixture.
   the security-sensitive parts.
 - Logging is to `stderr` only, via the format set in `logging.py`. Don't add
   `print()` calls.
-- Commit messages MUST follow Conventional Commits (https://www.conventionalcommits.org/).
-  Common prefixes: `feat:`, `fix:`, `chore:`, `docs:`, `refactor:`, `test:`,
-  `ci:`, `build:`, `perf:`, `style:`. Breaking changes: append `!` after type
-  (`feat!: ...`) or add `BREAKING CHANGE:` footer. Release Please uses these
-  to compute the next version — `fix:` → patch, `feat:` → minor, breaking →
-  major.
+- Commit messages MUST follow Conventional Commits (https://www.conventionalcommits.org/),
+  with the description starting with a capital letter (e.g. `feat: Add new
+  feature`, not `feat: add new feature`). Common prefixes: `feat:`, `fix:`,
+  `chore:`, `docs:`, `refactor:`, `test:`, `ci:`, `build:`, `perf:`, `style:`.
+  Breaking changes: append `!` after type (`feat!: ...`) or add
+  `BREAKING CHANGE:` footer. Release Please uses these to compute the next
+  version — `fix:` → patch, `feat:` → minor, breaking → major.
 
 ## Knowledge and tickets
 
