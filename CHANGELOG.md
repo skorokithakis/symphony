@@ -1,5 +1,13 @@
 # Changelog
 
+## [0.3.0](https://github.com/skorokithakis/symphony/compare/v0.2.0...v0.3.0) (2026-05-15)
+
+
+### Features
+
+* Add experimental support for GitHub Projects v2 as an issue tracker ([112076c](https://github.com/skorokithakis/symphony/commit/112076c7eff100edc4214e29c69248dd632a0fc0))
+* Sandbox: enable SSH functionality with opt-in configuration ([f3bb111](https://github.com/skorokithakis/symphony/commit/f3bb1111d220c43dd1389abbe6172778f87a760f))
+
 ## [0.2.0](https://github.com/skorokithakis/symphony/compare/v0.1.0...v0.2.0) (2026-05-14)
 
 
