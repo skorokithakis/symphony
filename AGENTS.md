@@ -80,11 +80,13 @@ shutting down, or the ticket is no longer triggered — see `_is_still_triggered
   the ticket is transitioned to `in_progress_state`, the agent runs, the
   ticket lands in `needs_input_state`, and the existing `_reconcile_serve`
   logic kills the active serve on the next tick because its owner left QA.
-- **The bot's own comments are filtered out** via the bot user id (`viewer.id`
-  cached on the client). New "human" comments = comments whose
-  `user_id != bot_user_id`. The `bot_user_email` in the config exists for
-  documentation; the actual matching is by id. GitHub uses the viewer's node
-  id — the same filtering logic applies.
+- **The bot's own comments are filtered out** via an HTML-comment sentinel
+  (`<!-- symphony:bot -->`) appended to every comment the daemon posts at
+  the tracker-adapter layer. New "human" comments = comments whose body does
+  *not* contain the sentinel. There is no longer a separate bot identity;
+  the daemon can run with the user's personal API token or a dedicated bot
+  account — it doesn't care. The `bot_user_email` config field has been
+  removed.
 - **State entry exists ⟺ workspace exists.** `orchestrator._tick` step 3
   fires cleanup (cancel subprocesses, remove state entry, remove workspace)
   whenever a tracked ticket is no longer *triggered* — i.e. the trigger label

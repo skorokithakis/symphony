@@ -116,7 +116,7 @@ class TestExceptionMapping:
         )
         client = _client(transport)
         with pytest.raises(LinearAuthError):
-            client.current_user_id()
+            client.get_issue("test")
 
     def test_auth_403_raises(self) -> None:
         transport = _make_transport(
@@ -124,25 +124,25 @@ class TestExceptionMapping:
         )
         client = _client(transport)
         with pytest.raises(LinearAuthError):
-            client.current_user_id()
+            client.get_issue("test")
 
     def test_rate_limit_429_raises(self) -> None:
         transport = _make_transport(lambda req: _json_response({}, 429))
         client = _client(transport)
         with pytest.raises(LinearRateLimitError):
-            client.current_user_id()
+            client.get_issue("test")
 
     def test_transient_500_raises(self) -> None:
         transport = _make_transport(lambda req: _json_response({}, 500))
         client = _client(transport)
         with pytest.raises(LinearTransientError):
-            client.current_user_id()
+            client.get_issue("test")
 
     def test_transient_502_raises(self) -> None:
         transport = _make_transport(lambda req: _json_response({}, 502))
         client = _client(transport)
         with pytest.raises(LinearTransientError):
-            client.current_user_id()
+            client.get_issue("test")
 
     def test_not_found_via_graphql_error(self) -> None:
         transport = _make_transport(
@@ -159,33 +159,6 @@ class TestExceptionMapping:
         client = _client(transport)
         with pytest.raises(LinearNotFoundError):
             client.get_issue("nonexistent")
-
-
-# ---------------------------------------------------------------------------
-# current_user_id
-# ---------------------------------------------------------------------------
-
-
-class TestCurrentUserId:
-    def test_returns_viewer_id(self) -> None:
-        transport = _make_transport(
-            lambda req: _json_response({"data": {"viewer": {"id": "usr-abc"}}})
-        )
-        client = _client(transport)
-        assert client.current_user_id() == "usr-abc"
-
-    def test_caches_result(self) -> None:
-        calls: list[int] = [0]
-
-        def handler(req: httpx.Request) -> httpx.Response:
-            calls[0] += 1
-            return _json_response({"data": {"viewer": {"id": "usr-abc"}}})
-
-        transport = _make_transport(handler)
-        client = _client(transport)
-        assert client.current_user_id() == "usr-abc"
-        assert client.current_user_id() == "usr-abc"
-        assert calls[0] == 1  # only one HTTP call made
 
 
 # ---------------------------------------------------------------------------

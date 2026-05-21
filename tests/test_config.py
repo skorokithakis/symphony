@@ -75,7 +75,6 @@ class TestLoadConfig:
         cfg = {
             "linear": {
                 "api_key": "test-key",
-                "bot_user_email": "bot@example.com",
             },
         }
         _write_yaml(tmp_path / "config.yaml", cfg)
@@ -94,7 +93,6 @@ class TestLoadConfig:
         cfg = {
             "linear": {
                 "api_key": "test-key",
-                "bot_user_email": "bot@example.com",
             },
             "auto_branch": False,
         }
@@ -104,15 +102,27 @@ class TestLoadConfig:
         assert config.auto_branch is False
 
     def test_missing_required_field_raises(self, tmp_path: Path) -> None:
-        cfg = {
+        cfg: dict[str, object] = {
             "linear": {
-                "api_key": "test-key",
-                # missing bot_user_email
+                # missing api_key
             },
         }
         _write_yaml(tmp_path / "config.yaml", cfg)
 
-        with pytest.raises(ValueError, match="Config validation failed"):
+        with pytest.raises(ValueError, match="API key not set"):
+            load_config(tmp_path)
+
+    def test_bot_user_email_rejected(self, tmp_path: Path) -> None:
+        """Old configs with bot_user_email must fail validation."""
+        cfg = {
+            "linear": {
+                "api_key": "test-key",
+                "bot_user_email": "bot@example.com",
+            },
+        }
+        _write_yaml(tmp_path / "config.yaml", cfg)
+
+        with pytest.raises(ValueError, match="bot_user_email"):
             load_config(tmp_path)
 
     def test_env_var_in_api_key(
@@ -122,7 +132,6 @@ class TestLoadConfig:
         cfg = {
             "linear": {
                 "api_key": "$LINEAR_KEY",
-                "bot_user_email": "bot@example.com",
             },
         }
         _write_yaml(tmp_path / "config.yaml", cfg)
@@ -144,7 +153,6 @@ class TestLoadConfig:
         cfg = {
             "linear": {
                 "api_key": "key",
-                "bot_user_email": "bot@example.com",
             },
             "sandbox": {
                 "hide_paths": ["/secret", "~/private"],
@@ -160,10 +168,8 @@ class TestLoadConfig:
     ) -> None:
         """If linear.api_key is missing from YAML, LINEAR_API_KEY env var is used."""
         monkeypatch.setenv("LINEAR_API_KEY", "env-provided-key")
-        cfg = {
-            "linear": {
-                "bot_user_email": "bot@example.com",
-            },
+        cfg: dict[str, object] = {
+            "linear": {},
         }
         _write_yaml(tmp_path / "config.yaml", cfg)
 
@@ -181,7 +187,6 @@ class TestLoadConfig:
         cfg = {
             "linear": {
                 "api_key": "",
-                "bot_user_email": "bot@example.com",
             },
         }
         _write_yaml(tmp_path / "config.yaml", cfg)
@@ -192,10 +197,8 @@ class TestLoadConfig:
 
     def test_linear_api_key_neither_set_raises(self, tmp_path: Path) -> None:
         """If neither YAML nor env var provides the key, raise a ValueError."""
-        cfg = {
-            "linear": {
-                "bot_user_email": "bot@example.com",
-            },
+        cfg: dict[str, object] = {
+            "linear": {},
         }
         _write_yaml(tmp_path / "config.yaml", cfg)
 
@@ -210,7 +213,6 @@ class TestLoadConfig:
         cfg = {
             "linear": {
                 "api_key": "${LINEAR_API_KEY}",
-                "bot_user_email": "bot@example.com",
             },
         }
         _write_yaml(tmp_path / "config.yaml", cfg)
@@ -223,7 +225,6 @@ class TestLoadConfig:
         cfg = {
             "linear": {
                 "api_key": "key",
-                "bot_user_email": "bot@example.com",
             },
             "workspace_root": "~/anything",
         }
@@ -236,7 +237,6 @@ class TestLoadConfig:
         cfg = {
             "linear": {
                 "api_key": "key",
-                "bot_user_email": "bot@example.com",
             },
             "poll_interval_seconds": 0,
         }
@@ -250,7 +250,6 @@ class TestLoadConfig:
         cfg = {
             "linear": {
                 "api_key": "test-key",
-                "bot_user_email": "bot@example.com",
             },
         }
         _write_yaml(tmp_path / "config.yaml", cfg)
@@ -263,7 +262,6 @@ class TestLoadConfig:
         cfg = {
             "linear": {
                 "api_key": "key",
-                "bot_user_email": "bot@example.com",
             },
             "sandbox": {
                 "extra_rw_paths": ["~/projects/shared", "/opt/tools"],
@@ -282,7 +280,6 @@ class TestLoadConfig:
         cfg = {
             "linear": {
                 "api_key": "test-key",
-                "bot_user_email": "bot@example.com",
             },
         }
         _write_yaml(tmp_path / "config.yaml", cfg)
@@ -296,7 +293,6 @@ class TestLoadConfig:
         cfg = {
             "linear": {
                 "api_key": "test-key",
-                "bot_user_email": "bot@example.com",
                 "qa_state": "In Review",
             },
         }
@@ -451,7 +447,6 @@ class TestExactlyOneTracker:
         cfg = {
             "linear": {
                 "api_key": "key",
-                "bot_user_email": "bot@example.com",
             },
             "github": {
                 "token": "ghp_test",
@@ -500,10 +495,8 @@ class TestExactlyOneTracker:
         """A linear-only config must not fail because GITHUB_TOKEN is unset."""
         monkeypatch.delenv("GITHUB_TOKEN", raising=False)
         monkeypatch.setenv("LINEAR_API_KEY", "my-token")
-        cfg = {
-            "linear": {
-                "bot_user_email": "bot@example.com",
-            },
+        cfg: dict[str, object] = {
+            "linear": {},
         }
         _write_yaml(tmp_path / "config.yaml", cfg)
 
@@ -524,7 +517,6 @@ class TestWebhookConfig:
         cfg = {
             "linear": {
                 "api_key": "test-key",
-                "bot_user_email": "bot@example.com",
             },
         }
         _write_yaml(tmp_path / "config.yaml", cfg)
@@ -537,7 +529,6 @@ class TestWebhookConfig:
         cfg = {
             "linear": {
                 "api_key": "test-key",
-                "bot_user_email": "bot@example.com",
             },
             "webhook": {
                 "port": 4000,
@@ -559,7 +550,6 @@ class TestWebhookConfig:
         cfg = {
             "linear": {
                 "api_key": "test-key",
-                "bot_user_email": "bot@example.com",
             },
             "webhook": {
                 "port": 4000,
@@ -580,7 +570,6 @@ class TestWebhookConfig:
         cfg = {
             "linear": {
                 "api_key": "test-key",
-                "bot_user_email": "bot@example.com",
             },
             "webhook": {
                 "port": 4000,
@@ -597,7 +586,6 @@ class TestWebhookConfig:
         cfg = {
             "linear": {
                 "api_key": "test-key",
-                "bot_user_email": "bot@example.com",
             },
             "webhook": {
                 "port": 4000,
@@ -614,7 +602,6 @@ class TestWebhookConfig:
         cfg = {
             "linear": {
                 "api_key": "test-key",
-                "bot_user_email": "bot@example.com",
             },
             "webhook": {
                 "port": 4000,
@@ -633,7 +620,6 @@ class TestWebhookConfig:
         cfg = {
             "linear": {
                 "api_key": "test-key",
-                "bot_user_email": "bot@example.com",
             },
             "webhook": {
                 "port": 4000,
@@ -651,7 +637,6 @@ class TestWebhookConfig:
         cfg = {
             "linear": {
                 "api_key": "test-key",
-                "bot_user_email": "bot@example.com",
             },
             "webhook": {
                 "port": 0,
@@ -668,7 +653,6 @@ class TestWebhookConfig:
         cfg = {
             "linear": {
                 "api_key": "test-key",
-                "bot_user_email": "bot@example.com",
             },
             "webhook": {
                 "port": -1,
@@ -685,7 +669,6 @@ class TestWebhookConfig:
         cfg = {
             "linear": {
                 "api_key": "test-key",
-                "bot_user_email": "bot@example.com",
             },
             "webhook": {
                 "port": 65536,
@@ -702,7 +685,6 @@ class TestWebhookConfig:
         cfg = {
             "linear": {
                 "api_key": "test-key",
-                "bot_user_email": "bot@example.com",
             },
             "webhook": None,
         }

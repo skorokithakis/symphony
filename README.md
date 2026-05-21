@@ -34,7 +34,6 @@ mkdir ~/symphony && cd ~/symphony
 cat > config.yaml <<'YAML'
 linear:
   api_key: ${LINEAR_API_KEY}
-  bot_user_email: you+symphony@example.com
 YAML
 # Or for GitHub Projects v2 (everything else has sensible defaults):
 cat > config.yaml <<'YAML'
@@ -115,17 +114,14 @@ This is the one-off plumbing that connects Symphony to your Linear workspace.
 You do it once per workspace, plus a small per-repo step for each project
 you want the agent to touch.
 
-### Create a bot user
-
-Create a separate Linear user for the bot so its comments and state changes
-are easy to spot. Gmail aliases work: `yourname+symphony@gmail.com`. Invite
-the bot into your workspace.
-
 ### Generate a Personal API key
 
-Sign into Linear as the bot. Open **Settings** → **API** → **Personal API
-keys**, create a key, and keep it somewhere safe; this is the value you'll
-supply as `LINEAR_API_KEY`.
+Sign into Linear with the account you want the daemon to use. This can be
+your own user account or a dedicated bot account — the daemon recognises its
+own comments by a hidden sentinel, not by user identity, so a separate bot
+user is optional. Open **Settings** → **API** → **Personal API keys**,
+create a key, and keep it somewhere safe; this is the value you'll supply
+as `LINEAR_API_KEY`.
 
 ### Add a "Needs Input" workflow state
 
@@ -164,16 +160,14 @@ This is the one-off plumbing to connect Symphony to a GitHub project. You do
 it once per project. The daemon uses the GitHub Projects v2 (beta) API; the
 older Projects v1 is not supported.
 
-### Create a bot account
+### Token
 
-Create a separate GitHub user for the bot so its comments and state changes
-are easy to spot. Add the bot as a collaborator (with at least read access)
-to every repository the bot should clone.
-
-### Generate a token
-
-The bot needs read/write access to Issues, Projects, and read access to
-repository Contents:
+The daemon needs a token with read/write access to Issues, Projects, and
+read access to repository Contents.  This token can belong to your own
+GitHub account or to a dedicated bot account — the daemon recognises its
+own comments by a hidden sentinel, so a separate bot user is optional.
+Add the token owner as a collaborator (with at least read access) to
+every repository the daemon should clone.
 
 - **Classic personal access token.** Enable the `repo` and `project`
   scopes.
@@ -253,7 +247,6 @@ For Linear:
 ```yaml
 linear:
   api_key: ${LINEAR_API_KEY}
-  bot_user_email: yourname+symphony@gmail.com
 ```
 
 For GitHub:
@@ -281,13 +274,11 @@ documented there side by side.
 
 # Choose exactly one backend — linear or github.
 linear:
-  # REQUIRED. Linear Personal API key from the bot account.
+  # REQUIRED. Linear Personal API key.
   # Use ${LINEAR_API_KEY} to read from the environment, or omit this field
   # entirely and the daemon will fall back to the LINEAR_API_KEY env var.
+  # The key can belong to your own account or a dedicated bot account.
   api_key: ${LINEAR_API_KEY}
-
-  # REQUIRED. Email address of the bot user in Linear.
-  bot_user_email: yourname+symphony@gmail.com
 
   # Name of the label that triggers the bot (default: Agent).
   trigger_label: Agent

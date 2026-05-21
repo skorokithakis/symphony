@@ -182,7 +182,6 @@ class LinearClient:
             },
             timeout=30.0,
         )
-        self._cached_user_id: str | None = None
 
     # ------------------------------------------------------------------
     # Internal helpers
@@ -219,25 +218,6 @@ class LinearClient:
     # ------------------------------------------------------------------
     # Public API
     # ------------------------------------------------------------------
-
-    def current_user_id(self) -> str:
-        """Return the Linear user id of the authenticated API key holder.
-
-        The result is cached in-memory for the lifetime of the client.
-        """
-        if self._cached_user_id is not None:
-            return self._cached_user_id
-
-        query = """
-        query {
-          viewer {
-            id
-          }
-        }
-        """
-        data = self._query(query)
-        self._cached_user_id = data["viewer"]["id"]
-        return self._cached_user_id
 
     def list_triggered_issues(
         self,

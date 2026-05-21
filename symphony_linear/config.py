@@ -75,6 +75,8 @@ def _expand_values(obj: Any) -> Any:
 
 
 class _LinearConfig(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+
     api_key: str = Field(..., description="Linear API key (bearer token)")
     trigger_label: str = Field("Agent", description="Label that triggers the bot")
     in_progress_state: str = Field(
@@ -87,7 +89,6 @@ class _LinearConfig(BaseModel):
         None,
         description="Optional Linear state for QA; polled in addition to in_progress and needs_input",
     )
-    bot_user_email: str = Field(..., description="Email of the bot user in Linear")
 
 
 # Compile once to share between config-level and tracker-level validation.

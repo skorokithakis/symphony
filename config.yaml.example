@@ -5,9 +5,10 @@
 # remove the block you are not using.
 
 linear:
-  # REQUIRED. Linear Personal API key from the bot account.
+  # REQUIRED. Linear Personal API key.
   # Use ${LINEAR_API_KEY} to read from the environment (or set LINEAR_API_KEY
   # env var — the daemon falls back to it if this field is missing or empty).
+  # The key can belong to your own account or a dedicated bot account.
   api_key: ${LINEAR_API_KEY}
 
   # Name of the label that triggers the bot (default: Agent).
@@ -25,9 +26,6 @@ linear:
   # ticket into this state bumps the previous one back to needs_input_state.
   # Omit to disable the feature entirely.
   # qa_state: QA
-
-  # REQUIRED. Email address of the bot user in Linear.
-  bot_user_email: yourname+symphony@gmail.com
 
 
 # ---------------------------------------------------------------------------

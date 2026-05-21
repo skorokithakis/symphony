@@ -31,6 +31,7 @@ from symphony_linear.project_config import (
 )
 from symphony_linear.state import StateManager, TicketState, TicketStatus
 from symphony_linear.tracker import (
+    BOT_COMMENT_SENTINEL,
     Tracker,
     TrackerError,
     TrackerNotFoundError,
@@ -168,7 +169,6 @@ class Orchestrator:
         self._shutdown = threading.Event()
         self._wake = threading.Event()
         self._tick_lock = threading.Lock()
-        self._bot_user_id: str | None = None
 
     # ==================================================================
     # Public API
@@ -828,22 +828,6 @@ class Orchestrator:
             return True
 
     # ==================================================================
-    # Bot user id (S2)
-    # ==================================================================
-
-    def _get_bot_user_id(self) -> str | None:
-        """Return bot user id or None on transient failure (caller must handle)."""
-        if self._bot_user_id is not None:
-            return self._bot_user_id
-        try:
-            uid = self._tracker.current_user_id()
-            self._bot_user_id = uid
-            return uid
-        except Exception:
-            logger.exception("Failed to get bot user id — transient")
-            return None  # caller must skip
-
-    # ==================================================================
     # New-ticket pipeline
     # ==================================================================
 
@@ -1137,11 +1121,6 @@ class Orchestrator:
         tid = ticket_state.ticket_id
         logger.debug("Resume pipeline tick for %s", tid)
 
-        bot_user_id = self._get_bot_user_id()
-        if bot_user_id is None:  # S2: transient failure
-            logger.warning("Cannot get bot user id for %s — skipping tick", tid)
-            return
-
         try:
             new_comments = self._tracker.list_comments_since(
                 tid,
@@ -1151,7 +1130,7 @@ class Orchestrator:
             logger.exception("Failed to fetch comments for %s", tid)
             return
 
-        human_comments = [c for c in new_comments if c.user_id != bot_user_id]
+        human_comments = [c for c in new_comments if BOT_COMMENT_SENTINEL not in c.body]
         if not human_comments:
             logger.debug("No new human comments on %s", tid)
             return
@@ -1385,15 +1364,12 @@ class Orchestrator:
             self._state.save()
 
     def _has_new_human_comment(self, issue_id: str, last_seen: str | None) -> bool:
-        bot_id = self._get_bot_user_id()
-        if bot_id is None:  # S2: transient failure → skip
-            return False
         try:
             comments = self._tracker.list_comments_since(issue_id, last_seen)
         except Exception:
             logger.exception("Failed to list comments for %s", issue_id)
             return False
-        return any(c.user_id != bot_id for c in comments)
+        return any(BOT_COMMENT_SENTINEL not in c.body for c in comments)
 
     # ==================================================================
     # Signal handling and shutdown

@@ -15,6 +15,13 @@ if TYPE_CHECKING:
 
 
 # ---------------------------------------------------------------------------
+# Comment sentinel
+# ---------------------------------------------------------------------------
+
+BOT_COMMENT_SENTINEL = "<!-- symphony:bot -->"
+
+
+# ---------------------------------------------------------------------------
 # Tracker-neutral exception hierarchy
 # ---------------------------------------------------------------------------
 
@@ -73,14 +80,6 @@ class Tracker(Protocol):
     The orchestrator only references this protocol; it never imports
     backend-specific types such as ``LinearClient``.
     """
-
-    def current_user_id(self) -> str:
-        """Return the tracker user id of the authenticated principal.
-
-        This is the bot's own id — used to filter out its own comments
-        when looking for new *human* comments.
-        """
-        ...
 
     def list_triggered_issues(self) -> list[Issue]:
         """Return all currently triggered issues.

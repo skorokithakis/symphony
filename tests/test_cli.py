@@ -18,7 +18,6 @@ linear:
   trigger_label: Agent
   in_progress_state: In Progress
   needs_input_state: Needs Input
-  bot_user_email: bot@example.com
 webhook:
   port: 8080
   linear_secret: my-secret
@@ -31,7 +30,6 @@ linear:
   trigger_label: Agent
   in_progress_state: In Progress
   needs_input_state: Needs Input
-  bot_user_email: bot@example.com
 poll_interval_seconds: 10
 """
 

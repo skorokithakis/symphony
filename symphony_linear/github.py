@@ -143,7 +143,6 @@ class GitHubClient:
             },
             timeout=30.0,
         )
-        self._cached_user_id: str | None = None
 
     # ------------------------------------------------------------------
     # Internal helpers
@@ -177,29 +176,6 @@ class GitHubClient:
         _parse_graphql_errors(body, response.status_code)
 
         return body.get("data", {})
-
-    # ------------------------------------------------------------------
-    # Public API
-    # ------------------------------------------------------------------
-
-    def current_user_id(self) -> str:
-        """Return the GitHub user id of the authenticated principal.
-
-        The result is cached in-memory for the lifetime of the client.
-        """
-        if self._cached_user_id is not None:
-            return self._cached_user_id
-
-        query = """
-        query {
-          viewer {
-            id
-          }
-        }
-        """
-        data = self._query(query)
-        self._cached_user_id = data["viewer"]["id"]
-        return self._cached_user_id
 
 
 # ---------------------------------------------------------------------------

@@ -52,7 +52,6 @@ def _make_config(tmp_path: Path, **overrides: Any) -> AppConfig:
             "trigger_label": "Agent",
             "in_progress_state": "In Progress",
             "needs_input_state": "Needs Input",
-            "bot_user_email": "bot@example.com",
         },
         "sandbox": {"hide_paths": ["/fake/secret"], "extra_rw_paths": ["/fake/rw"]},
         "poll_interval_seconds": 1,
@@ -91,17 +90,9 @@ class FakeLinearClient:
         self.api_key = api_key
         self.calls: dict[str, list[tuple]] = {}
         self._responses: dict[str, Any] = {}
-        self._bot_user_id = "usr-bot"
 
     def _record(self, method: str, args: tuple) -> None:
         self.calls.setdefault(method, []).append(args)
-
-    def current_user_id(self) -> str:
-        self._record("current_user_id", ())
-        result = self._responses.get("current_user_id", self._bot_user_id)
-        if isinstance(result, Exception):
-            raise result
-        return result
 
     def list_triggered_issues(
         self, label: str, active_states: list[str]
@@ -144,7 +135,7 @@ class FakeLinearClient:
             id=cid,
             body=body,
             createdAt="2025-06-01T00:00:00Z",
-            user_id=self._bot_user_id,
+            user_id="usr-bot",
         )
 
     def edit_comment(self, comment_id: str, body: str) -> None:
@@ -791,12 +782,14 @@ class TestResumePipeline:
     def test_bot_comments_filtered(
         self, orchestrator: Orchestrator, linear: FakeLinearClient
     ) -> None:
+        from symphony_linear.tracker import BOT_COMMENT_SENTINEL
+
         ts = self._make_ts()
         orchestrator._state.upsert(ts)
         linear.set_response(
             "list_comments_since",
             [
-                _make_comment("c1", "Bot", "usr-bot"),
+                _make_comment("c1", "Bot\n\n" + BOT_COMMENT_SENTINEL, "usr-bot"),
                 _make_comment("c2", "Human", "usr-human"),
             ],
         )
@@ -816,7 +809,7 @@ class TestResumePipeline:
             if len(m.call_args.args) > 2
             else m.call_args.kwargs["message"]
         )
-        assert "Bot" not in msg
+        assert "Bot" not in msg  # filtered because body contains sentinel
         assert "Human" in msg
 
     def test_resume_timeout_advances_last_seen(
@@ -870,24 +863,6 @@ class TestResumePipeline:
         ):
             orchestrator._resume_pipeline(updated)
         m.assert_not_called()
-
-    def test_bot_id_transient_failure_skips(
-        self, orchestrator: Orchestrator, linear: FakeLinearClient
-    ) -> None:
-        """S2: if getting bot user id fails transiently, skip the ticket."""
-        ts = self._make_ts()
-        orchestrator._state.upsert(ts)
-        linear.set_response("current_user_id", LinearError("transient"))
-        linear.set_response("list_comments_since", [_make_comment("c1", "Go")])
-        with (
-            mock.patch(
-                "symphony_linear.orchestrator.load_project_config",
-                return_value=ProjectConfig(),
-            ),
-            mock.patch("symphony_linear.orchestrator.run_resume") as m,
-        ):
-            orchestrator._resume_pipeline(ts)
-        m.assert_not_called()  # skipped due to bot_id None
 
 
 # ---------------------------------------------------------------------------
@@ -1536,6 +1511,8 @@ class TestTick:
         linear: FakeLinearClient,
     ) -> None:
         """QA ticket with only a bot comment → run_resume not called."""
+        from symphony_linear.tracker import BOT_COMMENT_SENTINEL
+
         config = _make_config(tmp_path, linear={"qa_state": "In Review"})
         orch = Orchestrator(
             config=config,
@@ -1561,7 +1538,9 @@ class TestTick:
         linear.set_response(
             "list_comments_since",
             [
-                _make_comment("c1", "Bot message", user_id="usr-bot"),
+                _make_comment(
+                    "c1", "Bot message\n\n" + BOT_COMMENT_SENTINEL, user_id="usr-bot"
+                ),
             ],
         )
 
@@ -1675,7 +1654,7 @@ class TestStartupRecovery:
         assert edit_calls[0] == (
             "cmt-meta-1",
             "**Symphony**: Restarted before setup completed. "
-            "Picking this ticket up again on the next poll.",
+            "Picking this ticket up again on the next poll.\n\n<!-- symphony:bot -->",
         )
 
     def test_bootstrapping_without_metadata_no_linear_call(

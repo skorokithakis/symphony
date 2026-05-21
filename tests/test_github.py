@@ -60,7 +60,7 @@ class TestExceptionMapping:
         )
         client = _client(transport)
         with pytest.raises(GitHubAuthError):
-            client.current_user_id()
+            client._query("query { viewer { id } }")
 
     def test_auth_403_raises(self) -> None:
         transport = _make_transport(
@@ -70,7 +70,7 @@ class TestExceptionMapping:
         )
         client = _client(transport)
         with pytest.raises(GitHubAuthError):
-            client.current_user_id()
+            client._query("query { viewer { id } }")
 
     def test_rate_limit_403_via_header_raises(self) -> None:
         transport = _make_transport(
@@ -82,19 +82,19 @@ class TestExceptionMapping:
         )
         client = _client(transport)
         with pytest.raises(GitHubRateLimitError):
-            client.current_user_id()
+            client._query("query { viewer { id } }")
 
     def test_not_found_404_raises(self) -> None:
         transport = _make_transport(lambda req: _json_response({}, 404))
         client = _client(transport)
         with pytest.raises(GitHubNotFoundError):
-            client.current_user_id()
+            client._query("query { viewer { id } }")
 
     def test_rate_limit_429_raises(self) -> None:
         transport = _make_transport(lambda req: _json_response({}, 429))
         client = _client(transport)
         with pytest.raises(GitHubRateLimitError):
-            client.current_user_id()
+            client._query("query { viewer { id } }")
 
     def test_rate_limit_via_graphql_error(self) -> None:
         transport = _make_transport(
@@ -112,19 +112,19 @@ class TestExceptionMapping:
         )
         client = _client(transport)
         with pytest.raises(GitHubRateLimitError):
-            client.current_user_id()
+            client._query("query { viewer { id } }")
 
     def test_transient_500_raises(self) -> None:
         transport = _make_transport(lambda req: _json_response({}, 500))
         client = _client(transport)
         with pytest.raises(GitHubTransientError):
-            client.current_user_id()
+            client._query("query { viewer { id } }")
 
     def test_transient_502_raises(self) -> None:
         transport = _make_transport(lambda req: _json_response({}, 502))
         client = _client(transport)
         with pytest.raises(GitHubTransientError):
-            client.current_user_id()
+            client._query("query { viewer { id } }")
 
     def test_not_found_via_graphql_error(self) -> None:
         transport = _make_transport(
@@ -178,34 +178,7 @@ class TestExceptionMapping:
             ),
         )
         with pytest.raises(GitHubTransientError, match="timed out"):
-            client2.current_user_id()
-
-
-# ---------------------------------------------------------------------------
-# current_user_id
-# ---------------------------------------------------------------------------
-
-
-class TestCurrentUserId:
-    def test_returns_viewer_id(self) -> None:
-        transport = _make_transport(
-            lambda req: _json_response({"data": {"viewer": {"id": "gh-user-1"}}})
-        )
-        client = _client(transport)
-        assert client.current_user_id() == "gh-user-1"
-
-    def test_caches_result(self) -> None:
-        calls: list[int] = [0]
-
-        def handler(req: httpx.Request) -> httpx.Response:
-            calls[0] += 1
-            return _json_response({"data": {"viewer": {"id": "gh-user-1"}}})
-
-        transport = _make_transport(handler)
-        client = _client(transport)
-        assert client.current_user_id() == "gh-user-1"
-        assert client.current_user_id() == "gh-user-1"
-        assert calls[0] == 1  # only one HTTP call
+            client2._query("query { viewer { id } }")
 
 
 # ---------------------------------------------------------------------------

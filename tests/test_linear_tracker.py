@@ -48,7 +48,6 @@ from symphony_linear.tracker import (
 def config() -> _LinearConfig:
     return _LinearConfig(
         api_key="test-key",
-        bot_user_email="bot@example.com",
         trigger_label="Agent",
         in_progress_state="In Progress",
         needs_input_state="Needs Input",
@@ -60,7 +59,6 @@ def config() -> _LinearConfig:
 def config_no_qa() -> _LinearConfig:
     return _LinearConfig(
         api_key="test-key",
-        bot_user_email="bot@example.com",
         trigger_label="Agent",
         in_progress_state="In Progress",
         needs_input_state="Needs Input",
@@ -152,13 +150,6 @@ class TestExceptionHierarchy:
 # ---------------------------------------------------------------------------
 
 
-class TestCurrentUserId:
-    def test_delegates(self, tracker: LinearTracker, linear_mock: MagicMock) -> None:
-        linear_mock.current_user_id.return_value = "usr-bot"
-        assert tracker.current_user_id() == "usr-bot"
-        linear_mock.current_user_id.assert_called_once()
-
-
 class TestListTriggeredIssues:
     def test_delegates_with_active_states(
         self, tracker: LinearTracker, linear_mock: MagicMock, config: _LinearConfig
@@ -218,13 +209,17 @@ class TestPostComment:
         linear_mock.post_comment.return_value = comment
         result = tracker.post_comment("i-1", "posted")
         assert result is comment
-        linear_mock.post_comment.assert_called_once_with("i-1", "posted")
+        linear_mock.post_comment.assert_called_once_with(
+            "i-1", "posted\n\n<!-- symphony:bot -->"
+        )
 
 
 class TestEditComment:
     def test_delegates(self, tracker: LinearTracker, linear_mock: MagicMock) -> None:
         tracker.edit_comment("c-1", "updated")
-        linear_mock.edit_comment.assert_called_once_with("c-1", "updated")
+        linear_mock.edit_comment.assert_called_once_with(
+            "c-1", "updated\n\n<!-- symphony:bot -->"
+        )
 
 
 class TestTransitionTo:
@@ -420,7 +415,6 @@ class TestHumanTriggerDescription:
     def test_custom_label(self, linear_mock: MagicMock) -> None:
         config = _LinearConfig(
             api_key="k",
-            bot_user_email="b@e.com",
             trigger_label="Symphony",
             in_progress_state="IP",
             needs_input_state="NI",

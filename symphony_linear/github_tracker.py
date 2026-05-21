@@ -25,6 +25,7 @@ from symphony_linear.github import (
 from symphony_linear.linear import Comment, Issue
 from symphony_linear.state import StateManager
 from symphony_linear.tracker import (
+    BOT_COMMENT_SENTINEL,
     TrackerError,
     TransitionTarget,
 )
@@ -483,10 +484,6 @@ class GitHubTracker:
     # Tracker protocol — Read operations
     # ------------------------------------------------------------------
 
-    def current_user_id(self) -> str:
-        """Return the GitHub user id of the authenticated principal."""
-        return self._client.current_user_id()
-
     def list_triggered_issues(self) -> list[Issue]:
         """Return all currently triggered GitHub issues in the project.
 
@@ -836,6 +833,9 @@ class GitHubTracker:
 
     def post_comment(self, id: str, body: str) -> Comment:
         """Post a new comment on issue *id* and return it."""
+        # Append the sentinel so the daemon can recognise its own comments
+        # regardless of which user account owns the API token.
+        body_with_sentinel = body + "\n\n" + BOT_COMMENT_SENTINEL
         mutation = """\
         mutation($input: AddCommentInput!) {
           addComment(input: $input) {
@@ -858,7 +858,7 @@ class GitHubTracker:
         data = self._client._query(
             mutation,
             {
-                "input": {"subjectId": id, "body": body},
+                "input": {"subjectId": id, "body": body_with_sentinel},
             },
         )
 
@@ -875,6 +875,7 @@ class GitHubTracker:
 
     def edit_comment(self, id: str, body: str) -> None:
         """Replace the body of an existing comment."""
+        body_with_sentinel = body + "\n\n" + BOT_COMMENT_SENTINEL
         mutation = """\
         mutation($input: UpdateIssueCommentInput!) {
           updateIssueComment(input: $input) {
@@ -885,7 +886,7 @@ class GitHubTracker:
         self._client._query(
             mutation,
             {
-                "input": {"id": id, "body": body},
+                "input": {"id": id, "body": body_with_sentinel},
             },
         )
 
