@@ -675,7 +675,7 @@ class GitHubTracker:
         variables: dict[str, Any] = {"projectId": self._project_node_id}
         if cursor:
             variables["cursor"] = cursor
-        data = self._client._query(query, variables)
+        data = self._client._query(query, variables, tolerate_path_errors=True)
         return data.get("node", {})
 
     def get_issue(self, id: str) -> Issue:
@@ -1141,7 +1141,9 @@ class GitHubTracker:
           }
         }
         """
-        data = self._client._query(query, {"itemId": item_id})
+        data = self._client._query(
+            query, {"itemId": item_id}, tolerate_path_errors=True
+        )
         return data.get("node")
 
 

@@ -829,7 +829,7 @@ class TestListTriggeredIssues:
         call_count = [0]
 
         def side_effect(
-            query: str, variables: dict[str, Any] | None = None
+            query: str, variables: dict[str, Any] | None = None, **kwargs: Any
         ) -> dict[str, Any]:
             call_count[0] += 1
             cursor = (variables or {}).get("cursor")
@@ -954,7 +954,7 @@ class TestGetIssue:
         call_count = [0]
 
         def side_effect(
-            query: str, variables: dict[str, Any] | None = None
+            query: str, variables: dict[str, Any] | None = None, **kwargs: Any
         ) -> dict[str, Any]:
             call_count[0] += 1
             if "comments" in query and "fieldValues" not in query:
@@ -1025,7 +1025,7 @@ class TestGetIssue:
         call_count = [0]
 
         def side_effect(
-            query: str, variables: dict[str, Any] | None = None
+            query: str, variables: dict[str, Any] | None = None, **kwargs: Any
         ) -> dict[str, Any]:
             call_count[0] += 1
 
@@ -1103,7 +1103,7 @@ class TestGetIssue:
         call_count = [0]
 
         def side_effect(
-            query: str, variables: dict[str, Any] | None = None
+            query: str, variables: dict[str, Any] | None = None, **kwargs: Any
         ) -> dict[str, Any]:
             call_count[0] += 1
             if (
@@ -1476,7 +1476,7 @@ class TestTransitionTo:
         call_count = [0]
 
         def side_effect(
-            query: str, variables: dict[str, Any] | None = None
+            query: str, variables: dict[str, Any] | None = None, **kwargs: Any
         ) -> dict[str, Any]:
             call_count[0] += 1
             if "items" in query:
@@ -2365,7 +2365,7 @@ class TestCloneProtocol:
         call_count = [0]
 
         def side_effect(
-            query: str, variables: dict[str, Any] | None = None
+            query: str, variables: dict[str, Any] | None = None, **kwargs: Any
         ) -> dict[str, Any]:
             call_count[0] += 1
             if "comments" in query and "fieldValues" not in query:

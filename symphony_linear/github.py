@@ -152,11 +152,19 @@ class GitHubClient:
         self,
         query: str,
         variables: dict[str, Any] | None = None,
+        *,
+        tolerate_path_errors: bool = False,
     ) -> dict[str, Any]:
         """Execute a GraphQL query/mutation and return the ``data`` payload.
 
         Raises typed ``GitHub*Error`` subclasses on HTTP or GraphQL-level
         errors.
+
+        When *tolerate_path_errors* is ``True`` and the response contains
+        *only* path-scoped errors (every error in the batch has a non-empty
+        ``path``), each is logged at WARNING and the partial ``data`` is
+        returned.  If any error is root-level (missing or empty ``path``)
+        the response is treated as fatal and raises normally.
         """
         logger.debug("GitHub GraphQL request: %s", _first_line(query))
         payload: dict[str, Any] = {"query": query}
@@ -173,6 +181,18 @@ class GitHubClient:
         _raise_for_status(response.status_code, response)
 
         body: dict[str, Any] = response.json() if response.content else {}
+
+        if tolerate_path_errors:
+            errors: list[dict[str, Any]] = body.get("errors", [])
+            if errors and all(err.get("path") for err in errors):
+                for err in errors:
+                    logger.warning(
+                        "GitHub GraphQL path-scoped error at %s: %s",
+                        err.get("path"),
+                        err.get("message"),
+                    )
+                return body.get("data", {})
+
         _parse_graphql_errors(body, response.status_code)
 
         return body.get("data", {})

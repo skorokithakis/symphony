@@ -212,3 +212,123 @@ class TestQuery:
         client = _client(transport)
         result = client._query("query { x }")
         assert result == {}
+
+
+# ---------------------------------------------------------------------------
+# Path-scoped error tolerance
+# ---------------------------------------------------------------------------
+
+
+class TestToleratePathErrors:
+    """Verify the ``tolerate_path_errors`` kwarg on ``_query`` correctly
+    allows path-scoped GraphQL errors through when they are the only kind
+    present."""
+
+    def test_path_only_returns_data_and_logs_warning(self, caplog) -> None:
+        """All errors have a non-empty path → data returned, warnings logged."""
+        response = {
+            "data": {"node": {"items": {"nodes": [{"id": "PVTI_1"}]}}},
+            "errors": [
+                {
+                    "type": "FORBIDDEN",
+                    "path": ["node", "items", "nodes", 0, "content"],
+                    "message": "Resource not accessible by personal access token",
+                }
+            ],
+        }
+        transport = _make_transport(lambda req: _json_response(response))
+        client = _client(transport)
+
+        import logging
+
+        with caplog.at_level(logging.WARNING):
+            result = client._query("query { ... }", tolerate_path_errors=True)
+
+        assert result == response["data"]
+        assert len(caplog.records) == 1
+        assert caplog.records[0].levelno == logging.WARNING
+        assert "path-scoped error" in caplog.records[0].message
+        assert "Resource not accessible" in caplog.records[0].message
+
+    def test_mixed_path_and_root_errors_raises(self) -> None:
+        """At least one error has no path → full error handling (raise)."""
+        response = {
+            "data": {"node": None},
+            "errors": [
+                {
+                    "type": "FORBIDDEN",
+                    "path": ["node", "items", "nodes", 0, "content"],
+                    "message": "Resource not accessible by personal access token",
+                },
+                {
+                    "type": "SOME_ERROR",
+                    "message": "Something went wrong at the root",
+                },
+            ],
+        }
+        transport = _make_transport(lambda req: _json_response(response))
+        client = _client(transport)
+        with pytest.raises(GitHubError):
+            client._query("query { ... }", tolerate_path_errors=True)
+
+    def test_path_error_with_flag_off_raises(self) -> None:
+        """Path-scoped errors still raise when the flag is False (default)."""
+        response = {
+            "data": {"node": None},
+            "errors": [
+                {
+                    "type": "FORBIDDEN",
+                    "path": ["node", "items", "nodes", 0, "content"],
+                    "message": "Resource not accessible by personal access token",
+                }
+            ],
+        }
+        transport = _make_transport(lambda req: _json_response(response))
+        client = _client(transport)
+        with pytest.raises(GitHubError):
+            client._query("query { ... }")
+
+    def test_root_auth_error_with_flag_on_raises_auth(self) -> None:
+        """A root-level auth error raises GitHubAuthError even with the
+        flag on (because it has no path)."""
+        response = {
+            "errors": [
+                {
+                    "type": "AUTHENTICATION",
+                    "message": "Authentication failed",
+                }
+            ],
+        }
+        transport = _make_transport(lambda req: _json_response(response, 200))
+        client = _client(transport)
+        with pytest.raises(GitHubAuthError):
+            client._query("query { ... }", tolerate_path_errors=True)
+
+    def test_multiple_path_only_errors_all_logged(self, caplog) -> None:
+        """All path-scoped errors are logged, not just the first one."""
+        response = {
+            "data": {"node": None},
+            "errors": [
+                {
+                    "type": "FORBIDDEN",
+                    "path": ["node", "items", "nodes", 0, "content"],
+                    "message": "First forbidden",
+                },
+                {
+                    "type": "FORBIDDEN",
+                    "path": ["node", "items", "nodes", 2, "content"],
+                    "message": "Second forbidden",
+                },
+            ],
+        }
+        transport = _make_transport(lambda req: _json_response(response))
+        client = _client(transport)
+
+        import logging
+
+        with caplog.at_level(logging.WARNING):
+            result = client._query("query { ... }", tolerate_path_errors=True)
+
+        assert result == response["data"]
+        assert len(caplog.records) == 2
+        assert all(r.levelno == logging.WARNING for r in caplog.records)
