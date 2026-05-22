@@ -15,10 +15,15 @@ if TYPE_CHECKING:
 
 
 # ---------------------------------------------------------------------------
-# Comment sentinel
+# Bot comment detection
 # ---------------------------------------------------------------------------
 
-BOT_COMMENT_SENTINEL = "<!-- symphony:bot -->"
+_BOT_MARKER = "*Symphony · "
+
+
+def is_bot_comment(body: str) -> bool:
+    """Return ``True`` if *body* contains the Symphony footer marker."""
+    return _BOT_MARKER in body
 
 
 # ---------------------------------------------------------------------------
@@ -108,15 +113,20 @@ class Tracker(Protocol):
         """
         ...
 
-    def post_comment(self, id: str, body: str) -> Comment:
+    def post_comment(self, id: str, body: str, kind: str) -> Comment:
         """Post a new comment on issue *id* with the given Markdown *body*.
 
+        *kind* is a user-facing label (e.g. ``"update"``, ``"serve"``)
+        that is composed into a visible footer appended to the comment.
         Returns the created comment.
         """
         ...
 
-    def edit_comment(self, id: str, body: str) -> None:
-        """Replace the body of an existing comment."""
+    def edit_comment(self, id: str, body: str, kind: str) -> None:
+        """Replace the body of an existing comment.
+
+        *kind* is a user-facing label composed into the visible footer.
+        """
         ...
 
     def transition_to(self, id: str, target: TransitionTarget) -> None:

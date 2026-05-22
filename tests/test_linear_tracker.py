@@ -207,18 +207,18 @@ class TestPostComment:
     def test_delegates(self, tracker: LinearTracker, linear_mock: MagicMock) -> None:
         comment = Comment(id="c-1", body="posted", createdAt="2025-01-01T00:00:00Z")
         linear_mock.post_comment.return_value = comment
-        result = tracker.post_comment("i-1", "posted")
+        result = tracker.post_comment("i-1", "posted", "test")
         assert result is comment
         linear_mock.post_comment.assert_called_once_with(
-            "i-1", "posted\n\n<!-- symphony:bot -->"
+            "i-1", "posted\n\n*Symphony · test*"
         )
 
 
 class TestEditComment:
     def test_delegates(self, tracker: LinearTracker, linear_mock: MagicMock) -> None:
-        tracker.edit_comment("c-1", "updated")
+        tracker.edit_comment("c-1", "updated", "test")
         linear_mock.edit_comment.assert_called_once_with(
-            "c-1", "updated\n\n<!-- symphony:bot -->"
+            "c-1", "updated\n\n*Symphony · test*"
         )
 
 

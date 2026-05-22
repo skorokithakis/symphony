@@ -1370,32 +1370,30 @@ class TestPostComment:
     def test_creates_and_returns_comment(
         self, tracker: GitHubTracker, client_mock: MagicMock
     ) -> None:
-        from symphony_linear.tracker import BOT_COMMENT_SENTINEL
-
         client_mock._query.return_value = {
             "addComment": {
                 "commentEdge": {
                     "node": {
                         "id": "c_new",
-                        "body": "hello world\n\n" + BOT_COMMENT_SENTINEL,
+                        "body": "hello world\n\n*Symphony · test*",
                         "createdAt": "2025-01-01T00:00:00Z",
                         "author": {"id": "U_bot123"},
                     }
                 }
             }
         }
-        comment = tracker.post_comment("I_1", "hello world")
+        comment = tracker.post_comment("I_1", "hello world", "test")
         assert comment.id == "c_new"
-        assert comment.body == "hello world\n\n" + BOT_COMMENT_SENTINEL
+        assert comment.body == "hello world\n\n*Symphony · test*"
         assert comment.user_id == "U_bot123"
 
-        # Verify the daemon actually submitted the body with the sentinel.
+        # Verify the daemon actually submitted the body with the footer.
         call_args = client_mock._query.call_args
         assert call_args is not None
         # call_args is ((query_str, variables_dict),) or ((query_str,), {'variables': ...})
         # GitHub tracker passes variables as a dict in the second positional arg.
         variables = call_args[0][1]
-        assert variables["input"]["body"] == "hello world\n\n" + BOT_COMMENT_SENTINEL
+        assert variables["input"]["body"] == "hello world\n\n*Symphony · test*"
 
     def test_no_comment_raises(
         self, tracker: GitHubTracker, client_mock: MagicMock
@@ -1404,24 +1402,22 @@ class TestPostComment:
             "addComment": {"commentEdge": {"node": None}}
         }
         with pytest.raises(GitHubError, match="no comment"):
-            tracker.post_comment("I_1", "x")
+            tracker.post_comment("I_1", "x", "test")
 
 
 class TestEditComment:
     def test_updates_successfully(
         self, tracker: GitHubTracker, client_mock: MagicMock
     ) -> None:
-        from symphony_linear.tracker import BOT_COMMENT_SENTINEL
-
         client_mock._query.return_value = {"updateIssueComment": {}}
         # Should not raise.
-        tracker.edit_comment("c_1", "updated body")
+        tracker.edit_comment("c_1", "updated body", "test")
 
-        # Verify the daemon submitted the body with the sentinel.
+        # Verify the daemon submitted the body with the footer.
         call_args = client_mock._query.call_args
         assert call_args is not None
         variables = call_args[0][1]
-        assert variables["input"]["body"] == "updated body\n\n" + BOT_COMMENT_SENTINEL
+        assert variables["input"]["body"] == "updated body\n\n*Symphony · test*"
 
 
 # ---------------------------------------------------------------------------
@@ -1869,9 +1865,9 @@ class TestBotCommentFiltering:
     def test_sentinel_based_filtering(
         self, tracker: GitHubTracker, client_mock: MagicMock
     ) -> None:
-        """Comments containing the bot sentinel are filtered out regardless
+        """Comments containing the bot footer marker are filtered out regardless
         of user_id."""
-        from symphony_linear.tracker import BOT_COMMENT_SENTINEL
+        from symphony_linear.tracker import is_bot_comment
 
         call_count = [0]
 
@@ -1884,7 +1880,7 @@ class TestBotCommentFiltering:
                     [
                         {
                             "id": "c_bot",
-                            "body": "bot reply\n\n" + BOT_COMMENT_SENTINEL,
+                            "body": "bot reply\n\n*Symphony · error*",
                             "createdAt": "2025-01-02T00:00:00Z",
                             "author": {"id": "U_bot_node_id"},
                         },
@@ -1901,8 +1897,8 @@ class TestBotCommentFiltering:
         client_mock._query.side_effect = side_effect
         comments = tracker.list_comments_since("I_1", None)
 
-        # Filter out bot comments the way the orchestrator does (by sentinel).
-        human = [c for c in comments if BOT_COMMENT_SENTINEL not in c.body]
+        # Filter out bot comments the way the orchestrator does (by footer marker).
+        human = [c for c in comments if not is_bot_comment(c.body)]
         assert len(human) == 1
         assert human[0].user_id == "U_human_node_id"
 

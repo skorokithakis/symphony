@@ -31,11 +31,11 @@ from symphony_linear.project_config import (
 )
 from symphony_linear.state import StateManager, TicketState, TicketStatus
 from symphony_linear.tracker import (
-    BOT_COMMENT_SENTINEL,
     Tracker,
     TrackerError,
     TrackerNotFoundError,
     TransitionTarget,
+    is_bot_comment,
 )
 from symphony_linear.webhook import WebhookServer
 from symphony_linear.workspace import (
@@ -74,16 +74,6 @@ def _build_metadata_comment(workspace_path: str) -> str:
 
 def _build_metadata_comment_final(workspace_path: str, session_id: str) -> str:
     return f"**Symphony**\n- workspace: `{workspace_path}`\n- session: `{session_id}`"
-
-
-def _with_context_footer(message: str, context_tokens: int | None) -> str:
-    """Append a context-window token count footer to *message* when available.
-
-    Returns *message* unchanged when *context_tokens* is ``None``.
-    """
-    if context_tokens is None:
-        return message
-    return f"{message}\n\n---\n_Context: {context_tokens:,} tokens_"
 
 
 def _build_initial_prompt(title: str, description: str | None) -> str:
@@ -250,6 +240,7 @@ class Orchestrator:
                         self._tracker.edit_comment(
                             ticket_state.metadata_comment_id,
                             _RESTART_NOTICE_BODY,
+                            "restart",
                         )
                     except Exception:
                         logger.exception(
@@ -277,7 +268,7 @@ class Orchestrator:
                 f"{self._tracker.human_trigger_description()} to stop."
             )
             try:
-                self._tracker.post_comment(tid, recovery_msg)
+                self._tracker.post_comment(tid, recovery_msg, "restart")
             except TrackerError:
                 logger.exception("Failed to post recovery comment for %s", tid)
                 return
@@ -481,7 +472,7 @@ class Orchestrator:
                 stderr_text = bytes(av.stderr_head).decode(errors="replace")
                 body = _format_serve_died_comment(rc, stdout_text, stderr_text)
                 try:
-                    self._tracker.post_comment(av.ticket_id, body)
+                    self._tracker.post_comment(av.ticket_id, body, "qa")
                 except Exception:
                     logger.exception(
                         "Failed to post serve-died comment for %s", av.ticket_id
@@ -548,6 +539,7 @@ class Orchestrator:
                 self._tracker.post_comment(
                     loser.id,
                     f"**Symphony**: Bumped out of QA — {winner.identifier} took over.",
+                    "qa",
                 )
             except TrackerError:
                 logger.exception("Failed to post bump comment for %s", loser.id)
@@ -680,7 +672,7 @@ class Orchestrator:
             logger.error(
                 "QA serve for %s exited with rc=%s within 10s", av.ticket_identifier, rc
             )
-            self._post_comment_safe(av.ticket_id, body)
+            self._post_comment_safe(av.ticket_id, body, kind="qa")
             av.failure_comment_posted = True
             # Transition the ticket out of QA so the next tick doesn't respawn the serve.
             try:
@@ -981,7 +973,7 @@ class Orchestrator:
         meta_comment: Comment | None = None
         meta_body = _build_metadata_comment(workspace_path)
         try:
-            meta_comment = self._tracker.post_comment(tid, meta_body)
+            meta_comment = self._tracker.post_comment(tid, meta_body, "workspace")
             ticket_state.metadata_comment_id = meta_comment.id
             with self._state_lock:
                 self._state.upsert(ticket_state)
@@ -1075,7 +1067,7 @@ class Orchestrator:
         if meta_comment is not None:
             try:
                 final_meta = _build_metadata_comment_final(workspace_path, session_id)
-                self._tracker.edit_comment(meta_comment.id, final_meta)
+                self._tracker.edit_comment(meta_comment.id, final_meta, "workspace")
             except Exception:
                 logger.exception("Failed to edit metadata comment for %s", tid)
 
@@ -1140,7 +1132,7 @@ class Orchestrator:
             logger.exception("Failed to fetch comments for %s", tid)
             return
 
-        human_comments = [c for c in new_comments if BOT_COMMENT_SENTINEL not in c.body]
+        human_comments = [c for c in new_comments if not is_bot_comment(c.body)]
         if not human_comments:
             logger.debug("No new human comments on %s", tid)
             return
@@ -1299,10 +1291,10 @@ class Orchestrator:
     # ==================================================================
 
     def _post_comment_safe(
-        self, tid: str, body: str, *, return_comment: bool = False
+        self, tid: str, body: str, *, return_comment: bool = False, kind: str = "error"
     ) -> Comment | None:
         try:
-            comment = self._tracker.post_comment(tid, body)
+            comment = self._tracker.post_comment(tid, body, kind)
             return comment if return_comment else None
         except Exception:
             logger.exception("Failed to post comment for %s", tid)
@@ -1314,9 +1306,12 @@ class Orchestrator:
         if self._is_cancelled(tid):
             return None
         body = final_message if final_message else "_(No output from the AI.)_"
-        body = _with_context_footer(body, context_tokens)
+        if context_tokens is not None:
+            kind = f"context: {context_tokens:,} tokens"
+        else:
+            kind = "final"
         try:
-            return self._tracker.post_comment(tid, body)
+            return self._tracker.post_comment(tid, body, kind)
         except Exception:
             logger.exception("Failed to post final message for %s", tid)
             with self._state_lock:
@@ -1381,7 +1376,7 @@ class Orchestrator:
         except Exception:
             logger.exception("Failed to list comments for %s", issue_id)
             return False
-        return any(BOT_COMMENT_SENTINEL not in c.body for c in comments)
+        return any(not is_bot_comment(c.body) for c in comments)
 
     # ==================================================================
     # Signal handling and shutdown

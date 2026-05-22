@@ -25,7 +25,6 @@ from symphony_linear.github import (
 from symphony_linear.linear import Comment, Issue
 from symphony_linear.state import StateManager
 from symphony_linear.tracker import (
-    BOT_COMMENT_SENTINEL,
     TrackerError,
     TransitionTarget,
 )
@@ -866,11 +865,9 @@ class GitHubTracker:
     # Tracker protocol — Write operations
     # ------------------------------------------------------------------
 
-    def post_comment(self, id: str, body: str) -> Comment:
+    def post_comment(self, id: str, body: str, kind: str) -> Comment:
         """Post a new comment on issue *id* and return it."""
-        # Append the sentinel so the daemon can recognise its own comments
-        # regardless of which user account owns the API token.
-        body_with_sentinel = body + "\n\n" + BOT_COMMENT_SENTINEL
+        body_with_footer = body + f"\n\n*Symphony · {kind}*"
         mutation = """\
         mutation($input: AddCommentInput!) {
           addComment(input: $input) {
@@ -893,7 +890,7 @@ class GitHubTracker:
         data = self._client._query(
             mutation,
             {
-                "input": {"subjectId": id, "body": body_with_sentinel},
+                "input": {"subjectId": id, "body": body_with_footer},
             },
         )
 
@@ -908,9 +905,9 @@ class GitHubTracker:
             user_id=(raw.get("author", {}).get("id") if raw.get("author") else None),
         )
 
-    def edit_comment(self, id: str, body: str) -> None:
+    def edit_comment(self, id: str, body: str, kind: str) -> None:
         """Replace the body of an existing comment."""
-        body_with_sentinel = body + "\n\n" + BOT_COMMENT_SENTINEL
+        body_with_footer = body + f"\n\n*Symphony · {kind}*"
         mutation = """\
         mutation($input: UpdateIssueCommentInput!) {
           updateIssueComment(input: $input) {
@@ -921,7 +918,7 @@ class GitHubTracker:
         self._client._query(
             mutation,
             {
-                "input": {"id": id, "body": body_with_sentinel},
+                "input": {"id": id, "body": body_with_footer},
             },
         )
 

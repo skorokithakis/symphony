@@ -14,7 +14,6 @@ from symphony_linear.linear import Comment, Issue, LinearClient
 from symphony_linear.provisioning import provision_trigger_label
 from symphony_linear.state import StateManager
 from symphony_linear.tracker import (
-    BOT_COMMENT_SENTINEL,
     TrackerError,
     TransitionTarget,
 )
@@ -108,11 +107,11 @@ class LinearTracker:
     def list_comments_since(self, id: str, last_seen: str | None) -> list[Comment]:
         return self._linear.list_comments_since(id, last_seen)
 
-    def post_comment(self, id: str, body: str) -> Comment:
-        return self._linear.post_comment(id, body + "\n\n" + BOT_COMMENT_SENTINEL)
+    def post_comment(self, id: str, body: str, kind: str) -> Comment:
+        return self._linear.post_comment(id, body + f"\n\n*Symphony · {kind}*")
 
-    def edit_comment(self, id: str, body: str) -> None:
-        self._linear.edit_comment(id, body + "\n\n" + BOT_COMMENT_SENTINEL)
+    def edit_comment(self, id: str, body: str, kind: str) -> None:
+        self._linear.edit_comment(id, body + f"\n\n*Symphony · {kind}*")
 
     def transition_to(self, id: str, target: TransitionTarget) -> None:
         state_map: dict[TransitionTarget, str | None] = {

@@ -567,12 +567,8 @@ class TestNewTicketPipeline:
             body for tid, body in post_calls if "I have done the work." in body
         ]
         assert len(final_bodies) == 1
-        from symphony_linear.tracker import BOT_COMMENT_SENTINEL
 
-        expected = (
-            "I have done the work.\n\n---\n_Context: 37,074 tokens_\n\n"
-            + BOT_COMMENT_SENTINEL
-        )
+        expected = "I have done the work.\n\n*Symphony · context: 37,074 tokens*"
         assert final_bodies[0] == expected
 
     def test_context_tokens_none_no_footer(
@@ -614,11 +610,8 @@ class TestNewTicketPipeline:
             body for tid, body in post_calls if "I have done the work." in body
         ]
         assert len(final_bodies) == 1
-        # Footer must NOT be present.
-        assert "---\n_Context:" not in final_bodies[0]
-        from symphony_linear.tracker import BOT_COMMENT_SENTINEL
 
-        assert final_bodies[0] == "I have done the work.\n\n" + BOT_COMMENT_SENTINEL
+        assert final_bodies[0] == "I have done the work.\n\n*Symphony · final*"
 
     def test_context_tokens_comma_format(
         self, orchestrator: Orchestrator, linear: FakeLinearClient
@@ -657,7 +650,7 @@ class TestNewTicketPipeline:
         post_calls = linear.calls.get("post_comment", [])
         final_bodies = [body for tid, body in post_calls if "Done." in body]
         assert len(final_bodies) == 1
-        assert "_Context: 1,234,567 tokens_" in final_bodies[0]
+        assert "*Symphony · context: 1,234,567 tokens*" in final_bodies[0]
 
 
 # ---------------------------------------------------------------------------
@@ -917,14 +910,13 @@ class TestResumePipeline:
     def test_bot_comments_filtered(
         self, orchestrator: Orchestrator, linear: FakeLinearClient
     ) -> None:
-        from symphony_linear.tracker import BOT_COMMENT_SENTINEL
 
         ts = self._make_ts()
         orchestrator._state.upsert(ts)
         linear.set_response(
             "list_comments_since",
             [
-                _make_comment("c1", "Bot\n\n" + BOT_COMMENT_SENTINEL, "usr-bot"),
+                _make_comment("c1", "Bot\n\n*Symphony · error*", "usr-bot"),
                 _make_comment("c2", "Human", "usr-human"),
             ],
         )
@@ -1023,9 +1015,8 @@ class TestResumePipeline:
         post_calls = linear.calls.get("post_comment", [])
         final_bodies = [body for tid, body in post_calls if "Done!" in body]
         assert len(final_bodies) == 1
-        from symphony_linear.tracker import BOT_COMMENT_SENTINEL
 
-        expected = "Done!\n\n---\n_Context: 37,074 tokens_\n\n" + BOT_COMMENT_SENTINEL
+        expected = "Done!\n\n*Symphony · context: 37,074 tokens*"
         assert final_bodies[0] == expected
 
     def test_context_tokens_none_no_footer(
@@ -1050,11 +1041,8 @@ class TestResumePipeline:
         post_calls = linear.calls.get("post_comment", [])
         final_bodies = [body for tid, body in post_calls if "Done!" in body]
         assert len(final_bodies) == 1
-        # Footer must NOT be present.
-        assert "---\n_Context:" not in final_bodies[0]
-        from symphony_linear.tracker import BOT_COMMENT_SENTINEL
 
-        assert final_bodies[0] == "Done!\n\n" + BOT_COMMENT_SENTINEL
+        assert final_bodies[0] == "Done!\n\n*Symphony · final*"
 
     def test_context_tokens_comma_format(
         self, orchestrator: Orchestrator, linear: FakeLinearClient
@@ -1078,7 +1066,7 @@ class TestResumePipeline:
         post_calls = linear.calls.get("post_comment", [])
         final_bodies = [body for tid, body in post_calls if "OK" in body]
         assert len(final_bodies) == 1
-        assert "_Context: 1,234,567 tokens_" in final_bodies[0]
+        assert "*Symphony · context: 1,234,567 tokens*" in final_bodies[0]
 
 
 # ---------------------------------------------------------------------------
@@ -1727,7 +1715,6 @@ class TestTick:
         linear: FakeLinearClient,
     ) -> None:
         """QA ticket with only a bot comment → run_resume not called."""
-        from symphony_linear.tracker import BOT_COMMENT_SENTINEL
 
         config = _make_config(tmp_path, linear={"qa_state": "In Review"})
         orch = Orchestrator(
@@ -1755,7 +1742,7 @@ class TestTick:
             "list_comments_since",
             [
                 _make_comment(
-                    "c1", "Bot message\n\n" + BOT_COMMENT_SENTINEL, user_id="usr-bot"
+                    "c1", "Bot message\n\n*Symphony · error*", user_id="usr-bot"
                 ),
             ],
         )
@@ -1870,7 +1857,7 @@ class TestStartupRecovery:
         assert edit_calls[0] == (
             "cmt-meta-1",
             "**Symphony**: Restarted before setup completed. "
-            "Picking this ticket up again on the next poll.\n\n<!-- symphony:bot -->",
+            "Picking this ticket up again on the next poll.\n\n*Symphony · restart*",
         )
 
     def test_bootstrapping_without_metadata_no_linear_call(
