@@ -65,6 +65,13 @@ linear:
 #   # ticket into this status bumps the previous one back to needs_input_status.
 #   # Omit to disable the feature entirely.
 #   # qa_status: QA
+#
+#   # Protocol used to clone repositories (default: ssh). Set to https if
+#   # your organization enforces MFA on SSH. HTTPS requires the operator
+#   # to have git credentials set up on the host (e.g. via `gh auth login`
+#   # or a credential helper) since git ops run outside the sandbox under
+#   # the daemon user's identity.
+#   # clone_protocol: ssh
 
 sandbox:
   # Paths to conceal inside the sandbox (defaults shown below).
