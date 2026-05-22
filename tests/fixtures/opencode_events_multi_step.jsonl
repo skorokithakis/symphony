@@ -1,0 +1,6 @@
+{"type":"step_start","sessionID":"ses_test","part":{"id":"prt_1","messageID":"msg_1","sessionID":"ses_test","type":"step-start"}}
+{"type":"text","sessionID":"ses_test","part":{"id":"prt_2","messageID":"msg_1","sessionID":"ses_test","type":"text","text":"First turn."}}
+{"type":"step_finish","sessionID":"ses_test","part":{"id":"prt_3","reason":"stop","messageID":"msg_1","sessionID":"ses_test","type":"step-finish","tokens":{"total":100,"input":20,"output":15,"reasoning":0,"cache":{"write":65,"read":0}},"cost":0.001}}
+{"type":"step_start","sessionID":"ses_test","part":{"id":"prt_4","messageID":"msg_2","sessionID":"ses_test","type":"step-start"}}
+{"type":"text","sessionID":"ses_test","part":{"id":"prt_5","messageID":"msg_2","sessionID":"ses_test","type":"text","text":"Second turn."}}
+{"type":"step_finish","sessionID":"ses_test","part":{"id":"prt_6","reason":"stop","messageID":"msg_2","sessionID":"ses_test","type":"step-finish","tokens":{"total":200,"input":30,"output":25,"reasoning":0,"cache":{"write":145,"read":0}},"cost":0.002}}

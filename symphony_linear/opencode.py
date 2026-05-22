@@ -1,7 +1,8 @@
 """OpenCode adapter for symphony-lite.
 
-Launches OpenCode inside the bwrap sandbox and extracts the session ID and
-final assistant message from the JSON event stream.
+Launches OpenCode inside the bwrap sandbox and extracts the session ID,
+final assistant message, and context-window token count from the
+JSON event stream.
 
 -------------------------------------------------------------------------------
 Event stream format (NDJSON — one JSON object per line, on stdout)
@@ -45,7 +46,16 @@ is a single JSON object.  The events observed during testing were:
         "messageID": "msg_...",
         "sessionID": "ses_...",
         "type": "step-finish",
-        "tokens": { ... },
+        "tokens": {
+          "input": 12345,          -- prompt tokens consumed
+          "output": 200,           -- completion tokens generated
+          "total": 12545,
+          "reasoning": 0,
+          "cache": {
+            "read": 5000,          -- tokens read from semantic cache
+            "write": 10000         -- tokens written to semantic cache
+          }
+        },
         "cost": 0.123
       }
     }
@@ -90,6 +100,25 @@ Key observations:
   that we include in ``OpenCodeError``.
 - The stream is always valid line-delimited JSON.  Corrupt lines are logged
   and skipped.
+
+-------------------------------------------------------------------------------
+Context tokens
+-------------------------------------------------------------------------------
+
+The *context token count* estimates the number of tokens the model is
+processing in its context window at the end of the turn.  It is computed from
+the last ``step_finish`` event's ``tokens`` fields:
+
+    context_tokens = input + cache.read + cache.write
+
+- ``input``: prompt tokens consumed in this turn.
+- ``cache.read``: tokens read from the semantic cache (previously cached context).
+- ``cache.write``: tokens written to the semantic cache (newly cached context).
+
+Missing keys default to 0 (including the ``cache`` sub-dict).  If no
+``step_finish`` event appeared in the stream, the context token count is
+``None``.  Only the last ``step_finish`` event is used; sub-agent events
+are not distinguished.
 
 -------------------------------------------------------------------------------
 Design notes
@@ -147,9 +176,9 @@ def run_initial(
     on_subprocess: Callable[[subprocess.Popen[bytes]], None],
     hide_paths: list[str] | None = None,
     extra_rw_paths: list[str] | None = None,
-) -> tuple[str, str]:
+) -> tuple[str, str, int | None]:
     """Launch OpenCode for a new session with *prompt* and return the session
-    id and final assistant message.
+    id, final assistant message, and context-window token count.
 
     Args:
         workspace_path: Path to the workspace directory (host side; will be
@@ -167,7 +196,8 @@ def run_initial(
             sandbox.  Defaults to empty list.
 
     Returns:
-        A tuple of ``(session_id, final_message)``.
+        A tuple of ``(session_id, final_message, context_tokens)`` where
+        *context_tokens* is ``int`` or ``None``.
 
     Raises:
         OpenCodeError: The subprocess exited with a non-zero code.
@@ -204,7 +234,7 @@ def run_resume(
     on_subprocess: Callable[[subprocess.Popen[bytes]], None],
     hide_paths: list[str] | None = None,
     extra_rw_paths: list[str] | None = None,
-) -> str:
+) -> tuple[str, int | None]:
     """Resume an existing OpenCode session with a follow-up *message*.
 
     The model is determined by the existing session and is not passed on the
@@ -223,7 +253,8 @@ def run_resume(
             sandbox.  Defaults to empty list.
 
     Returns:
-        The final assistant message for the turn.
+        A tuple of ``(final_message, context_tokens)`` where *context_tokens*
+        is ``int`` or ``None``.
 
     Raises:
         OpenCodeError: The subprocess exited with a non-zero code.
@@ -244,7 +275,7 @@ def run_resume(
         message,
     ]
 
-    _, final_message = _execute(
+    _, final_message, context_tokens = _execute(
         cmd=cmd,
         workspace_path=workspace_path,
         timeout_seconds=timeout_seconds,
@@ -252,7 +283,7 @@ def run_resume(
         hide_paths=hide_paths or [],
         extra_rw_paths=extra_rw_paths or [],
     )
-    return final_message
+    return final_message, context_tokens
 
 
 # ---------------------------------------------------------------------------
@@ -267,10 +298,10 @@ def _execute(
     on_subprocess: Callable[[subprocess.Popen[bytes]], None],
     hide_paths: list[str] | None = None,
     extra_rw_paths: list[str] | None = None,
-) -> tuple[str, str]:
+) -> tuple[str, str, int | None]:
     """Launch *cmd* inside the sandbox and parse the JSON event stream.
 
-    Returns ``(session_id, final_message)``.
+    Returns ``(session_id, final_message, context_tokens)``.
     """
     home = str(Path.home())
 
@@ -342,8 +373,10 @@ def _execute(
 
             parsed_events.append(event)
 
-            # step_finish marks the end of the turn — we can stop reading
-            # (though we've already read everything since communicate returned).
+        # ------------------------------------------------------------------
+        # Extract context tokens from the last step_finish.
+        # ------------------------------------------------------------------
+        context_tokens = _extract_context_tokens(parsed_events)
 
         # ------------------------------------------------------------------
         # Validate.
@@ -369,7 +402,7 @@ def _execute(
 
         final_message = _assemble_message(parsed_events)
 
-        return session_id, final_message
+        return session_id, final_message, context_tokens
 
     finally:
         # Ensure the process is reaped if not already.
@@ -416,6 +449,44 @@ def _assemble_message(events: list[dict]) -> str:
             # If neither title nor tool is available, skip the event.
 
     return "\n\n".join(segments).strip()
+
+
+def _extract_context_tokens(events: list[dict]) -> int | None:
+    """Compute the context-window token count from the last ``step_finish``.
+
+    Returns the sum of ``input`` + ``cache.read`` + ``cache.write`` from the
+    most recent ``step_finish`` event's ``tokens`` dict.  Missing keys and a
+    missing ``cache`` sub-dict each default to 0.
+
+    Returns ``None`` only when no ``step_finish`` event was seen at all.
+    When a ``step_finish`` exists but its token data is missing or malformed,
+    it yields 0 (all missing fields default to 0).
+    """
+    last_tokens: dict = {}
+    found = False
+    for event in reversed(events):
+        if event.get("type") == "step_finish":
+            found = True
+            part = event.get("part")
+            if not isinstance(part, dict):
+                part = {}
+            tokens = part.get("tokens")
+            if isinstance(tokens, dict):
+                last_tokens = tokens
+            break
+
+    if not found:
+        return None
+
+    input_tokens = last_tokens.get("input", 0) or 0
+    cache = last_tokens.get("cache")
+    if isinstance(cache, dict):
+        cache_read = cache.get("read", 0) or 0
+        cache_write = cache.get("write", 0) or 0
+    else:
+        cache_read = 0
+        cache_write = 0
+    return input_tokens + cache_read + cache_write
 
 
 def _tail(text: str, lines: int = 30) -> str:

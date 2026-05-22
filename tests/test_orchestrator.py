@@ -231,7 +231,7 @@ class TestNewTicketPipeline:
         mock_clone.return_value = "/tmp/workspaces/TEAM-1"
         mock_finalize.return_value = None
         mock_load_config.return_value = ProjectConfig()
-        mock_run_initial.return_value = ("ses-abc", "I have done the work.")
+        mock_run_initial.return_value = ("ses-abc", "I have done the work.", None)
         linear.set_response(
             "get_project",
             Project(
@@ -438,7 +438,7 @@ class TestNewTicketPipeline:
             ),
             mock.patch(
                 "symphony_linear.orchestrator.run_initial",
-                return_value=("ses-abc", "done"),
+                return_value=("ses-abc", "done", None),
             ),
         ):
             orchestrator._new_ticket_pipeline(_make_issue())
@@ -526,6 +526,139 @@ class TestNewTicketPipeline:
         assert ts.branch == ""  # auto_branch=False override preserved
         assert ts.status == TicketStatus.failed
 
+    # --- Context-tokens footer (new-ticket pipeline) ---
+
+    def test_context_tokens_footer_appended(
+        self, orchestrator: Orchestrator, linear: FakeLinearClient
+    ) -> None:
+        """Footer with comma-formatted context tokens is appended to final message."""
+        linear.set_response(
+            "get_project",
+            Project(
+                id="proj-1",
+                name="Test",
+                links=[
+                    ProjectLink(label="Repo", url="https://github.com/org/repo.git")
+                ],
+            ),
+        )
+        linear.set_response("get_issue", _make_issue(description="Fix"))
+        with (
+            mock.patch(
+                "symphony_linear.orchestrator.clone_workspace",
+                return_value="/tmp/ws/TEAM-1",
+            ),
+            mock.patch(
+                "symphony_linear.orchestrator.finalize_workspace",
+            ),
+            mock.patch(
+                "symphony_linear.orchestrator.load_project_config",
+                return_value=ProjectConfig(),
+            ),
+            mock.patch(
+                "symphony_linear.orchestrator.run_initial",
+                return_value=("ses-abc", "I have done the work.", 37074),
+            ),
+        ):
+            orchestrator._new_ticket_pipeline(_make_issue())
+
+        post_calls = linear.calls.get("post_comment", [])
+        final_bodies = [
+            body for tid, body in post_calls if "I have done the work." in body
+        ]
+        assert len(final_bodies) == 1
+        from symphony_linear.tracker import BOT_COMMENT_SENTINEL
+
+        expected = (
+            "I have done the work.\n\n---\n_Context: 37,074 tokens_\n\n"
+            + BOT_COMMENT_SENTINEL
+        )
+        assert final_bodies[0] == expected
+
+    def test_context_tokens_none_no_footer(
+        self, orchestrator: Orchestrator, linear: FakeLinearClient
+    ) -> None:
+        """When context_tokens is None, no footer is appended."""
+        linear.set_response(
+            "get_project",
+            Project(
+                id="proj-1",
+                name="Test",
+                links=[
+                    ProjectLink(label="Repo", url="https://github.com/org/repo.git")
+                ],
+            ),
+        )
+        linear.set_response("get_issue", _make_issue(description="Fix"))
+        with (
+            mock.patch(
+                "symphony_linear.orchestrator.clone_workspace",
+                return_value="/tmp/ws/TEAM-1",
+            ),
+            mock.patch(
+                "symphony_linear.orchestrator.finalize_workspace",
+            ),
+            mock.patch(
+                "symphony_linear.orchestrator.load_project_config",
+                return_value=ProjectConfig(),
+            ),
+            mock.patch(
+                "symphony_linear.orchestrator.run_initial",
+                return_value=("ses-abc", "I have done the work.", None),
+            ),
+        ):
+            orchestrator._new_ticket_pipeline(_make_issue())
+
+        post_calls = linear.calls.get("post_comment", [])
+        final_bodies = [
+            body for tid, body in post_calls if "I have done the work." in body
+        ]
+        assert len(final_bodies) == 1
+        # Footer must NOT be present.
+        assert "---\n_Context:" not in final_bodies[0]
+        from symphony_linear.tracker import BOT_COMMENT_SENTINEL
+
+        assert final_bodies[0] == "I have done the work.\n\n" + BOT_COMMENT_SENTINEL
+
+    def test_context_tokens_comma_format(
+        self, orchestrator: Orchestrator, linear: FakeLinearClient
+    ) -> None:
+        """Context token count is comma-formatted with thousands separators."""
+        linear.set_response(
+            "get_project",
+            Project(
+                id="proj-1",
+                name="Test",
+                links=[
+                    ProjectLink(label="Repo", url="https://github.com/org/repo.git")
+                ],
+            ),
+        )
+        linear.set_response("get_issue", _make_issue(description="Fix"))
+        with (
+            mock.patch(
+                "symphony_linear.orchestrator.clone_workspace",
+                return_value="/tmp/ws/TEAM-1",
+            ),
+            mock.patch(
+                "symphony_linear.orchestrator.finalize_workspace",
+            ),
+            mock.patch(
+                "symphony_linear.orchestrator.load_project_config",
+                return_value=ProjectConfig(),
+            ),
+            mock.patch(
+                "symphony_linear.orchestrator.run_initial",
+                return_value=("ses-abc", "Done.", 1_234_567),
+            ),
+        ):
+            orchestrator._new_ticket_pipeline(_make_issue())
+
+        post_calls = linear.calls.get("post_comment", [])
+        final_bodies = [body for tid, body in post_calls if "Done." in body]
+        assert len(final_bodies) == 1
+        assert "_Context: 1,234,567 tokens_" in final_bodies[0]
+
 
 # ---------------------------------------------------------------------------
 # Project config integration in new-ticket pipeline
@@ -562,7 +695,7 @@ class TestNewTicketProjectConfig:
             ),
             mock.patch(
                 "symphony_linear.orchestrator.run_initial",
-                return_value=("ses-abc", "done"),
+                return_value=("ses-abc", "done", None),
             ),
         ):
             orchestrator._new_ticket_pipeline(_make_issue())
@@ -606,7 +739,7 @@ class TestNewTicketProjectConfig:
             ),
             mock.patch(
                 "symphony_linear.orchestrator.run_initial",
-                return_value=("ses-abc", "done"),
+                return_value=("ses-abc", "done", None),
             ),
         ):
             orchestrator._new_ticket_pipeline(_make_issue())
@@ -648,7 +781,7 @@ class TestNewTicketProjectConfig:
             ),
             mock.patch(
                 "symphony_linear.orchestrator.run_initial",
-                return_value=("ses-abc", "done"),
+                return_value=("ses-abc", "done", None),
             ) as mock_run_initial,
         ):
             orchestrator._new_ticket_pipeline(_make_issue())
@@ -724,7 +857,7 @@ class TestNewTicketProjectConfig:
             ),
             mock.patch(
                 "symphony_linear.orchestrator.run_initial",
-                return_value=("ses-abc", "done"),
+                return_value=("ses-abc", "done", None),
             ) as mock_run_initial,
         ):
             orchestrator._new_ticket_pipeline(_make_issue())
@@ -773,7 +906,9 @@ class TestResumePipeline:
                 "symphony_linear.orchestrator.load_project_config",
                 return_value=ProjectConfig(),
             ),
-            mock.patch("symphony_linear.orchestrator.run_resume", return_value="Done!"),
+            mock.patch(
+                "symphony_linear.orchestrator.run_resume", return_value=("Done!", None)
+            ),
         ):
             orchestrator._resume_pipeline(ts)
         updated = orchestrator._state.get("ticket-1")
@@ -799,7 +934,7 @@ class TestResumePipeline:
                 return_value=ProjectConfig(),
             ),
             mock.patch(
-                "symphony_linear.orchestrator.run_resume", return_value="Done!"
+                "symphony_linear.orchestrator.run_resume", return_value=("Done!", None)
             ) as m,
         ):
             orchestrator._resume_pipeline(ts)
@@ -864,6 +999,87 @@ class TestResumePipeline:
             orchestrator._resume_pipeline(updated)
         m.assert_not_called()
 
+    # --- Context-tokens footer (resume pipeline) ---
+
+    def test_context_tokens_footer_appended(
+        self, orchestrator: Orchestrator, linear: FakeLinearClient
+    ) -> None:
+        """Footer with comma-formatted context tokens is appended to resume final message."""
+        ts = self._make_ts()
+        orchestrator._state.upsert(ts)
+        linear.set_response("list_comments_since", [_make_comment("c1", "Fix please")])
+        with (
+            mock.patch(
+                "symphony_linear.orchestrator.load_project_config",
+                return_value=ProjectConfig(),
+            ),
+            mock.patch(
+                "symphony_linear.orchestrator.run_resume",
+                return_value=("Done!", 37074),
+            ),
+        ):
+            orchestrator._resume_pipeline(ts)
+
+        post_calls = linear.calls.get("post_comment", [])
+        final_bodies = [body for tid, body in post_calls if "Done!" in body]
+        assert len(final_bodies) == 1
+        from symphony_linear.tracker import BOT_COMMENT_SENTINEL
+
+        expected = "Done!\n\n---\n_Context: 37,074 tokens_\n\n" + BOT_COMMENT_SENTINEL
+        assert final_bodies[0] == expected
+
+    def test_context_tokens_none_no_footer(
+        self, orchestrator: Orchestrator, linear: FakeLinearClient
+    ) -> None:
+        """When context_tokens is None on resume, no footer is appended."""
+        ts = self._make_ts()
+        orchestrator._state.upsert(ts)
+        linear.set_response("list_comments_since", [_make_comment("c1", "Fix please")])
+        with (
+            mock.patch(
+                "symphony_linear.orchestrator.load_project_config",
+                return_value=ProjectConfig(),
+            ),
+            mock.patch(
+                "symphony_linear.orchestrator.run_resume",
+                return_value=("Done!", None),
+            ),
+        ):
+            orchestrator._resume_pipeline(ts)
+
+        post_calls = linear.calls.get("post_comment", [])
+        final_bodies = [body for tid, body in post_calls if "Done!" in body]
+        assert len(final_bodies) == 1
+        # Footer must NOT be present.
+        assert "---\n_Context:" not in final_bodies[0]
+        from symphony_linear.tracker import BOT_COMMENT_SENTINEL
+
+        assert final_bodies[0] == "Done!\n\n" + BOT_COMMENT_SENTINEL
+
+    def test_context_tokens_comma_format(
+        self, orchestrator: Orchestrator, linear: FakeLinearClient
+    ) -> None:
+        """Context token count is comma-formatted with thousands separators on resume."""
+        ts = self._make_ts()
+        orchestrator._state.upsert(ts)
+        linear.set_response("list_comments_since", [_make_comment("c1", "Fix please")])
+        with (
+            mock.patch(
+                "symphony_linear.orchestrator.load_project_config",
+                return_value=ProjectConfig(),
+            ),
+            mock.patch(
+                "symphony_linear.orchestrator.run_resume",
+                return_value=("OK", 1_234_567),
+            ),
+        ):
+            orchestrator._resume_pipeline(ts)
+
+        post_calls = linear.calls.get("post_comment", [])
+        final_bodies = [body for tid, body in post_calls if "OK" in body]
+        assert len(final_bodies) == 1
+        assert "_Context: 1,234,567 tokens_" in final_bodies[0]
+
 
 # ---------------------------------------------------------------------------
 # Project config integration in resume pipeline
@@ -899,7 +1115,7 @@ class TestResumeProjectConfig:
                 return_value=ProjectConfig(turn_timeout_seconds=90),
             ),
             mock.patch(
-                "symphony_linear.orchestrator.run_resume", return_value="Done!"
+                "symphony_linear.orchestrator.run_resume", return_value=("Done!", None)
             ) as mock_run_resume,
         ):
             orchestrator._resume_pipeline(ts)
@@ -970,7 +1186,7 @@ class TestResumeProjectConfig:
                 return_value=ProjectConfig(),  # empty → fall back
             ),
             mock.patch(
-                "symphony_linear.orchestrator.run_resume", return_value="Done!"
+                "symphony_linear.orchestrator.run_resume", return_value=("Done!", None)
             ) as mock_run_resume,
         ):
             orchestrator._resume_pipeline(ts)
@@ -990,7 +1206,7 @@ class TestResumeProjectConfig:
             return_value=ProjectConfig(),
         ) as mock_load:
             with mock.patch(
-                "symphony_linear.orchestrator.run_resume", return_value="Done!"
+                "symphony_linear.orchestrator.run_resume", return_value=("Done!", None)
             ):
                 orchestrator._resume_pipeline(ts)
         mock_load.assert_called_once_with("/tmp/ws/TEAM-1")
@@ -1722,10 +1938,10 @@ class TestCancellation:
 
         done = threading.Event()
 
-        def slow_run_initial(*a: Any, **kw: Any) -> tuple[str, str]:
+        def slow_run_initial(*a: Any, **kw: Any) -> tuple[str, str, int | None]:
             done.set()
             time.sleep(0.3)
-            return ("ses-x", "out")
+            return ("ses-x", "out", None)
 
         with (
             mock.patch(
@@ -1795,7 +2011,8 @@ class TestHidePaths:
                 return_value=ProjectConfig(),
             ),
             mock.patch(
-                "symphony_linear.orchestrator.run_initial", return_value=("ses", "msg")
+                "symphony_linear.orchestrator.run_initial",
+                return_value=("ses", "msg", None),
             ) as m_oc,
         ):
             orchestrator._new_ticket_pipeline(_make_issue())
@@ -1823,7 +2040,7 @@ class TestHidePaths:
                 return_value=ProjectConfig(),
             ),
             mock.patch(
-                "symphony_linear.orchestrator.run_resume", return_value="Done!"
+                "symphony_linear.orchestrator.run_resume", return_value=("Done!", None)
             ) as m_oc,
         ):
             orchestrator._resume_pipeline(ts)
@@ -1865,7 +2082,8 @@ class TestExtraRWPaths:
                 return_value=ProjectConfig(),
             ),
             mock.patch(
-                "symphony_linear.orchestrator.run_initial", return_value=("ses", "msg")
+                "symphony_linear.orchestrator.run_initial",
+                return_value=("ses", "msg", None),
             ),
         ):
             orchestrator._new_ticket_pipeline(_make_issue())
@@ -1899,7 +2117,8 @@ class TestExtraRWPaths:
                 return_value=ProjectConfig(),
             ),
             mock.patch(
-                "symphony_linear.orchestrator.run_initial", return_value=("ses", "msg")
+                "symphony_linear.orchestrator.run_initial",
+                return_value=("ses", "msg", None),
             ) as m_oc,
         ):
             orchestrator._new_ticket_pipeline(_make_issue())
@@ -1927,7 +2146,7 @@ class TestExtraRWPaths:
                 return_value=ProjectConfig(),
             ),
             mock.patch(
-                "symphony_linear.orchestrator.run_resume", return_value="Done!"
+                "symphony_linear.orchestrator.run_resume", return_value=("Done!", None)
             ) as m_oc,
         ):
             orchestrator._resume_pipeline(ts)
@@ -2834,9 +3053,9 @@ class TestFix2CancelledAgentGuards:
         linear.set_response("get_issue", _make_issue(description="Fix"))
 
         # Cancel the ticket inside run_initial (before edit_comment).
-        def cancel_then_return(*a: Any, **kw: Any) -> tuple[str, str]:
+        def cancel_then_return(*a: Any, **kw: Any) -> tuple[str, str, int | None]:
             orchestrator._cancel_ticket("ticket-1")
-            return ("ses-abc", "Done!")
+            return ("ses-abc", "Done!", None)
 
         with (
             mock.patch(
@@ -2878,9 +3097,9 @@ class TestFix2CancelledAgentGuards:
         )
         linear.set_response("get_issue", _make_issue(description="Fix"))
 
-        def cancel_then_return(*a: Any, **kw: Any) -> tuple[str, str]:
+        def cancel_then_return(*a: Any, **kw: Any) -> tuple[str, str, int | None]:
             orchestrator._cancel_ticket("ticket-1")
-            return ("ses-abc", "Done!")
+            return ("ses-abc", "Done!", None)
 
         with (
             mock.patch(
@@ -2925,9 +3144,9 @@ class TestFix2CancelledAgentGuards:
         orchestrator._state.upsert(ts)
         linear.set_response("list_comments_since", [_make_comment("c1", "Go")])
 
-        def cancel_then_return(*a: Any, **kw: Any) -> str:
+        def cancel_then_return(*a: Any, **kw: Any) -> tuple[str, int | None]:
             orchestrator._cancel_ticket("ticket-1")
-            return "Done!"
+            return ("Done!", None)
 
         with (
             mock.patch(
@@ -3228,9 +3447,9 @@ class TestCorrection3:
         linear.set_response("get_issue", _make_issue(description="Fix"))
 
         # Cancel the ticket after run_initial returns but before transition.
-        def cancel_then_return(*a: Any, **kw: Any) -> tuple[str, str]:
+        def cancel_then_return(*a: Any, **kw: Any) -> tuple[str, str, int | None]:
             orchestrator._cancel_ticket("ticket-1")
-            return ("ses-abc", "Done!")
+            return ("ses-abc", "Done!", None)
 
         with (
             mock.patch(
@@ -3284,9 +3503,9 @@ class TestCorrection3:
         orchestrator._state.upsert(ts)
         linear.set_response("list_comments_since", [_make_comment("c1", "Go")])
 
-        def cancel_then_return(*a: Any, **kw: Any) -> str:
+        def cancel_then_return(*a: Any, **kw: Any) -> tuple[str, int | None]:
             orchestrator._cancel_ticket("ticket-1")
-            return "Done!"
+            return ("Done!", None)
 
         with (
             mock.patch(
@@ -3675,7 +3894,7 @@ class TestIntegration:
 
         with mock.patch(
             "symphony_linear.orchestrator.run_initial",
-            return_value=("ses-int", "Done."),
+            return_value=("ses-int", "Done.", None),
         ):
             orch._new_ticket_pipeline(_make_issue())
 

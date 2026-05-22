@@ -76,6 +76,16 @@ def _build_metadata_comment_final(workspace_path: str, session_id: str) -> str:
     return f"**Symphony**\n- workspace: `{workspace_path}`\n- session: `{session_id}`"
 
 
+def _with_context_footer(message: str, context_tokens: int | None) -> str:
+    """Append a context-window token count footer to *message* when available.
+
+    Returns *message* unchanged when *context_tokens* is ``None``.
+    """
+    if context_tokens is None:
+        return message
+    return f"{message}\n\n---\n_Context: {context_tokens:,} tokens_"
+
+
 def _build_initial_prompt(title: str, description: str | None) -> str:
     desc = description.strip() if description else "(no description)"
     return (
@@ -1006,7 +1016,7 @@ class Orchestrator:
         )
 
         try:
-            session_id, final_message = run_initial(
+            session_id, final_message, _context_tokens = run_initial(
                 workspace_path=workspace_path,
                 prompt=prompt,
                 timeout_seconds=effective_turn_timeout,
@@ -1080,7 +1090,7 @@ class Orchestrator:
             return
 
         # --- Post final message ---
-        last_comment = self._post_final_message(tid, final_message)
+        last_comment = self._post_final_message(tid, final_message, _context_tokens)
         if last_comment is None:
             return  # state saved as failed inside _post_final_message
         ticket_state.last_seen_comment_id = last_comment.id
@@ -1198,7 +1208,7 @@ class Orchestrator:
         )
 
         try:
-            final_message = run_resume(
+            final_message, _context_tokens = run_resume(
                 workspace_path=ticket_state.workspace_path,
                 session_id=ticket_state.session_id or "",
                 message=message,
@@ -1252,7 +1262,7 @@ class Orchestrator:
             logger.info("Ticket %s cancelled before final message — skipping", tid)
             return
 
-        last_comment = self._post_final_message(tid, final_message)
+        last_comment = self._post_final_message(tid, final_message, _context_tokens)
         if last_comment is None:
             return
         ticket_state.last_seen_comment_id = last_comment.id
@@ -1298,13 +1308,15 @@ class Orchestrator:
             logger.exception("Failed to post comment for %s", tid)
             return None
 
-    def _post_final_message(self, tid: str, final_message: str) -> Comment | None:
+    def _post_final_message(
+        self, tid: str, final_message: str, context_tokens: int | None = None
+    ) -> Comment | None:
         if self._is_cancelled(tid):
             return None
+        body = final_message if final_message else "_(No output from the AI.)_"
+        body = _with_context_footer(body, context_tokens)
         try:
-            return self._tracker.post_comment(
-                tid, final_message if final_message else "_(No output from the AI.)_"
-            )
+            return self._tracker.post_comment(tid, body)
         except Exception:
             logger.exception("Failed to post final message for %s", tid)
             with self._state_lock:

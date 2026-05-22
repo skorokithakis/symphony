@@ -15,7 +15,7 @@ from typing import Any
 
 import pytest
 
-from symphony_linear.opencode import _assemble_message
+from symphony_linear.opencode import _assemble_message, _extract_context_tokens
 
 # ---------------------------------------------------------------------------
 # Helpers
@@ -91,6 +91,108 @@ class TestParseEventsFromFixture:
         assert result is None
         result = _parse_one_line("   ")
         assert result is None
+
+
+# ---------------------------------------------------------------------------
+# Unit: context token extraction from step_finish events
+# ---------------------------------------------------------------------------
+
+
+class TestExtractContextTokens:
+    """Verify context-token computation from the last step_finish event."""
+
+    def test_existing_fixture_context_tokens(self) -> None:
+        """Fixture 1: input=6, cache.read=0, cache.write=23097 → 23103."""
+        events = _load_fixture_events("opencode_events.jsonl")
+        assert _extract_context_tokens(events) == 23103
+
+    def test_tool_use_fixture_context_tokens(self) -> None:
+        """Fixture 2: input=10, cache.read=0, cache.write=80 → 90."""
+        events = _load_fixture_events("opencode_events_tool_use.jsonl")
+        assert _extract_context_tokens(events) == 90
+
+    def test_multi_step_fixture_last_wins(self) -> None:
+        """Multiple step_finish events — last one's tokens are used.
+        First: input=20+read=0+write=65=85. Last: input=30+read=0+write=145=175.
+        """
+        events = _load_fixture_events("opencode_events_multi_step.jsonl")
+        assert _extract_context_tokens(events) == 175
+
+    def test_no_step_finish_returns_none(self) -> None:
+        """Events with no step_finish → context_tokens is None."""
+        events = [
+            _make_text("Just a text event, no step_finish."),
+        ]
+        assert _extract_context_tokens(events) is None
+
+    def test_step_finish_no_cache_subdict(self) -> None:
+        """Missing 'cache' key defaults to 0 for read and write."""
+        event = {
+            "type": "step_finish",
+            "sessionID": "ses_test",
+            "part": {
+                "type": "step-finish",
+                "tokens": {"input": 42, "output": 10},
+            },
+        }
+        assert _extract_context_tokens([event]) == 42
+
+    def test_step_finish_missing_input_defaults_zero(self) -> None:
+        """Missing 'input' key defaults to 0."""
+        event = {
+            "type": "step_finish",
+            "sessionID": "ses_test",
+            "part": {
+                "type": "step-finish",
+                "tokens": {"output": 10, "cache": {"read": 5, "write": 7}},
+            },
+        }
+        assert _extract_context_tokens([event]) == 12
+
+    def test_step_finish_none_values_treated_as_zero(self) -> None:
+        """None values for numeric fields are treated as 0."""
+        event = {
+            "type": "step_finish",
+            "sessionID": "ses_test",
+            "part": {
+                "type": "step-finish",
+                "tokens": {
+                    "input": None,
+                    "cache": {"read": None, "write": None},
+                },
+            },
+        }
+        assert _extract_context_tokens([event]) == 0
+
+    def test_step_finish_part_is_none(self) -> None:
+        """part = None (null in JSON) → treated as {} → returns 0."""
+        event = {
+            "type": "step_finish",
+            "sessionID": "ses_test",
+            "part": None,
+        }
+        assert _extract_context_tokens([event]) == 0
+
+    def test_step_finish_no_tokens_key(self) -> None:
+        """No 'tokens' key at all → defaults to 0."""
+        event = {
+            "type": "step_finish",
+            "sessionID": "ses_test",
+            "part": {"type": "step-finish"},
+        }
+        assert _extract_context_tokens([event]) == 0
+
+    def test_step_finish_tokens_is_not_a_dict(self) -> None:
+        """tokens is a string (not a dict) → treated as missing → returns 0."""
+        event = {
+            "type": "step_finish",
+            "sessionID": "ses_test",
+            "part": {
+                "type": "step-finish",
+                "tokens": "invalid",
+            },
+        }
+        assert _extract_context_tokens([event]) == 0
 
 
 # ---------------------------------------------------------------------------
