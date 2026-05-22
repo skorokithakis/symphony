@@ -118,7 +118,8 @@ def _issue_item(
     status_name: str = "In Progress",
     trigger_on: bool = True,
     repo_name: str = "my-org/my-repo",
-    repo_ssh: str = "git@github.com:my-org/my-repo.git",
+    repo_ssh_url: str = "git@github.com:my-org/my-repo.git",
+    repo_https_url: str = "https://github.com/my-org/my-repo",
     updated_at: str = "2025-01-01T00:00:00Z",
 ) -> dict[str, Any]:
     """Build a project-item node dict."""
@@ -158,7 +159,8 @@ def _issue_item(
             "state": state,
             "updatedAt": updated_at,
             "repository": {
-                "sshUrl": repo_ssh,
+                "sshUrl": repo_ssh_url,
+                "url": repo_https_url,
                 "nameWithOwner": repo_name,
             },
         },
@@ -745,7 +747,7 @@ class TestListTriggeredIssues:
         assert issues[0].state == "In Progress"
         assert issues[0].labels == []
         assert issues[0].tracker_data == {
-            "ssh_url": "git@github.com:my-org/my-repo.git",
+            "clone_url": "git@github.com:my-org/my-repo.git",
             "project_item_id": "PVTI_1",
         }
 
@@ -876,7 +878,7 @@ class TestListTriggeredIssues:
         assert len(issues) == 1
         assert issues[0].identifier == "42"  # no nameWithOwner
         assert issues[0].tracker_data is not None
-        assert issues[0].tracker_data["ssh_url"] is None
+        assert issues[0].tracker_data["clone_url"] is None
 
     def test_includes_qa_when_configured(
         self, tracker: GitHubTracker, client_mock: MagicMock
@@ -993,6 +995,7 @@ class TestGetIssue:
                     "updatedAt": "2025-01-01T00:00:00Z",
                     "repository": {
                         "sshUrl": "git@github.com:my-org/my-repo.git",
+                        "url": "https://github.com/my-org/my-repo",
                         "nameWithOwner": "my-org/my-repo",
                     },
                 }
@@ -1007,7 +1010,7 @@ class TestGetIssue:
         assert issue.description == "Description text"
         assert issue.state == "In Progress"
         assert issue.tracker_data is not None
-        assert issue.tracker_data["ssh_url"] == "git@github.com:my-org/my-repo.git"
+        assert issue.tracker_data["clone_url"] == "git@github.com:my-org/my-repo.git"
 
     def test_not_found_raises(
         self, tracker: GitHubTracker, client_mock: MagicMock
@@ -1041,7 +1044,11 @@ class TestGetIssue:
                         "body": None,
                         "state": "OPEN",
                         "updatedAt": "2025-01-01T00:00:00Z",
-                        "repository": {"sshUrl": "ssh://r", "nameWithOwner": "o/r"},
+                        "repository": {
+                            "sshUrl": "ssh://r",
+                            "url": "https://example.com/r",
+                            "nameWithOwner": "o/r",
+                        },
                     }
                 }
 
@@ -1113,7 +1120,11 @@ class TestGetIssue:
                         "body": "text",
                         "state": "OPEN",
                         "updatedAt": "2025-01-01T00:00:00Z",
-                        "repository": {"sshUrl": "ssh://r", "nameWithOwner": "o/r"},
+                        "repository": {
+                            "sshUrl": "ssh://r",
+                            "url": "https://example.com/r",
+                            "nameWithOwner": "o/r",
+                        },
                     }
                 }
             if "comments" in query:
@@ -1522,7 +1533,7 @@ class TestIsStillTriggered:
             state=state,
             updatedAt="2025-01-01T00:00:00Z",
             tracker_data={
-                "ssh_url": "ssh://r",
+                "clone_url": "ssh://r",
                 "project_item_id": item_id,
             },
         )
@@ -1679,14 +1690,14 @@ class TestIsStillTriggered:
 
 
 class TestRepoUrlFor:
-    def test_returns_ssh_url_from_tracker_data(self, tracker: GitHubTracker) -> None:
+    def test_returns_clone_url_from_tracker_data(self, tracker: GitHubTracker) -> None:
         issue = Issue(
             id="I_1",
             identifier="o/r-42",
             title="Test",
             state="In Progress",
             updatedAt="2025-01-01T00:00:00Z",
-            tracker_data={"ssh_url": "git@github.com:o/r.git"},
+            tracker_data={"clone_url": "git@github.com:o/r.git"},
         )
         assert tracker.repo_url_for(issue) == "git@github.com:o/r.git"
 
@@ -2239,3 +2250,181 @@ class TestTriggerOptionResolution:
         }
         with pytest.raises(ValueError, match="no option named 'on'"):
             tracker._resolve_trigger_field()
+
+
+# ---------------------------------------------------------------------------
+# Clone protocol
+# ---------------------------------------------------------------------------
+
+
+class TestCloneProtocol:
+    """Tests for the clone_protocol config option."""
+
+    @pytest.fixture
+    def config_https(self) -> GitHubTrackerConfig:
+        return GitHubTrackerConfig(
+            token="ghp_test",
+            project_ref="orgs/my-org/projects/1",
+            in_progress_status="In Progress",
+            needs_input_status="Needs Input",
+            qa_status=None,
+            trigger_field="Symphony",
+            status_field="Status",
+            clone_protocol="https",
+        )
+
+    @pytest.fixture
+    def tracker_https(
+        self, client_mock: MagicMock, config_https: GitHubTrackerConfig
+    ) -> GitHubTracker:
+        return _resolved_tracker(client_mock, config_https)
+
+    def test_default_is_ssh(self, config: GitHubTrackerConfig) -> None:
+        assert config.clone_protocol == "ssh"
+
+    def test_invalid_clone_protocol_raises(self) -> None:
+        with pytest.raises(ValueError, match="clone_protocol must be 'ssh' or 'https'"):
+            GitHubTrackerConfig(
+                token="ghp_test",
+                project_ref="orgs/my-org/projects/1",
+                in_progress_status="In Progress",
+                needs_input_status="Needs Input",
+                clone_protocol="http",
+            )
+
+    def test_repo_clone_url_ssh(
+        self, client_mock: MagicMock, config: GitHubTrackerConfig
+    ) -> None:
+        tracker = GitHubTracker(client_mock, config)
+        # SSH chosen by default (clone_protocol='ssh')
+        url = tracker._repo_clone_url(
+            {
+                "sshUrl": "git@github.com:o/r.git",
+                "url": "https://github.com/o/r",
+            }
+        )
+        assert url == "git@github.com:o/r.git"
+
+    def test_repo_clone_url_https(
+        self, client_mock: MagicMock, config_https: GitHubTrackerConfig
+    ) -> None:
+        tracker = GitHubTracker(client_mock, config_https)
+        # HTTPS appends .git
+        url = tracker._repo_clone_url(
+            {
+                "sshUrl": "git@github.com:o/r.git",
+                "url": "https://github.com/o/r",
+            }
+        )
+        assert url == "https://github.com/o/r.git"
+
+    def test_repo_clone_url_https_no_url(
+        self, client_mock: MagicMock, config_https: GitHubTrackerConfig
+    ) -> None:
+        tracker = GitHubTracker(client_mock, config_https)
+        url = tracker._repo_clone_url(
+            {
+                "sshUrl": "git@github.com:o/r.git",
+            }
+        )
+        assert url is None
+
+    def test_repo_clone_url_none_repo(self, tracker: GitHubTracker) -> None:
+        assert tracker._repo_clone_url(None) is None
+
+    def test_list_triggered_issues_https(
+        self, client_mock: MagicMock, config_https: GitHubTrackerConfig
+    ) -> None:
+        tracker = _resolved_tracker(client_mock, config_https)
+        client_mock._query.return_value = {
+            "node": {
+                "items": {
+                    "pageInfo": {"hasNextPage": False, "endCursor": None},
+                    "nodes": [
+                        _issue_item(
+                            item_id="PVTI_1",
+                            issue_id="I_1",
+                            number=42,
+                            title="HTTPS test",
+                            status_name="In Progress",
+                            repo_https_url="https://github.com/my-org/my-repo",
+                        ),
+                    ],
+                }
+            }
+        }
+        issues = tracker.list_triggered_issues()
+        assert len(issues) == 1
+        assert issues[0].tracker_data == {
+            "clone_url": "https://github.com/my-org/my-repo.git",
+            "project_item_id": "PVTI_1",
+        }
+
+    def test_get_issue_https(
+        self, client_mock: MagicMock, config_https: GitHubTrackerConfig
+    ) -> None:
+        tracker = _resolved_tracker(client_mock, config_https)
+        tracker._item_id_map["I_1"] = "PVTI_1"
+
+        call_count = [0]
+
+        def side_effect(
+            query: str, variables: dict[str, Any] | None = None
+        ) -> dict[str, Any]:
+            call_count[0] += 1
+            if "comments" in query and "fieldValues" not in query:
+                return {
+                    "node": {
+                        "comments": {
+                            "pageInfo": {"hasNextPage": False, "endCursor": None},
+                            "nodes": [],
+                        }
+                    }
+                }
+            if "fieldValues" in query:
+                return {
+                    "node": {
+                        "fieldValues": {
+                            "nodes": [
+                                {"field": {"name": "Status"}, "name": "In Progress"},
+                            ],
+                        }
+                    }
+                }
+            return {
+                "node": {
+                    "__typename": "Issue",
+                    "id": "I_1",
+                    "number": 42,
+                    "title": "HTTPS test",
+                    "body": None,
+                    "state": "OPEN",
+                    "updatedAt": "2025-01-01T00:00:00Z",
+                    "repository": {
+                        "sshUrl": "git@github.com:my-org/my-repo.git",
+                        "url": "https://github.com/my-org/my-repo",
+                        "nameWithOwner": "my-org/my-repo",
+                    },
+                }
+            }
+
+        client_mock._query.side_effect = side_effect
+        issue = tracker.get_issue("I_1")
+        assert issue.tracker_data is not None
+        assert (
+            issue.tracker_data["clone_url"] == "https://github.com/my-org/my-repo.git"
+        )
+
+    def test_repo_url_for_https(
+        self, client_mock: MagicMock, config_https: GitHubTrackerConfig
+    ) -> None:
+        tracker = _resolved_tracker(client_mock, config_https)
+        issue = Issue(
+            id="I_1",
+            identifier="o/r-42",
+            title="Test",
+            state="In Progress",
+            updatedAt="2025-01-01T00:00:00Z",
+            tracker_data={"clone_url": "https://github.com/o/r.git"},
+        )
+        assert tracker.repo_url_for(issue) == "https://github.com/o/r.git"

@@ -115,6 +115,7 @@ def _create_tracker(config: AppConfig) -> Tracker:
             in_progress_status=config.github.in_progress_status,
             needs_input_status=config.github.needs_input_status,
             qa_status=config.github.qa_status,
+            clone_protocol=config.github.clone_protocol,
         )
         return GitHubTracker(client=github_client, config=github_tracker_config)
     # The model_validator guarantees this is unreachable, but be defensive.

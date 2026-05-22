@@ -119,6 +119,17 @@ class _GitHubConfig(BaseModel):
         None,
         description="Optional status option name for QA; polled in addition to in_progress and needs_input",
     )
+    clone_protocol: str = Field(
+        "ssh",
+        description="Protocol for cloning repositories: 'ssh' (default) or 'https'",
+    )
+
+    @field_validator("clone_protocol")
+    @classmethod
+    def _validate_clone_protocol(cls, v: str) -> str:
+        if v not in ("ssh", "https"):
+            raise ValueError(f"clone_protocol must be 'ssh' or 'https', got {v!r}")
+        return v
 
     @field_validator("project")
     @classmethod

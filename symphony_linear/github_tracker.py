@@ -75,6 +75,9 @@ class GitHubTrackerConfig:
             Default is ``Symphony``.
         status_field: Name of the Status field on the project.  Default is
             ``Status``.
+        clone_protocol: Protocol for cloning repositories.  ``'ssh'``
+            (default) or ``'https'``.  HTTPS requires the operator to have
+            git credentials set up on the host (e.g. via ``gh auth login``).
     """
 
     token: str
@@ -84,6 +87,13 @@ class GitHubTrackerConfig:
     qa_status: str | None = None
     trigger_field: str = "Symphony"
     status_field: str = "Status"
+    clone_protocol: str = "ssh"
+
+    def __post_init__(self) -> None:
+        if self.clone_protocol not in ("ssh", "https"):
+            raise ValueError(
+                f"clone_protocol must be 'ssh' or 'https', got {self.clone_protocol!r}"
+            )
 
 
 # ---------------------------------------------------------------------------
@@ -102,6 +112,9 @@ class GitHubTracker:
         self._client = client
         self._config = config
 
+        # Clone protocol — passed through from config.
+        self._clone_protocol: str = config.clone_protocol
+
         # Resolved lazily / eagerly.
         self._project_node_id: str | None = None
         self._status_field_id: str | None = None
@@ -114,6 +127,26 @@ class GitHubTracker:
         # list_triggered_issues / _refresh_item_map and atomically swapped.
         self._item_id_map: dict[str, str] = {}
         self._item_map_lock = threading.Lock()
+
+    # ------------------------------------------------------------------
+    # Internal helpers
+    # ------------------------------------------------------------------
+
+    def _repo_clone_url(self, repo: dict[str, Any] | None) -> str | None:
+        """Return the clone URL for *repo* based on the configured protocol.
+
+        For SSH, returns the ``sshUrl`` field.  For HTTPS, returns the web
+        ``url`` field with ``.git`` appended (GitHub's web URL does not
+        include the ``.git`` suffix).
+        """
+        if repo is None:
+            return None
+        if self._clone_protocol == "https":
+            url = repo.get("url")
+            if url is not None:
+                return url + ".git"
+            return None
+        return repo.get("sshUrl")
 
     # ------------------------------------------------------------------
     # Startup resolution
@@ -553,7 +586,7 @@ class GitHubTracker:
                     continue
 
                 repo = content.get("repository") or {}
-                ssh_url = repo.get("sshUrl")
+                clone_url = self._repo_clone_url(repo)
                 name_with_owner = repo.get("nameWithOwner")
 
                 issue = Issue(
@@ -575,7 +608,7 @@ class GitHubTracker:
                     project=None,
                     updatedAt=content.get("updatedAt", ""),
                     tracker_data={
-                        "ssh_url": ssh_url,
+                        "clone_url": clone_url,
                         "project_item_id": item_id,
                     },
                 )
@@ -616,6 +649,7 @@ class GitHubTracker:
                       updatedAt
                       repository {
                         sshUrl
+                        url
                         nameWithOwner
                       }
                     }
@@ -657,7 +691,7 @@ class GitHubTracker:
 
         repo = raw.get("repository") or {}
         name_with_owner = repo.get("nameWithOwner")
-        ssh_url = repo.get("sshUrl")
+        clone_url = self._repo_clone_url(repo)
 
         # 2. Find the project item to get its Status field value.
         status_name = ""
@@ -694,7 +728,7 @@ class GitHubTracker:
             project=None,
             updatedAt=raw.get("updatedAt", ""),
             tracker_data={
-                "ssh_url": ssh_url,
+                "clone_url": clone_url,
                 "project_item_id": item_id,
             },
             comments=comments,
@@ -744,6 +778,7 @@ class GitHubTracker:
               updatedAt
               repository {
                 sshUrl
+                url
                 nameWithOwner
               }
             }
@@ -997,24 +1032,26 @@ class GitHubTracker:
         return status_name in active_statuses
 
     def repo_url_for(self, issue: Issue) -> str:
-        """Return the SSH clone URL for the repository linked to *issue*.
+        """Return the clone URL for the repository linked to *issue*.
 
-        The URL is populated at list time from GitHub's ``sshUrl`` field
-        and stashed in ``issue.tracker_data``.
+        The URL is populated at list time from GitHub's repository fields
+        and stashed in ``issue.tracker_data`` under ``clone_url``.  The
+        protocol (SSH or HTTPS) depends on the configured
+        ``clone_protocol``.
 
-        Raises ``TrackerError`` when no ``ssh_url`` is available (the
+        Raises ``TrackerError`` when no ``clone_url`` is available (the
         issue was not listed from a project item or the repository was
         deleted after listing).
         """
         td = issue.tracker_data or {}
-        ssh_url = td.get("ssh_url")
-        if ssh_url is None:
+        clone_url = td.get("clone_url")
+        if clone_url is None:
             raise TrackerError(
                 "No repository linked to this issue. "
                 "Ensure the issue belongs to a GitHub repository and "
                 "is present on the project board."
             )
-        return ssh_url
+        return clone_url
 
     def human_trigger_description(self) -> str:
         """Return a user-facing phrase describing how to stop the agent."""

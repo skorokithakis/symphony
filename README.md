@@ -224,7 +224,25 @@ removing the trigger label on Linear.
 
 GitHub Projects v2 can contain items from any repository that the project
 references. Each issue remembers its own repository; Symphony clones from
-that repo's SSH URL. There is no per-project "Repo" link to configure.
+that repo's URL. By default it uses the SSH URL (`git@github.com:...`).
+
+### Clone protocol
+
+Set `github.clone_protocol` to `https` to clone via HTTPS instead of SSH.
+This is useful when your organisation enforces MFA and SSH is not practical.
+
+```yaml
+github:
+  token: ${GITHUB_TOKEN}
+  project: orgs/my-org/projects/1
+  clone_protocol: https
+```
+
+HTTPS cloning requires the operator to have git credentials set up on the
+host (e.g. via `gh auth login` or a credential helper), because clone runs
+outside the sandbox with the daemon user's identity.
+
+The default is `ssh`; omit the field to keep the current behaviour.
 
 ### Identifier convention
 

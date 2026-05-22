@@ -441,6 +441,52 @@ class TestLoadConfigGitHub:
         assert config.github is not None
         assert config.github.qa_status == "In Review"
 
+    def test_clone_protocol_defaults_to_ssh(self, tmp_path: Path) -> None:
+        cfg = {
+            "github": {
+                "token": "ghp_test",
+                "project": "orgs/my-org/projects/1",
+                "in_progress_status": "In Progress",
+                "needs_input_status": "Needs Input",
+            },
+        }
+        _write_yaml(tmp_path / "config.yaml", cfg)
+
+        config = load_config(tmp_path)
+        assert config.github is not None
+        assert config.github.clone_protocol == "ssh"
+
+    def test_clone_protocol_https_accepted(self, tmp_path: Path) -> None:
+        cfg = {
+            "github": {
+                "token": "ghp_test",
+                "project": "orgs/my-org/projects/1",
+                "in_progress_status": "In Progress",
+                "needs_input_status": "Needs Input",
+                "clone_protocol": "https",
+            },
+        }
+        _write_yaml(tmp_path / "config.yaml", cfg)
+
+        config = load_config(tmp_path)
+        assert config.github is not None
+        assert config.github.clone_protocol == "https"
+
+    def test_clone_protocol_invalid_value_rejected(self, tmp_path: Path) -> None:
+        cfg = {
+            "github": {
+                "token": "ghp_test",
+                "project": "orgs/my-org/projects/1",
+                "in_progress_status": "In Progress",
+                "needs_input_status": "Needs Input",
+                "clone_protocol": "git",
+            },
+        }
+        _write_yaml(tmp_path / "config.yaml", cfg)
+
+        with pytest.raises(ValueError, match="clone_protocol"):
+            load_config(tmp_path)
+
 
 class TestExactlyOneTracker:
     def test_both_blocks_set_raises(self, tmp_path: Path) -> None:
