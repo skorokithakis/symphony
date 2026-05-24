@@ -24,6 +24,7 @@ from symphony_linear.workspace import (
     WorkspaceError,
     _check_containment,
     _sanitize_identifier,
+    _workspace_is_clean,
     clone_workspace,
     finalize_workspace,
     prepare,
@@ -619,12 +620,13 @@ class TestCloneWorkspace:
         source_repo = tmp_path / "source"
         _make_source_repo(source_repo)
 
-        result = clone_workspace(
+        result, recovered = clone_workspace(
             ticket_identifier="CLONE-1",
             repo_url=str(source_repo),
             workspace_root=str(workspace_root),
         )
 
+        assert not recovered
         assert os.path.isdir(result)
         assert os.path.isdir(os.path.join(result, ".git"))
         assert os.path.basename(os.path.realpath(result)) == "CLONE-1"
@@ -642,19 +644,22 @@ class TestCloneWorkspace:
         _make_source_repo(source_repo)
 
         # First call: clone.
-        result1 = clone_workspace(
+        result1, recovered1 = clone_workspace(
             ticket_identifier="REUSE-1",
             repo_url=str(source_repo),
             workspace_root=str(workspace_root),
         )
+
+        assert not recovered1
 
         # Second call: reuse (fetch).
-        result2 = clone_workspace(
+        result2, recovered2 = clone_workspace(
             ticket_identifier="REUSE-1",
             repo_url=str(source_repo),
             workspace_root=str(workspace_root),
         )
 
+        assert not recovered2
         assert result2 == result1
 
         remove("REUSE-1", str(workspace_root))
@@ -683,16 +688,217 @@ class TestCloneWorkspace:
         source_repo = tmp_path / "source"
         _make_source_repo(source_repo)
 
-        result = clone_workspace(
+        result, recovered = clone_workspace(
             ticket_identifier="Team/With Spaces",
             repo_url=str(source_repo),
             workspace_root=str(workspace_root),
         )
 
+        assert not recovered
         expected_dir = workspace_root / "Team_With_Spaces"
         assert os.path.realpath(result) == os.path.realpath(expected_dir)
 
         remove("Team/With Spaces", str(workspace_root))
+
+
+# ---------------------------------------------------------------------------
+# Unit: _workspace_is_clean
+# ---------------------------------------------------------------------------
+
+
+class TestWorkspaceIsClean:
+    """_workspace_is_clean detects dirty state in a git repo."""
+
+    def test_clean_clone_is_clean(self, tmp_path: Path) -> None:
+        """A freshly-cloned repo with no modifications is clean."""
+        _require_git()
+
+        source_repo = tmp_path / "source"
+        _make_source_repo(source_repo)
+
+        workspace = tmp_path / "ws"
+        subprocess.run(
+            ["git", "clone", str(source_repo), str(workspace)],
+            capture_output=True,
+            text=True,
+            check=True,
+        )
+
+        assert _workspace_is_clean(str(workspace))
+
+    def test_untracked_file_is_not_clean(self, tmp_path: Path) -> None:
+        """An untracked file makes the workspace dirty."""
+        _require_git()
+
+        source_repo = tmp_path / "source"
+        _make_source_repo(source_repo)
+
+        workspace = tmp_path / "ws"
+        subprocess.run(
+            ["git", "clone", str(source_repo), str(workspace)],
+            capture_output=True,
+            text=True,
+            check=True,
+        )
+
+        (workspace / "untracked.txt").write_text("hello")
+
+        assert not _workspace_is_clean(str(workspace))
+
+    def test_modified_tracked_file_is_not_clean(self, tmp_path: Path) -> None:
+        """A modified tracked file makes the workspace dirty."""
+        _require_git()
+
+        source_repo = tmp_path / "source"
+        _make_source_repo(source_repo)
+
+        workspace = tmp_path / "ws"
+        subprocess.run(
+            ["git", "clone", str(source_repo), str(workspace)],
+            capture_output=True,
+            text=True,
+            check=True,
+        )
+
+        (workspace / "README.md").write_text("modified content")
+
+        assert not _workspace_is_clean(str(workspace))
+
+    def test_local_only_commit_is_not_clean(self, tmp_path: Path) -> None:
+        """A local commit that is not on any remote makes the workspace dirty."""
+        _require_git()
+
+        source_repo = tmp_path / "source"
+        _make_source_repo(source_repo)
+
+        workspace = tmp_path / "ws"
+        subprocess.run(
+            ["git", "clone", str(source_repo), str(workspace)],
+            capture_output=True,
+            text=True,
+            check=True,
+        )
+
+        # Make a local commit without pushing.
+        (workspace / "local.txt").write_text("local only")
+        _run_git(["add", "local.txt"], cwd=workspace)
+        _run_git(
+            [
+                "-c",
+                "user.email=test@test.com",
+                "-c",
+                "user.name=Test",
+                "commit",
+                "-m",
+                "local commit",
+            ],
+            cwd=workspace,
+        )
+
+        assert not _workspace_is_clean(str(workspace))
+
+
+# ---------------------------------------------------------------------------
+# Integration: clone_workspace recovery path
+# ---------------------------------------------------------------------------
+
+
+@pytest.mark.integration
+class TestCloneWorkspaceRecovery:
+    """clone_workspace auto-recovers from fetch failures on clean workspaces."""
+
+    def test_fetch_failure_on_clean_workspace_reclones(self, tmp_path: Path) -> None:
+        """When fetch fails on a clean workspace, it is nuked and re-cloned."""
+        _require_git()
+
+        workspace_root = tmp_path / "workspaces"
+        workspace_root.mkdir()
+
+        source_repo = tmp_path / "source"
+        _make_source_repo(source_repo)
+
+        # First call: normal clone.
+        path1, rec1 = clone_workspace(
+            ticket_identifier="RECOVER-1",
+            repo_url=str(source_repo),
+            workspace_root=str(workspace_root),
+        )
+        assert not rec1
+        assert os.path.isdir(path1)
+
+        # Sabotage the remote URL in the workspace so fetch fails.
+        _run_git(
+            ["remote", "set-url", "origin", "/nonexistent/path"],
+            cwd=Path(path1),
+        )
+
+        # Second call: fetch fails, workspace is clean → nuke + re-clone.
+        path2, rec2 = clone_workspace(
+            ticket_identifier="RECOVER-1",
+            repo_url=str(source_repo),
+            workspace_root=str(workspace_root),
+        )
+        assert rec2
+        assert os.path.isdir(path2)
+        # The re-cloned workspace should have a working .git and valid remote.
+        result = subprocess.run(
+            ["git", "remote", "get-url", "origin"],
+            cwd=path2,
+            capture_output=True,
+            text=True,
+        )
+        assert result.returncode == 0
+        assert result.stdout.strip() == str(source_repo)
+
+        remove("RECOVER-1", str(workspace_root))
+
+    def test_fetch_failure_on_dirty_workspace_preserves(self, tmp_path: Path) -> None:
+        """When fetch fails on a dirty workspace, it is preserved (no exception)."""
+        _require_git()
+
+        workspace_root = tmp_path / "workspaces"
+        workspace_root.mkdir()
+
+        source_repo = tmp_path / "source"
+        _make_source_repo(source_repo)
+
+        # First call: normal clone.
+        path1, rec1 = clone_workspace(
+            ticket_identifier="DIRTY-1",
+            repo_url=str(source_repo),
+            workspace_root=str(workspace_root),
+        )
+        assert not rec1
+
+        # Make the workspace dirty (untracked file).
+        (Path(path1) / "dirty.txt").write_text("please preserve me")
+
+        # Sabotage the remote URL so fetch fails.
+        _run_git(
+            ["remote", "set-url", "origin", "/nonexistent/path"],
+            cwd=Path(path1),
+        )
+
+        # Second call: fetch fails, workspace is dirty → preserve (no exception).
+        path2, rec2 = clone_workspace(
+            ticket_identifier="DIRTY-1",
+            repo_url=str(source_repo),
+            workspace_root=str(workspace_root),
+        )
+        assert not rec2
+        assert path2 == path1
+        # The dirty file should still exist.
+        assert (Path(path2) / "dirty.txt").read_text() == "please preserve me"
+        # The remote URL is still sabotaged (we didn't touch the workspace).
+        result = subprocess.run(
+            ["git", "remote", "get-url", "origin"],
+            cwd=path2,
+            capture_output=True,
+            text=True,
+        )
+        assert result.stdout.strip() == "/nonexistent/path"
+
+        remove("DIRTY-1", str(workspace_root))
 
 
 # ---------------------------------------------------------------------------
@@ -720,7 +926,7 @@ class TestFinalizeWorkspace:
         )
 
         # Clone first.
-        ws_path = clone_workspace(
+        ws_path, _ = clone_workspace(
             ticket_identifier="FINALIZE-1",
             repo_url=str(source_repo),
             workspace_root=str(workspace_root),
@@ -759,7 +965,7 @@ class TestFinalizeWorkspace:
         source_repo = tmp_path / "source"
         _make_source_repo(source_repo)
 
-        ws_path = clone_workspace(
+        ws_path, _ = clone_workspace(
             ticket_identifier="NO-BRANCH",
             repo_url=str(source_repo),
             workspace_root=str(workspace_root),
@@ -802,7 +1008,7 @@ class TestFinalizeWorkspace:
         source_repo = tmp_path / "source"
         _make_source_repo(source_repo)  # no setup script
 
-        ws_path = clone_workspace(
+        ws_path, _ = clone_workspace(
             ticket_identifier="NO-SETUP-F",
             repo_url=str(source_repo),
             workspace_root=str(workspace_root),
@@ -832,7 +1038,7 @@ class TestFinalizeWorkspace:
             setup_script=("#!/bin/bash\necho 'fail' >&2\nexit 13\n"),
         )
 
-        ws_path = clone_workspace(
+        ws_path, _ = clone_workspace(
             ticket_identifier="FAIL-FIN",
             repo_url=str(source_repo),
             workspace_root=str(workspace_root),
@@ -860,7 +1066,7 @@ class TestFinalizeWorkspace:
         source_repo = tmp_path / "source"
         _make_source_repo(source_repo)
 
-        ws_path = clone_workspace(
+        ws_path, _ = clone_workspace(
             ticket_identifier="My-Team.42",
             repo_url=str(source_repo),
             workspace_root=str(workspace_root),

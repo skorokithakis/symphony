@@ -875,7 +875,7 @@ class Orchestrator:
 
         # --- Clone workspace ---
         try:
-            workspace_path = clone_workspace(
+            workspace_path, recovered = clone_workspace(
                 ticket_identifier=issue.identifier,
                 repo_url=repo_url,
                 workspace_root=str(self._workspace),
@@ -893,6 +893,14 @@ class Orchestrator:
         # B2: check cancellation after clone returns.
         if self._is_cancelled(tid):
             return
+
+        # Notify the user when the workspace had to be nuked and re-cloned.
+        if recovered:
+            self._post_comment_safe(
+                tid,
+                "Workspace was reset due to stale git state and rebuilt from origin.",
+                kind="workspace",
+            )
 
         ticket_state.workspace_path = workspace_path
         with self._state_lock:

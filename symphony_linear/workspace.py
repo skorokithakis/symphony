@@ -324,17 +324,68 @@ def _git_switch_branch(
     logger.debug("Created and switched to new branch '%s'", branch_name)
 
 
+def _workspace_is_clean(workspace_path: str) -> bool:
+    """Check if a git workspace is clean (no dirty files or local-only commits).
+
+    Returns ``True`` only if:
+
+    * ``git status --porcelain`` is empty — no modified or untracked files; and
+    * ``git rev-list HEAD --not --remotes`` is empty — no local-only commits
+      that haven't been pushed to any remote.
+
+    If any git command fails (e.g. corrupt repo), this function conservatively
+    returns ``False`` so we err on the side of preserving work.
+    """
+    # Check 1: working tree and index are clean.
+    try:
+        result = subprocess.run(
+            ["git", "status", "--porcelain"],
+            cwd=workspace_path,
+            capture_output=True,
+            text=True,
+        )
+    except Exception:
+        logger.debug("git status failed during cleanliness check", exc_info=True)
+        return False
+    if result.returncode != 0 or result.stdout.strip():
+        return False
+
+    # Check 2: no local-only commits.  Compare HEAD against ALL remote-tracking
+    # refs (--not --remotes), not just the current branch's upstream (@{u}).
+    # The agent often commits to a per-ticket branch that may have no upstream
+    # set yet, and in no-push configurations the only copy of the agent's work
+    # is local — so we have to consider every remote ref to know whether HEAD's
+    # history is safely mirrored anywhere.
+    try:
+        result = subprocess.run(
+            ["git", "rev-list", "HEAD", "--not", "--remotes"],
+            cwd=workspace_path,
+            capture_output=True,
+            text=True,
+        )
+    except Exception:
+        logger.debug("git rev-list failed during cleanliness check", exc_info=True)
+        return False
+    if result.returncode != 0 or result.stdout.strip():
+        return False
+
+    return True
+
+
 def clone_workspace(
     ticket_identifier: str,
     repo_url: str,
     workspace_root: str,
-) -> str:
+) -> tuple[str, bool]:
     """Clone or fetch the repository for *ticket_identifier*.
 
     1. Sanitize the identifier to a safe directory name.
     2. Compute the workspace path and verify it is within *workspace_root*.
     3. Clone the repository if the directory does not already exist, otherwise
        fetch to pick up new remote branches.
+    4. On fetch failure: if the workspace is clean, nuke and re-clone from
+       scratch (no exception).  If it has local state to preserve, log a
+       warning and return normally (no exception).
 
     .. note::
        Clone has no ``-b`` — it checks out the remote's default branch.
@@ -346,12 +397,14 @@ def clone_workspace(
         workspace_root: Root directory under which all workspaces live.
 
     Returns:
-        The real path to the cloned/existing workspace.
+        A ``(path, recovered)`` tuple where *path* is the real path to the
+        cloned/existing workspace and *recovered* is ``True`` only when the
+        workspace had to be nuked and re-cloned after a fetch failure.
 
     Raises:
         PathContainmentError: If the computed workspace path escapes
             *workspace_root*.
-        CloneFailed: If ``git clone`` or ``git fetch`` fails.
+        CloneFailed: If ``git clone`` fails (initial clone or re-clone).
     """
     # 1. Sanitize identifier → workspace_key
     workspace_key = _sanitize_identifier(ticket_identifier)
@@ -367,15 +420,41 @@ def clone_workspace(
             ["clone", repo_url, real_path],
             description="clone",
         )
-    else:
-        logger.info("Workspace %s already exists – reusing", real_path)
-        _run_git(
-            ["fetch", "origin"],
-            cwd=real_path,
-            description="fetch",
-        )
+        return real_path, False
 
-    return real_path
+    logger.info("Workspace %s already exists – reusing", real_path)
+    result = subprocess.run(
+        ["git", "fetch", "origin"],
+        cwd=real_path,
+        capture_output=True,
+        text=True,
+    )
+    if result.returncode == 0:
+        return real_path, False
+
+    # Fetch failed.  Decide whether we can safely nuke and re-clone.
+    stderr_tail = result.stderr.strip().splitlines()
+    tail = "\n".join(stderr_tail[-5:]) if stderr_tail else "(no stderr)"
+    logger.debug("git fetch failed (rc=%d): %s", result.returncode, tail)
+
+    if _workspace_is_clean(real_path):
+        logger.info(
+            "Workspace %s is clean — nuking and re-cloning after fetch failure",
+            real_path,
+        )
+        shutil.rmtree(real_path, ignore_errors=False)
+        _run_git(
+            ["clone", repo_url, real_path],
+            description="clone (recovery)",
+        )
+        return real_path, True
+
+    logger.warning(
+        "Workspace %s has local state — preserving after fetch failure: %s",
+        real_path,
+        tail,
+    )
+    return real_path, False
 
 
 def finalize_workspace(
@@ -468,7 +547,7 @@ def prepare(
         BranchFailed: If ``git switch`` fails.
         SetupFailed: If ``.symphony/setup`` fails or times out.
     """
-    real_path = clone_workspace(ticket_identifier, repo_url, workspace_root)
+    real_path, _ = clone_workspace(ticket_identifier, repo_url, workspace_root)
     finalize_workspace(
         workspace_path=real_path,
         ticket_identifier=ticket_identifier,

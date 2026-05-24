@@ -228,7 +228,7 @@ class TestNewTicketPipeline:
         mock_run_initial: Any,
         linear: FakeLinearClient,
     ) -> Issue:
-        mock_clone.return_value = "/tmp/workspaces/TEAM-1"
+        mock_clone.return_value = ("/tmp/workspaces/TEAM-1", False)
         mock_finalize.return_value = None
         mock_load_config.return_value = ProjectConfig()
         mock_run_initial.return_value = ("ses-abc", "I have done the work.", None)
@@ -349,7 +349,7 @@ class TestNewTicketPipeline:
         with (
             mock.patch(
                 "symphony_linear.orchestrator.clone_workspace",
-                return_value="/tmp/ws/TEAM-1",
+                return_value=("/tmp/ws/TEAM-1", False),
             ),
             mock.patch(
                 "symphony_linear.orchestrator.finalize_workspace",
@@ -388,7 +388,7 @@ class TestNewTicketPipeline:
         with (
             mock.patch(
                 "symphony_linear.orchestrator.clone_workspace",
-                return_value="/tmp/ws/TEAM-1",
+                return_value=("/tmp/ws/TEAM-1", False),
             ),
             mock.patch(
                 "symphony_linear.orchestrator.finalize_workspace",
@@ -427,7 +427,7 @@ class TestNewTicketPipeline:
         with (
             mock.patch(
                 "symphony_linear.orchestrator.clone_workspace",
-                return_value="/tmp/ws/TEAM-1",
+                return_value=("/tmp/ws/TEAM-1", False),
             ),
             mock.patch(
                 "symphony_linear.orchestrator.finalize_workspace",
@@ -466,7 +466,7 @@ class TestNewTicketPipeline:
         with (
             mock.patch(
                 "symphony_linear.orchestrator.clone_workspace",
-                return_value="/tmp/ws/TEAM-1",
+                return_value=("/tmp/ws/TEAM-1", False),
             ),
             mock.patch(
                 "symphony_linear.orchestrator.finalize_workspace",
@@ -504,7 +504,7 @@ class TestNewTicketPipeline:
         with (
             mock.patch(
                 "symphony_linear.orchestrator.clone_workspace",
-                return_value="/tmp/ws/TEAM-1",
+                return_value=("/tmp/ws/TEAM-1", False),
             ),
             mock.patch(
                 "symphony_linear.orchestrator.finalize_workspace",
@@ -546,7 +546,7 @@ class TestNewTicketPipeline:
         with (
             mock.patch(
                 "symphony_linear.orchestrator.clone_workspace",
-                return_value="/tmp/ws/TEAM-1",
+                return_value=("/tmp/ws/TEAM-1", False),
             ),
             mock.patch(
                 "symphony_linear.orchestrator.finalize_workspace",
@@ -589,7 +589,7 @@ class TestNewTicketPipeline:
         with (
             mock.patch(
                 "symphony_linear.orchestrator.clone_workspace",
-                return_value="/tmp/ws/TEAM-1",
+                return_value=("/tmp/ws/TEAM-1", False),
             ),
             mock.patch(
                 "symphony_linear.orchestrator.finalize_workspace",
@@ -631,7 +631,7 @@ class TestNewTicketPipeline:
         with (
             mock.patch(
                 "symphony_linear.orchestrator.clone_workspace",
-                return_value="/tmp/ws/TEAM-1",
+                return_value=("/tmp/ws/TEAM-1", False),
             ),
             mock.patch(
                 "symphony_linear.orchestrator.finalize_workspace",
@@ -651,6 +651,54 @@ class TestNewTicketPipeline:
         final_bodies = [body for tid, body in post_calls if "Done." in body]
         assert len(final_bodies) == 1
         assert "*Symphony · context: 1,234,567 tokens*" in final_bodies[0]
+
+    def test_clone_recovery_posts_comment(
+        self, orchestrator: Orchestrator, linear: FakeLinearClient
+    ) -> None:
+        """When clone_workspace returns recovered=True, a workspace comment is posted."""
+        linear.set_response(
+            "get_project",
+            Project(
+                id="proj-1",
+                name="Test",
+                links=[
+                    ProjectLink(label="Repo", url="https://github.com/org/repo.git")
+                ],
+            ),
+        )
+        linear.set_response("get_issue", _make_issue(description="Fix"))
+        with (
+            mock.patch(
+                "symphony_linear.orchestrator.clone_workspace",
+                return_value=("/tmp/ws/TEAM-1", True),
+            ),
+            mock.patch(
+                "symphony_linear.orchestrator.finalize_workspace",
+            ),
+            mock.patch(
+                "symphony_linear.orchestrator.load_project_config",
+                return_value=ProjectConfig(),
+            ),
+            mock.patch(
+                "symphony_linear.orchestrator.run_initial",
+                return_value=("ses-abc", "Done.", None),
+            ),
+        ):
+            orchestrator._new_ticket_pipeline(_make_issue())
+
+        # Verify the recovery comment was posted.
+        post_calls = linear.calls.get("post_comment", [])
+        recovery_bodies = [
+            body for _, body in post_calls if "Workspace was reset" in body
+        ]
+        assert len(recovery_bodies) == 1
+        # The footer should use kind="workspace"
+        assert "*Symphony · workspace*" in recovery_bodies[0]
+
+        # Pipeline continues normally — state reaches needs_input.
+        ts = orchestrator._state.get("ticket-1")
+        assert ts is not None
+        assert ts.status == TicketStatus.needs_input
 
 
 # ---------------------------------------------------------------------------
@@ -677,7 +725,7 @@ class TestNewTicketProjectConfig:
         with (
             mock.patch(
                 "symphony_linear.orchestrator.clone_workspace",
-                return_value="/tmp/ws/TEAM-1",
+                return_value=("/tmp/ws/TEAM-1", False),
             ),
             mock.patch(
                 "symphony_linear.orchestrator.finalize_workspace",
@@ -721,7 +769,7 @@ class TestNewTicketProjectConfig:
         with (
             mock.patch(
                 "symphony_linear.orchestrator.clone_workspace",
-                return_value="/tmp/ws/TEAM-1",
+                return_value=("/tmp/ws/TEAM-1", False),
             ),
             mock.patch(
                 "symphony_linear.orchestrator.finalize_workspace",
@@ -763,7 +811,7 @@ class TestNewTicketProjectConfig:
         with (
             mock.patch(
                 "symphony_linear.orchestrator.clone_workspace",
-                return_value="/tmp/ws/TEAM-1",
+                return_value=("/tmp/ws/TEAM-1", False),
             ),
             mock.patch(
                 "symphony_linear.orchestrator.finalize_workspace",
@@ -799,7 +847,7 @@ class TestNewTicketProjectConfig:
         with (
             mock.patch(
                 "symphony_linear.orchestrator.clone_workspace",
-                return_value="/tmp/ws/TEAM-1",
+                return_value=("/tmp/ws/TEAM-1", False),
             ),
             mock.patch(
                 "symphony_linear.orchestrator.load_project_config",
@@ -839,7 +887,7 @@ class TestNewTicketProjectConfig:
         with (
             mock.patch(
                 "symphony_linear.orchestrator.clone_workspace",
-                return_value="/tmp/ws/TEAM-1",
+                return_value=("/tmp/ws/TEAM-1", False),
             ),
             mock.patch(
                 "symphony_linear.orchestrator.finalize_workspace",
@@ -1933,7 +1981,7 @@ class TestCancellation:
         with (
             mock.patch(
                 "symphony_linear.orchestrator.clone_workspace",
-                return_value="/tmp/ws/TEAM-1",
+                return_value=("/tmp/ws/TEAM-1", False),
             ),
             mock.patch(
                 "symphony_linear.orchestrator.finalize_workspace",
@@ -1988,7 +2036,7 @@ class TestHidePaths:
         with (
             mock.patch(
                 "symphony_linear.orchestrator.clone_workspace",
-                return_value="/tmp/ws/TEAM-1",
+                return_value=("/tmp/ws/TEAM-1", False),
             ),
             mock.patch(
                 "symphony_linear.orchestrator.finalize_workspace",
@@ -2059,7 +2107,7 @@ class TestExtraRWPaths:
         with (
             mock.patch(
                 "symphony_linear.orchestrator.clone_workspace",
-                return_value="/tmp/ws/TEAM-1",
+                return_value=("/tmp/ws/TEAM-1", False),
             ),
             mock.patch(
                 "symphony_linear.orchestrator.finalize_workspace",
@@ -2094,7 +2142,7 @@ class TestExtraRWPaths:
         with (
             mock.patch(
                 "symphony_linear.orchestrator.clone_workspace",
-                return_value="/tmp/ws/TEAM-1",
+                return_value=("/tmp/ws/TEAM-1", False),
             ),
             mock.patch(
                 "symphony_linear.orchestrator.finalize_workspace",
@@ -3047,7 +3095,7 @@ class TestFix2CancelledAgentGuards:
         with (
             mock.patch(
                 "symphony_linear.orchestrator.clone_workspace",
-                return_value="/tmp/ws/TEAM-1",
+                return_value=("/tmp/ws/TEAM-1", False),
             ),
             mock.patch(
                 "symphony_linear.orchestrator.finalize_workspace",
@@ -3091,7 +3139,7 @@ class TestFix2CancelledAgentGuards:
         with (
             mock.patch(
                 "symphony_linear.orchestrator.clone_workspace",
-                return_value="/tmp/ws/TEAM-1",
+                return_value=("/tmp/ws/TEAM-1", False),
             ),
             mock.patch(
                 "symphony_linear.orchestrator.finalize_workspace",
@@ -3441,7 +3489,7 @@ class TestCorrection3:
         with (
             mock.patch(
                 "symphony_linear.orchestrator.clone_workspace",
-                return_value="/tmp/ws/TEAM-1",
+                return_value=("/tmp/ws/TEAM-1", False),
             ),
             mock.patch(
                 "symphony_linear.orchestrator.finalize_workspace",
