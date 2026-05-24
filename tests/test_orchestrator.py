@@ -914,6 +914,125 @@ class TestNewTicketProjectConfig:
         ts = orchestrator._state.get("ticket-1")
         assert ts is not None
 
+    def test_save_setup_error_baseline_comment_id_when_post_fails(
+        self, orchestrator: Orchestrator, linear: FakeLinearClient
+    ) -> None:
+        """When error comment post fails, baseline last_seen_comment_id to most recent comment."""
+        linear.set_response(
+            "get_project",
+            Project(
+                id="proj-1",
+                name="Test",
+                links=[
+                    ProjectLink(label="Repo", url="https://github.com/org/repo.git")
+                ],
+            ),
+        )
+        # A historical comment exists.
+        linear.set_response(
+            "list_comments_since",
+            [_make_comment("cmt-old-1", "Hello")],
+        )
+        # Make post_comment fail so error_comment is None.
+        linear.set_response("post_comment", LinearError("api down"))
+        with (
+            mock.patch(
+                "symphony_linear.orchestrator.clone_workspace",
+                return_value=("/tmp/ws/TEAM-1", False),
+            ),
+            mock.patch(
+                "symphony_linear.orchestrator.load_project_config",
+                side_effect=ProjectConfigError("invalid YAML"),
+            ),
+            mock.patch("symphony_linear.orchestrator.run_initial"),
+        ):
+            orchestrator._new_ticket_pipeline(_make_issue())
+
+        ts = orchestrator._state.get("ticket-1")
+        assert ts is not None
+        assert ts.status == TicketStatus.failed
+        assert ts.setup_error == "project_config_invalid"
+        # Baseline should be the most recent existing comment, not None.
+        assert ts.last_seen_comment_id == "cmt-old-1"
+
+    def test_save_setup_error_baseline_comment_id_fallback(
+        self, orchestrator: Orchestrator, linear: FakeLinearClient
+    ) -> None:
+        """When error comment post fails AND list_comments_since also fails, fall back to None."""
+        linear.set_response(
+            "get_project",
+            Project(
+                id="proj-1",
+                name="Test",
+                links=[
+                    ProjectLink(label="Repo", url="https://github.com/org/repo.git")
+                ],
+            ),
+        )
+        # list_comments_since also raises → baselining fails too.
+        linear.set_response("list_comments_since", LinearError("api down"))
+        # Make post_comment fail so error_comment is None.
+        linear.set_response("post_comment", LinearError("api down"))
+        with (
+            mock.patch(
+                "symphony_linear.orchestrator.clone_workspace",
+                return_value=("/tmp/ws/TEAM-1", False),
+            ),
+            mock.patch(
+                "symphony_linear.orchestrator.load_project_config",
+                side_effect=ProjectConfigError("invalid YAML"),
+            ),
+            mock.patch("symphony_linear.orchestrator.run_initial"),
+        ):
+            orchestrator._new_ticket_pipeline(_make_issue())
+
+        ts = orchestrator._state.get("ticket-1")
+        assert ts is not None
+        assert ts.status == TicketStatus.failed
+        assert ts.setup_error == "project_config_invalid"
+        # Both the post and baseline fetch failed → last_seen remains None.
+        assert ts.last_seen_comment_id is None
+
+    def test_save_setup_error_preserves_existing_last_seen_when_post_fails(
+        self, orchestrator: Orchestrator, linear: FakeLinearClient
+    ) -> None:
+        """When error_comment is None but existing state has a valid last_seen_comment_id, preserve it."""
+        # Pre-populate state with a known-good last_seen_comment_id.
+        existing = TicketState(
+            ticket_id="ticket-1",
+            ticket_identifier="TEAM-1",
+            project_id="proj-1",
+            repo_url="https://github.com/org/repo.git",
+            workspace_path="/tmp/ws/TEAM-1",
+            branch="feature/test",
+            status=TicketStatus.bootstrapping,
+            last_seen_comment_id="cmt-prior",
+        )
+        orchestrator._state.upsert(existing)
+        orchestrator._state.save()
+
+        with mock.patch.object(
+            orchestrator._tracker, "list_comments_since"
+        ) as mock_lcs:
+            orchestrator._save_setup_error(
+                "ticket-1",
+                _make_issue(),
+                "project_config_invalid",
+                error_comment=None,
+            )
+
+        # list_comments_since must not be called — the existing baseline is reused.
+        mock_lcs.assert_not_called()
+
+        ts = orchestrator._state.get("ticket-1")
+        assert ts is not None
+        assert ts.status == TicketStatus.failed
+        assert ts.setup_error == "project_config_invalid"
+        assert ts.last_seen_comment_id == "cmt-prior"
+        # Other fields preserved from prior state.
+        assert ts.workspace_path == "/tmp/ws/TEAM-1"
+        assert ts.branch == "feature/test"
+
 
 # ---------------------------------------------------------------------------
 # Resume pipeline
@@ -1246,6 +1365,54 @@ class TestResumeProjectConfig:
             ):
                 orchestrator._resume_pipeline(ts)
         mock_load.assert_called_once_with("/tmp/ws/TEAM-1")
+
+    def test_project_config_error_baseline_comment_when_post_fails_and_last_seen_is_none(
+        self, orchestrator: Orchestrator, linear: FakeLinearClient
+    ) -> None:
+        """When post fails AND last_seen is None, baseline to most recent comment."""
+        ts = self._make_ts(last_seen_comment_id=None)
+        orchestrator._state.upsert(ts)
+        linear.set_response(
+            "list_comments_since",
+            [_make_comment("cmt-human", "Fix please")],
+        )
+        linear.set_response("post_comment", LinearError("api down"))
+        with mock.patch(
+            "symphony_linear.orchestrator.load_project_config",
+            side_effect=ProjectConfigError("bad config"),
+        ):
+            orchestrator._resume_pipeline(ts)
+
+        updated = orchestrator._state.get("ticket-1")
+        assert updated is not None
+        assert updated.status == TicketStatus.failed
+        assert updated.setup_error == "project_config_invalid"
+        # When last_seen was None, baseline to the most recent comment.
+        assert updated.last_seen_comment_id == "cmt-human"
+
+    def test_project_config_error_preserves_existing_last_seen_when_post_fails(
+        self, orchestrator: Orchestrator, linear: FakeLinearClient
+    ) -> None:
+        """When post fails but last_seen already has a valid value, preserve it."""
+        ts = self._make_ts(last_seen_comment_id="cmt-prior-baseline")
+        orchestrator._state.upsert(ts)
+        linear.set_response(
+            "list_comments_since",
+            [_make_comment("cmt-human", "Fix please")],
+        )
+        linear.set_response("post_comment", LinearError("api down"))
+        with mock.patch(
+            "symphony_linear.orchestrator.load_project_config",
+            side_effect=ProjectConfigError("bad config"),
+        ):
+            orchestrator._resume_pipeline(ts)
+
+        updated = orchestrator._state.get("ticket-1")
+        assert updated is not None
+        assert updated.status == TicketStatus.failed
+        assert updated.setup_error == "project_config_invalid"
+        # Existing valid baseline must be kept, not overwritten.
+        assert updated.last_seen_comment_id == "cmt-prior-baseline"
 
 
 # ---------------------------------------------------------------------------

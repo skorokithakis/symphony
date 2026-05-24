@@ -1177,6 +1177,8 @@ class Orchestrator:
                 ticket_state.updated_at = _iso_now()
                 if err_comment is not None:
                     ticket_state.last_seen_comment_id = err_comment.id
+                elif ticket_state.last_seen_comment_id is None:
+                    ticket_state.last_seen_comment_id = self._baseline_comment_id(tid)
                 self._state.upsert(ticket_state)
                 self._state.save()
             return
@@ -1345,16 +1347,21 @@ class Orchestrator:
         session_id.  Only overwrite the setup-error-related fields.
         """
         existing = self._state.get(tid)
+        # Determine last_seen_comment_id baseline.
+        last_seen: str | None
+        if error_comment is not None:
+            last_seen = error_comment.id
+        elif existing is not None and existing.last_seen_comment_id is not None:
+            last_seen = existing.last_seen_comment_id
+        else:
+            last_seen = self._baseline_comment_id(tid)
+
         if existing is not None:
             ts = existing.model_copy(
                 update={
                     "status": TicketStatus.failed,
                     "setup_error": error_code,
-                    "last_seen_comment_id": (
-                        error_comment.id
-                        if error_comment
-                        else existing.last_seen_comment_id
-                    ),
+                    "last_seen_comment_id": last_seen,
                     "updated_at": _iso_now(),
                 }
             )
@@ -1372,11 +1379,23 @@ class Orchestrator:
                 branch=branch,
                 status=TicketStatus.failed,
                 setup_error=error_code,
-                last_seen_comment_id=error_comment.id if error_comment else None,
+                last_seen_comment_id=last_seen,
             )
         with self._state_lock:
             self._state.upsert(ts)
             self._state.save()
+
+    def _baseline_comment_id(self, tid: str) -> str | None:
+        """Return the id of the most recent comment, or None if none exist or the call fails."""
+        try:
+            comments = self._tracker.list_comments_since(tid, None)
+            if comments:
+                return comments[-1].id
+        except Exception:
+            logger.warning(
+                "Cannot fetch comments to baseline last_seen_comment_id for %s", tid
+            )
+        return None
 
     def _has_new_human_comment(self, issue_id: str, last_seen: str | None) -> bool:
         try:
