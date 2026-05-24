@@ -137,8 +137,9 @@ shutting down, or the ticket is no longer triggered — see `_is_still_triggered
 .venv/bin/python -m symphony_linear --validate-config --workspace <dir>
 ```
 
-There is no linter configured. There is no Makefile. If you add tooling,
-update this file.
+A `pre-commit` config runs `ruff` (lint + format) and `mypy` on every commit,
+so there's no need to invoke them manually. There is no Makefile. If you add
+tooling, update this file.
 
 Tests heavily use `unittest.mock`. Look at `tests/test_orchestrator.py` for
 the patterns — fake `LinearClient`, mocked `run_initial`/`run_resume`,
