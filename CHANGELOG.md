@@ -1,5 +1,33 @@
 # Changelog
 
+## [0.4.0](https://github.com/skorokithakis/symphony/compare/v0.3.0...v0.4.0) (2026-05-24)
+
+
+### ⚠ BREAKING CHANGES
+
+* The 'bot_user_email' field in the Linear config section has been removed. Configs that still set it will fail to load.
+
+### Features
+
+* Add clone_protocol option to GitHub backend for HTTPS cloning ([54b9612](https://github.com/skorokithakis/symphony/commit/54b961257d91f344bdc4fc45a341c631e4244fa1))
+* add optional webhook receiver to wake the poll loop on Linear updates ([571f5e8](https://github.com/skorokithakis/symphony/commit/571f5e8e8de1c26600577cc4e05c07b492d628cb))
+* Append context-tokens footer to tracker comments ([cdf6c34](https://github.com/skorokithakis/symphony/commit/cdf6c347023ed414535461d277be9eed34292893))
+* Identify daemon comments by sentinel instead of bot user identity ([e5fc532](https://github.com/skorokithakis/symphony/commit/e5fc53248baa20aa7913f4d7d5e608d9ac051958))
+
+
+### Bug Fixes
+
+* Auto-recover workspace on git fetch failure when clean ([d9394f0](https://github.com/skorokithakis/symphony/commit/d9394f08a6fad7b5f061f7a635ac8af89a676c16))
+* Baseline last_seen_comment_id when error comment post fails ([2983210](https://github.com/skorokithakis/symphony/commit/298321057c8d088ff782c82af06b4bfaf9b61c5d))
+* Tolerate per-item GraphQL errors when listing GitHub project items ([336161a](https://github.com/skorokithakis/symphony/commit/336161a4278cc7da28894dd7ea60b90a2305185d))
+
+
+### Documentation
+
+* Document clone_protocol option in config.yaml.example ([f7deceb](https://github.com/skorokithakis/symphony/commit/f7deceb1570821920956c8d99582de4eb076d8c4))
+* Note pre-commit tooling in AGENTS.md ([d05a97e](https://github.com/skorokithakis/symphony/commit/d05a97e2f0f5d8443d95dfd73456317fb05fb03d))
+* Require capitalized description in commit messages ([4d0053f](https://github.com/skorokithakis/symphony/commit/4d0053faed8adfecc131abe7ecf250fa890e8f6a))
+
 ## [0.3.0](https://github.com/skorokithakis/symphony/compare/v0.2.0...v0.3.0) (2026-05-15)
 
 
