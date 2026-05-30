@@ -148,9 +148,9 @@ For each repository you want Symphony to work on:
 
 1. Create a Linear project. Any team project will do; Symphony only uses it
    to find the repo URL.
-2. In that project, open **Resources** and add a link with the label `Repo`
-   (case-insensitive) and the git clone URL as the target, for example
-   `git@github.com:you/your-project.git`.
+2. In that project, open **Resources** and add a link with title `Repo`
+   (case-insensitive) and the GitHub URL as the URL, for example
+   `https://github.com/you/your-project`.
 
 That link is how the daemon discovers which repo belongs to which ticket.
 
