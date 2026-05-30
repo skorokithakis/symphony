@@ -176,6 +176,8 @@ def run_initial(
     on_subprocess: Callable[[subprocess.Popen[bytes]], None],
     hide_paths: list[str] | None = None,
     extra_rw_paths: list[str] | None = None,
+    attachments_path: str | None = None,
+    files: list[str] | None = None,
 ) -> tuple[str, str, int | None]:
     """Launch OpenCode for a new session with *prompt* and return the session
     id, final assistant message, and context-window token count.
@@ -194,6 +196,11 @@ def run_initial(
             list (no extra hiding).
         extra_rw_paths: Additional host paths to bind read-write inside the
             sandbox.  Defaults to empty list.
+        attachments_path: Optional host path to a per-ticket attachments
+            directory.  Passed through to the sandbox.
+        files: File paths to attach to the turn via ``--file``.  Each path is
+            emitted as a ``--file <path>`` pair before the ``--`` separator.
+            Defaults to ``None`` (no files).
 
     Returns:
         A tuple of ``(session_id, final_message, context_tokens)`` where
@@ -213,6 +220,9 @@ def run_initial(
         "json",
         "--dangerously-skip-permissions",
     ]
+    if files:
+        for f in files:
+            cmd += ["--file", f]
     cmd += ["--", prompt]
 
     return _execute(
@@ -222,6 +232,7 @@ def run_initial(
         on_subprocess=on_subprocess,
         hide_paths=hide_paths or [],
         extra_rw_paths=extra_rw_paths or [],
+        attachments_path=attachments_path,
     )
 
 
@@ -234,6 +245,8 @@ def run_resume(
     on_subprocess: Callable[[subprocess.Popen[bytes]], None],
     hide_paths: list[str] | None = None,
     extra_rw_paths: list[str] | None = None,
+    attachments_path: str | None = None,
+    files: list[str] | None = None,
 ) -> tuple[str, int | None]:
     """Resume an existing OpenCode session with a follow-up *message*.
 
@@ -251,6 +264,11 @@ def run_resume(
             list (no extra hiding).
         extra_rw_paths: Additional host paths to bind read-write inside the
             sandbox.  Defaults to empty list.
+        attachments_path: Optional host path to a per-ticket attachments
+            directory.  Passed through to the sandbox.
+        files: File paths to attach to the turn via ``--file``.  Each path is
+            emitted as a ``--file <path>`` pair before the ``--`` separator.
+            Defaults to ``None`` (no files).
 
     Returns:
         A tuple of ``(final_message, context_tokens)`` where *context_tokens*
@@ -271,9 +289,11 @@ def run_resume(
         "--format",
         "json",
         "--dangerously-skip-permissions",
-        "--",
-        message,
     ]
+    if files:
+        for f in files:
+            cmd += ["--file", f]
+    cmd += ["--", message]
 
     _, final_message, context_tokens = _execute(
         cmd=cmd,
@@ -282,6 +302,7 @@ def run_resume(
         on_subprocess=on_subprocess,
         hide_paths=hide_paths or [],
         extra_rw_paths=extra_rw_paths or [],
+        attachments_path=attachments_path,
     )
     return final_message, context_tokens
 
@@ -298,6 +319,7 @@ def _execute(
     on_subprocess: Callable[[subprocess.Popen[bytes]], None],
     hide_paths: list[str] | None = None,
     extra_rw_paths: list[str] | None = None,
+    attachments_path: str | None = None,
 ) -> tuple[str, str, int | None]:
     """Launch *cmd* inside the sandbox and parse the JSON event stream.
 
@@ -313,6 +335,7 @@ def _execute(
         stdout=subprocess.PIPE,
         stderr=subprocess.PIPE,
         extra_rw_paths=extra_rw_paths or [],
+        attachments_path=attachments_path,
     )
 
     # Let the caller register the Popen handle immediately.

@@ -32,6 +32,9 @@ SETUP_TIMEOUT_SECONDS = 300
 # Default branch name is derived from the ticket identifier (lowercased).
 _DEFAULT_BRANCH_PREFIX = "symphony/"
 
+# Subdirectory under workspace_root where per-ticket attachments live.
+_ATTACHMENTS_DIR = ".attachments"
+
 
 # ---------------------------------------------------------------------------
 # Typed exceptions
@@ -70,6 +73,35 @@ class ServeScriptMissing(WorkspaceError):
 def _sanitize_identifier(identifier: str) -> str:
     """Replace any character not in ``[A-Za-z0-9._-]`` with ``_``."""
     return _VALID_CHARS_RE.sub("_", identifier)
+
+
+def compute_attachments_path(ticket_identifier: str, workspace_root: str) -> str:
+    """Return the per-ticket attachments directory path.
+
+    The path is ``<workspace_root>/.attachments/<sanitized_identifier>/``.
+    This function does **not** create the directory or check containment.
+    """
+    workspace_key = _sanitize_identifier(ticket_identifier)
+    return os.path.join(workspace_root, _ATTACHMENTS_DIR, workspace_key)
+
+
+def ensure_attachments_dir(ticket_identifier: str, workspace_root: str) -> str:
+    """Create and return the per-ticket attachments directory, verified safe.
+
+    1. Computes the path via :func:`compute_attachments_path`.
+    2. Validates the path is contained within *workspace_root* (blocks symlink
+       escapes).
+    3. Creates the directory tree with mode ``0o700``.
+    4. Returns the validated host path.
+
+    Raises:
+        PathContainmentError: If the computed path is not within
+            *workspace_root* after realpath resolution.
+    """
+    attachments_dir = compute_attachments_path(ticket_identifier, workspace_root)
+    _check_containment(attachments_dir, workspace_root)
+    os.makedirs(attachments_dir, mode=0o700, exist_ok=True)
+    return attachments_dir
 
 
 def _check_containment(workspace_path: str, workspace_root: str) -> str:
@@ -537,6 +569,9 @@ def prepare(
     :func:`finalize_workspace`.  See those functions for full documentation
     of each step.
 
+    Also creates the per-ticket attachments directory at
+    ``<workspace_root>/.attachments/<sanitized_identifier>/`` with mode 0700.
+
     Returns:
         The real path to the prepared workspace.
 
@@ -557,6 +592,10 @@ def prepare(
         sandbox_extra_rw_paths=sandbox_extra_rw_paths,
         auto_branch=auto_branch,
     )
+
+    # Ensure the per-ticket attachments directory exists.
+    ensure_attachments_dir(ticket_identifier, workspace_root)
+
     return real_path
 
 
@@ -564,9 +603,9 @@ def remove(
     ticket_identifier: str,
     workspace_root: str,
 ) -> None:
-    """Delete the workspace for *ticket_identifier*.
+    """Delete the workspace and attachments directory for *ticket_identifier*.
 
-    Idempotent — no error if the workspace is already gone.
+    Idempotent — no error if the workspace or attachments dir is already gone.
 
     Args:
         ticket_identifier: Human-readable ticket ID.
@@ -581,10 +620,22 @@ def remove(
     # Verify containment before removing anything.
     _check_containment(workspace_path, workspace_root)
 
-    if not os.path.isdir(workspace_path):
+    # Remove the workspace clone.
+    if os.path.isdir(workspace_path):
+        logger.info("Removing workspace %s", workspace_path)
+        shutil.rmtree(workspace_path, ignore_errors=False)
+        logger.info("Workspace %s removed", workspace_path)
+    else:
         logger.debug("Workspace %s does not exist – nothing to remove", workspace_path)
-        return
 
-    logger.info("Removing workspace %s", workspace_path)
-    shutil.rmtree(workspace_path, ignore_errors=False)
-    logger.info("Workspace %s removed", workspace_path)
+    # Remove the attachments directory.
+    attachments_dir = compute_attachments_path(ticket_identifier, workspace_root)
+    _check_containment(attachments_dir, workspace_root)
+    if os.path.isdir(attachments_dir):
+        logger.info("Removing attachments %s", attachments_dir)
+        shutil.rmtree(attachments_dir, ignore_errors=False)
+        logger.info("Attachments %s removed", attachments_dir)
+    else:
+        logger.debug(
+            "Attachments %s does not exist – nothing to remove", attachments_dir
+        )

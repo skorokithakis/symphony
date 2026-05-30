@@ -12,6 +12,7 @@ from unittest import mock
 
 import pytest
 
+from symphony_linear.attachments import AttachmentResult
 from symphony_linear.config import AppConfig
 from symphony_linear.linear import (
     Comment,
@@ -1413,6 +1414,441 @@ class TestResumeProjectConfig:
         assert updated.setup_error == "project_config_invalid"
         # Existing valid baseline must be kept, not overwritten.
         assert updated.last_seen_comment_id == "cmt-prior-baseline"
+
+
+# ---------------------------------------------------------------------------
+# Attachment wiring
+# ---------------------------------------------------------------------------
+
+
+class TestAttachmentWiringInitial:
+    """Attachment processing in the initial (new-ticket) pipeline."""
+
+    def _setup_mocks_for_attachments(
+        self,
+        linear: FakeLinearClient,
+        mock_clone: Any,
+        mock_finalize: Any,
+        mock_load_config: Any,
+    ) -> Issue:
+        mock_clone.return_value = ("/tmp/workspaces/TEAM-1", False)
+        mock_finalize.return_value = None
+        mock_load_config.return_value = ProjectConfig()
+        linear.set_response(
+            "get_project",
+            Project(
+                id="proj-1",
+                name="Test",
+                links=[
+                    ProjectLink(label="Repo", url="https://github.com/org/repo.git")
+                ],
+            ),
+        )
+        linear.set_response(
+            "get_issue", _make_issue(description="Fix ![img](http://ex.com/pic.png)")
+        )
+        return _make_issue()
+
+    def test_files_passed_to_run_initial(
+        self, orchestrator: Orchestrator, linear: FakeLinearClient
+    ) -> None:
+        """run_initial receives files and attachments_path from process_attachments."""
+        with (
+            mock.patch("symphony_linear.orchestrator.clone_workspace") as mock_clone,
+            mock.patch(
+                "symphony_linear.orchestrator.finalize_workspace"
+            ) as mock_finalize,
+            mock.patch(
+                "symphony_linear.orchestrator.load_project_config"
+            ) as mock_load_config,
+            mock.patch("symphony_linear.orchestrator.run_initial") as mock_run_initial,
+            mock.patch(
+                "symphony_linear.orchestrator.process_attachments"
+            ) as mock_process,
+        ):
+            issue = self._setup_mocks_for_attachments(
+                linear, mock_clone, mock_finalize, mock_load_config
+            )
+            mock_run_initial.return_value = ("ses-abc", "I have done the work.", None)
+            mock_process.return_value = AttachmentResult(
+                rewritten_body="Rewritten desc",
+                file_paths=["/tmp/symphony-attachments/img-0001.png"],
+                skipped=[],
+                next_index=1,
+            )
+
+            orchestrator._new_ticket_pipeline(issue)
+
+        _, kwargs = mock_run_initial.call_args
+        assert kwargs.get("files") == ["/tmp/symphony-attachments/img-0001.png"]
+        assert kwargs.get("attachments_path") is not None
+        assert "Rewritten desc" in kwargs["prompt"]
+
+    def test_rewritten_body_in_prompt(
+        self, orchestrator: Orchestrator, linear: FakeLinearClient
+    ) -> None:
+        """The initial prompt uses the rewritten body from process_attachments."""
+        with (
+            mock.patch("symphony_linear.orchestrator.clone_workspace") as mock_clone,
+            mock.patch(
+                "symphony_linear.orchestrator.finalize_workspace"
+            ) as mock_finalize,
+            mock.patch(
+                "symphony_linear.orchestrator.load_project_config"
+            ) as mock_load_config,
+            mock.patch("symphony_linear.orchestrator.run_initial") as mock_run_initial,
+            mock.patch(
+                "symphony_linear.orchestrator.process_attachments"
+            ) as mock_process,
+        ):
+            issue = self._setup_mocks_for_attachments(
+                linear, mock_clone, mock_finalize, mock_load_config
+            )
+            mock_run_initial.return_value = ("ses-abc", "Done.", None)
+            mock_process.return_value = AttachmentResult(
+                rewritten_body="Body with /tmp/symphony-attachments/img-0001.png",
+                file_paths=["/tmp/symphony-attachments/img-0001.png"],
+                skipped=[],
+                next_index=1,
+            )
+
+            orchestrator._new_ticket_pipeline(issue)
+
+        _, kwargs = mock_run_initial.call_args
+        assert "Body with /tmp/symphony-attachments/img-0001.png" in kwargs["prompt"]
+
+    def test_skipped_comment_posted(
+        self, orchestrator: Orchestrator, linear: FakeLinearClient
+    ) -> None:
+        """When process_attachments returns skipped entries, a comment is posted."""
+        with (
+            mock.patch("symphony_linear.orchestrator.clone_workspace") as mock_clone,
+            mock.patch(
+                "symphony_linear.orchestrator.finalize_workspace"
+            ) as mock_finalize,
+            mock.patch(
+                "symphony_linear.orchestrator.load_project_config"
+            ) as mock_load_config,
+            mock.patch("symphony_linear.orchestrator.run_initial") as mock_run_initial,
+            mock.patch(
+                "symphony_linear.orchestrator.process_attachments"
+            ) as mock_process,
+        ):
+            issue = self._setup_mocks_for_attachments(
+                linear, mock_clone, mock_finalize, mock_load_config
+            )
+            mock_run_initial.return_value = ("ses-abc", "Done.", None)
+            mock_process.return_value = AttachmentResult(
+                rewritten_body="Body",
+                file_paths=[],
+                skipped=[("http://bad.com/pic.png", "download failed")],
+                next_index=1,
+            )
+
+            orchestrator._new_ticket_pipeline(issue)
+
+        post_calls = linear.calls.get("post_comment", [])
+        skipped_bodies = [
+            body for _, body in post_calls if "skipped attachments" in body
+        ]
+        assert len(skipped_bodies) == 1
+        assert "http://bad.com/pic.png: download failed" in skipped_bodies[0]
+        # Footer should be "attachments"
+        assert "*Symphony · attachments*" in skipped_bodies[0]
+
+    def test_attachment_count_incremented(
+        self, orchestrator: Orchestrator, linear: FakeLinearClient
+    ) -> None:
+        """attachment_count is incremented by the number of downloaded files."""
+        with (
+            mock.patch("symphony_linear.orchestrator.clone_workspace") as mock_clone,
+            mock.patch(
+                "symphony_linear.orchestrator.finalize_workspace"
+            ) as mock_finalize,
+            mock.patch(
+                "symphony_linear.orchestrator.load_project_config"
+            ) as mock_load_config,
+            mock.patch("symphony_linear.orchestrator.run_initial") as mock_run_initial,
+            mock.patch(
+                "symphony_linear.orchestrator.process_attachments"
+            ) as mock_process,
+        ):
+            issue = self._setup_mocks_for_attachments(
+                linear, mock_clone, mock_finalize, mock_load_config
+            )
+            mock_run_initial.return_value = ("ses-abc", "Done.", None)
+            mock_process.return_value = AttachmentResult(
+                rewritten_body="Body",
+                file_paths=[
+                    "/tmp/symphony-attachments/img-0001.png",
+                    "/tmp/symphony-attachments/img-0002.png",
+                ],
+                skipped=[],
+                next_index=2,
+            )
+
+            orchestrator._new_ticket_pipeline(issue)
+
+        ts = orchestrator._state.get("ticket-1")
+        assert ts is not None
+        assert ts.attachment_count == 2
+
+    def test_attachment_count_persisted(
+        self, orchestrator: Orchestrator, linear: FakeLinearClient
+    ) -> None:
+        """attachment_count is persisted to state.json."""
+        with (
+            mock.patch("symphony_linear.orchestrator.clone_workspace") as mock_clone,
+            mock.patch(
+                "symphony_linear.orchestrator.finalize_workspace"
+            ) as mock_finalize,
+            mock.patch(
+                "symphony_linear.orchestrator.load_project_config"
+            ) as mock_load_config,
+            mock.patch("symphony_linear.orchestrator.run_initial") as mock_run_initial,
+            mock.patch(
+                "symphony_linear.orchestrator.process_attachments"
+            ) as mock_process,
+        ):
+            issue = self._setup_mocks_for_attachments(
+                linear, mock_clone, mock_finalize, mock_load_config
+            )
+            mock_run_initial.return_value = ("ses-abc", "Done.", None)
+            mock_process.return_value = AttachmentResult(
+                rewritten_body="Body",
+                file_paths=["/tmp/symphony-attachments/img-0001.png"],
+                skipped=[],
+                next_index=1,
+            )
+
+            orchestrator._new_ticket_pipeline(issue)
+
+        # Re-load state from disk to verify persistence.
+        mgr2 = StateManager(orchestrator._state._path)  # type: ignore[attr-defined]
+        mgr2.load()
+        ts = mgr2.get("ticket-1")
+        assert ts is not None
+        assert ts.attachment_count == 1
+
+    def test_plumbing_failure_does_not_break_turn(
+        self, orchestrator: Orchestrator, linear: FakeLinearClient
+    ) -> None:
+        """When process_attachments raises, the turn proceeds with original description."""
+        with (
+            mock.patch("symphony_linear.orchestrator.clone_workspace") as mock_clone,
+            mock.patch(
+                "symphony_linear.orchestrator.finalize_workspace"
+            ) as mock_finalize,
+            mock.patch(
+                "symphony_linear.orchestrator.load_project_config"
+            ) as mock_load_config,
+            mock.patch("symphony_linear.orchestrator.run_initial") as mock_run_initial,
+            mock.patch(
+                "symphony_linear.orchestrator.process_attachments"
+            ) as mock_process,
+        ):
+            issue = self._setup_mocks_for_attachments(
+                linear, mock_clone, mock_finalize, mock_load_config
+            )
+            mock_run_initial.return_value = ("ses-abc", "Done.", None)
+            mock_process.side_effect = RuntimeError("attachment plumbing bug")
+
+            orchestrator._new_ticket_pipeline(issue)
+
+        # run_initial must still be called.
+        mock_run_initial.assert_called_once()
+        _, kwargs = mock_run_initial.call_args
+        # Original description used (contains the raw image markdown).
+        assert "![img](http://ex.com/pic.png)" in kwargs["prompt"]
+        # No files and attachments_path is still passed (directory exists).
+        assert kwargs.get("files") == []
+
+
+class TestAttachmentWiringResume:
+    """Attachment processing in the resume pipeline."""
+
+    def _make_ts(self, **overrides: Any) -> TicketState:
+        defaults: dict[str, Any] = {
+            "ticket_id": "ticket-1",
+            "ticket_identifier": "TEAM-1",
+            "repo_url": "https://github.com/org/repo.git",
+            "workspace_path": "/tmp/ws/TEAM-1",
+            "branch": "feature/test",
+            "status": TicketStatus.needs_input,
+            "session_id": "ses-abc",
+            "last_seen_comment_id": "cmt-seen-1",
+        }
+        defaults.update(overrides)
+        return TicketState(**defaults)
+
+    def test_files_passed_to_run_resume(
+        self, orchestrator: Orchestrator, linear: FakeLinearClient
+    ) -> None:
+        """run_resume receives files and attachments_path from process_attachments."""
+        ts = self._make_ts()
+        orchestrator._state.upsert(ts)
+        linear.set_response(
+            "list_comments_since",
+            [_make_comment("c1", "Fix please ![img](http://ex.com/pic.png)")],
+        )
+        with (
+            mock.patch(
+                "symphony_linear.orchestrator.load_project_config",
+                return_value=ProjectConfig(),
+            ),
+            mock.patch("symphony_linear.orchestrator.run_resume") as mock_run_resume,
+            mock.patch(
+                "symphony_linear.orchestrator.process_attachments"
+            ) as mock_process,
+        ):
+            mock_run_resume.return_value = ("Done!", None)
+            mock_process.return_value = AttachmentResult(
+                rewritten_body="Rewritten message",
+                file_paths=["/tmp/symphony-attachments/img-0001.png"],
+                skipped=[],
+                next_index=1,
+            )
+
+            orchestrator._resume_pipeline(ts)
+
+        _, kwargs = mock_run_resume.call_args
+        assert kwargs.get("files") == ["/tmp/symphony-attachments/img-0001.png"]
+        assert kwargs.get("attachments_path") is not None
+        assert kwargs.get("message") == "Rewritten message"
+
+    def test_rewritten_message_passed(
+        self, orchestrator: Orchestrator, linear: FakeLinearClient
+    ) -> None:
+        """run_resume receives the rewritten message body."""
+        ts = self._make_ts()
+        orchestrator._state.upsert(ts)
+        linear.set_response(
+            "list_comments_since",
+            [_make_comment("c1", "Look at ![img](http://ex.com/pic.png)")],
+        )
+        with (
+            mock.patch(
+                "symphony_linear.orchestrator.load_project_config",
+                return_value=ProjectConfig(),
+            ),
+            mock.patch("symphony_linear.orchestrator.run_resume") as mock_run_resume,
+            mock.patch(
+                "symphony_linear.orchestrator.process_attachments"
+            ) as mock_process,
+        ):
+            mock_run_resume.return_value = ("Done!", None)
+            mock_process.return_value = AttachmentResult(
+                rewritten_body="Look at /tmp/symphony-attachments/img-0001.png",
+                file_paths=["/tmp/symphony-attachments/img-0001.png"],
+                skipped=[],
+                next_index=1,
+            )
+
+            orchestrator._resume_pipeline(ts)
+
+        _, kwargs = mock_run_resume.call_args
+        assert kwargs.get("message") == "Look at /tmp/symphony-attachments/img-0001.png"
+
+    def test_attachment_count_incremented_on_resume(
+        self, orchestrator: Orchestrator, linear: FakeLinearClient
+    ) -> None:
+        """attachment_count is incremented on resume."""
+        ts = self._make_ts(attachment_count=5)
+        orchestrator._state.upsert(ts)
+        linear.set_response(
+            "list_comments_since",
+            [_make_comment("c1", "Check attachment")],
+        )
+        with (
+            mock.patch(
+                "symphony_linear.orchestrator.load_project_config",
+                return_value=ProjectConfig(),
+            ),
+            mock.patch("symphony_linear.orchestrator.run_resume") as mock_run_resume,
+            mock.patch(
+                "symphony_linear.orchestrator.process_attachments"
+            ) as mock_process,
+        ):
+            mock_run_resume.return_value = ("Done!", None)
+            mock_process.return_value = AttachmentResult(
+                rewritten_body="Check attachment",
+                file_paths=[
+                    "/tmp/symphony-attachments/img-0006.png",
+                    "/tmp/symphony-attachments/img-0007.png",
+                ],
+                skipped=[],
+                next_index=7,
+            )
+
+            orchestrator._resume_pipeline(ts)
+
+        updated = orchestrator._state.get("ticket-1")
+        assert updated is not None
+        assert updated.attachment_count == 7
+
+    def test_existing_count_passed_correctly(
+        self, orchestrator: Orchestrator, linear: FakeLinearClient
+    ) -> None:
+        """process_attachments receives existing_count equal to current attachment_count."""
+        ts = self._make_ts(attachment_count=3)
+        orchestrator._state.upsert(ts)
+        linear.set_response(
+            "list_comments_since",
+            [_make_comment("c1", "img")],
+        )
+        with (
+            mock.patch(
+                "symphony_linear.orchestrator.load_project_config",
+                return_value=ProjectConfig(),
+            ),
+            mock.patch("symphony_linear.orchestrator.run_resume") as mock_run_resume,
+            mock.patch(
+                "symphony_linear.orchestrator.process_attachments"
+            ) as mock_process,
+        ):
+            mock_run_resume.return_value = ("Done!", None)
+            mock_process.return_value = AttachmentResult(
+                rewritten_body="img",
+                file_paths=["/tmp/symphony-attachments/img-0004.png"],
+                skipped=[],
+                next_index=1,
+            )
+
+            orchestrator._resume_pipeline(ts)
+
+        _, kwargs = mock_process.call_args
+        assert kwargs.get("existing_count") == 3
+
+    def test_plumbing_failure_does_not_break_resume(
+        self, orchestrator: Orchestrator, linear: FakeLinearClient
+    ) -> None:
+        """When process_attachments raises on resume, the turn proceeds with original message."""
+        ts = self._make_ts()
+        orchestrator._state.upsert(ts)
+        linear.set_response(
+            "list_comments_since",
+            [_make_comment("c1", "Hello ![img](http://ex.com/pic.png)")],
+        )
+        with (
+            mock.patch(
+                "symphony_linear.orchestrator.load_project_config",
+                return_value=ProjectConfig(),
+            ),
+            mock.patch("symphony_linear.orchestrator.run_resume") as mock_run_resume,
+            mock.patch(
+                "symphony_linear.orchestrator.process_attachments"
+            ) as mock_process,
+        ):
+            mock_run_resume.return_value = ("Done!", None)
+            mock_process.side_effect = RuntimeError("plumbing bug")
+
+            orchestrator._resume_pipeline(ts)
+
+        mock_run_resume.assert_called_once()
+        _, kwargs = mock_run_resume.call_args
+        # Original message passed through (contains raw markdown).
+        assert "![img](http://ex.com/pic.png)" in kwargs["message"]
+        assert kwargs.get("files") == []
 
 
 # ---------------------------------------------------------------------------

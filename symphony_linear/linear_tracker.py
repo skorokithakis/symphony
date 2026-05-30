@@ -9,16 +9,52 @@ from __future__ import annotations
 import logging
 from urllib.parse import urlparse
 
+import httpx
+
 from symphony_linear.config import _LinearConfig
 from symphony_linear.linear import Comment, Issue, LinearClient
 from symphony_linear.provisioning import provision_trigger_label
 from symphony_linear.state import StateManager
 from symphony_linear.tracker import (
+    AttachmentDownloadError,
+    AttachmentTooLargeError,
     TrackerError,
     TransitionTarget,
+    normalise_content_type,
 )
 
 logger = logging.getLogger(__name__)
+
+
+# ---------------------------------------------------------------------------
+# Auth class for attachment downloads
+# ---------------------------------------------------------------------------
+
+_LINEAR_UPLOAD_HOSTS: frozenset[str] = frozenset(
+    {"uploads.linear.app", "public.linear.app"}
+)
+
+
+class _LinearAuth(httpx.Auth):
+    """Attach the Linear API key only to HTTPS requests whose host is in
+    the Linear upload-URL allowlist.
+
+    ``auth_flow`` is called **once** per logical request by httpx, *not*
+    on every redirect hop.  Cross-origin redirect stripping of the
+    ``Authorization`` header is handled by httpx itself (verified with
+    httpx ≥ 0.20 — see ``_redirect_headers`` in httpx's ``_client.py``).
+    This class provides defence-in-depth for the initial request.
+    """
+
+    requires_request_body = False
+
+    def __init__(self, api_key: str) -> None:
+        self._api_key = api_key
+
+    def auth_flow(self, request: httpx.Request):
+        if request.url.scheme == "https" and request.url.host in _LINEAR_UPLOAD_HOSTS:
+            request.headers["Authorization"] = self._api_key
+        yield request
 
 
 # ---------------------------------------------------------------------------
@@ -149,6 +185,66 @@ class LinearTracker:
         raise TrackerError(
             "No `Repo` link found on the project. Add one and re-trigger."
         )
+
+    # ------------------------------------------------------------------
+    # Attachments
+    # ------------------------------------------------------------------
+
+    def download_attachment(self, url: str) -> tuple[bytes, str | None]:
+        """Download an attachment using the Linear API key for auth.
+
+        Auth is only sent to known Linear upload hosts on the initial
+        request.  Cross-origin redirect stripping is handled by httpx
+        itself; :class:`_LinearAuth` provides defence-in-depth.
+        """
+        _MAX_BYTES = 10 * 1024 * 1024  # 10 MB
+
+        # --- SSRF defence: reject non-allowlisted hosts before any I/O ---
+        parsed = urlparse(url)
+        if parsed.scheme != "https" or parsed.hostname not in _LINEAR_UPLOAD_HOSTS:
+            raise AttachmentDownloadError("host not on allowlist")
+
+        try:
+            with httpx.stream(
+                "GET",
+                url,
+                auth=_LinearAuth(self._config.api_key),
+                follow_redirects=True,
+                timeout=30.0,
+            ) as response:
+                if response.status_code >= 400:
+                    raise AttachmentDownloadError(
+                        f"HTTP {response.status_code} downloading {url}"
+                    )
+
+                content_length = response.headers.get("content-length")
+                if content_length:
+                    try:
+                        if int(content_length) > _MAX_BYTES:
+                            raise AttachmentTooLargeError(
+                                f"Attachment at {url} is "
+                                f"{int(content_length)} bytes (limit {_MAX_BYTES})"
+                            )
+                    except ValueError:
+                        pass  # non-numeric content-length — proceed
+
+                content_type = normalise_content_type(
+                    response.headers.get("content-type")
+                )
+
+                data = bytearray()
+                for chunk in response.iter_bytes(65536):
+                    data.extend(chunk)
+                    if len(data) > _MAX_BYTES:
+                        raise AttachmentTooLargeError(
+                            f"Attachment at {url} exceeds {_MAX_BYTES} bytes"
+                        )
+
+                return bytes(data), content_type
+        except (AttachmentDownloadError, AttachmentTooLargeError):
+            raise
+        except (httpx.TimeoutException, httpx.NetworkError) as exc:
+            raise AttachmentDownloadError(f"Download failed for {url}: {exc}") from exc
 
     # ------------------------------------------------------------------
     # QA helpers

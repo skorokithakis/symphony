@@ -13,6 +13,7 @@ from datetime import datetime, timezone
 from pathlib import Path
 from typing import Any
 
+from symphony_linear.attachments import process_attachments
 from symphony_linear.config import AppConfig
 from symphony_linear.linear import (
     Comment,
@@ -42,6 +43,7 @@ from symphony_linear.workspace import (
     ServeScriptMissing,
     WorkspaceError,
     clone_workspace,
+    ensure_attachments_dir,
     finalize_workspace,
     remove,
     start_serve,
@@ -999,7 +1001,52 @@ class Orchestrator:
         except TrackerError:
             logger.exception("Failed to fetch issue %s for description", tid)
             description = None
-        prompt = _build_initial_prompt(issue.title, description)
+
+        # --- Process attachments ---
+        # ensure_attachments_dir applies the path-containment security check
+        # before creating the directory.
+        host_attachments_dir = ensure_attachments_dir(
+            ticket_state.ticket_identifier, str(self._workspace)
+        )
+        try:
+            result = process_attachments(
+                description or "",
+                tracker=self._tracker,
+                host_attachments_dir=host_attachments_dir,
+                existing_count=ticket_state.attachment_count,
+            )
+        except Exception:
+            logger.exception("Attachment processing failed for %s", tid)
+            result = None
+
+        if result is None:
+            # Plumbing failure — proceed with original description and no files.
+            files: list[str] = []
+            rewritten_description = description
+        else:
+            rewritten_description = result.rewritten_body
+            files = result.file_paths
+
+            if result.skipped:
+                skipped_lines = "\n".join(
+                    f"- {url}: {reason}" for url, reason in result.skipped
+                )
+                self._post_comment_safe(
+                    tid,
+                    f"**Symphony**: skipped attachments\n\n{skipped_lines}",
+                    kind="attachments",
+                )
+
+            # Bump attachment_count to the next available index, ensuring
+            # indices consumed by skipped downloads are never reused.
+            ticket_state.attachment_count = max(
+                ticket_state.attachment_count, result.next_index
+            )
+            with self._state_lock:
+                self._state.upsert(ticket_state)
+                self._state.save()
+
+        prompt = _build_initial_prompt(issue.title, rewritten_description)
 
         if self._is_cancelled(tid):
             return
@@ -1025,6 +1072,8 @@ class Orchestrator:
                 ],
                 hide_paths=self._config.sandbox.hide_paths,
                 extra_rw_paths=self._config.sandbox.extra_rw_paths,
+                attachments_path=host_attachments_dir,
+                files=files,
             )
         except OpenCodeTimeout:
             logger.error("OpenCode turn timed out for %s", tid)
@@ -1155,6 +1204,49 @@ class Orchestrator:
         )
         message = _format_comments_message(human_comments)
 
+        # --- Process attachments ---
+        # ensure_attachments_dir applies the path-containment security check
+        # before creating the directory.
+        host_attachments_dir = ensure_attachments_dir(
+            ticket_state.ticket_identifier, str(self._workspace)
+        )
+        try:
+            result = process_attachments(
+                message,
+                tracker=self._tracker,
+                host_attachments_dir=host_attachments_dir,
+                existing_count=ticket_state.attachment_count,
+            )
+        except Exception:
+            logger.exception("Attachment processing failed for %s", tid)
+            result = None
+
+        if result is None:
+            files_attach: list[str] = []
+            rewritten_message = message
+        else:
+            rewritten_message = result.rewritten_body
+            files_attach = result.file_paths
+
+            if result.skipped:
+                skipped_lines = "\n".join(
+                    f"- {url}: {reason}" for url, reason in result.skipped
+                )
+                self._post_comment_safe(
+                    tid,
+                    f"**Symphony**: skipped attachments\n\n{skipped_lines}",
+                    kind="attachments",
+                )
+
+            # Bump attachment_count to the next available index, ensuring
+            # indices consumed by skipped downloads are never reused.
+            ticket_state.attachment_count = max(
+                ticket_state.attachment_count, result.next_index
+            )
+            with self._state_lock:
+                self._state.upsert(ticket_state)
+                self._state.save()
+
         # Load per-project config BEFORE transitioning Linear (re-read on every
         # resume to pick up in-repo changes).  A malformed config aborts early so
         # the ticket doesn't flap between states.
@@ -1213,13 +1305,15 @@ class Orchestrator:
             final_message, _context_tokens = run_resume(
                 workspace_path=ticket_state.workspace_path,
                 session_id=ticket_state.session_id or "",
-                message=message,
+                message=rewritten_message,
                 timeout_seconds=effective_turn_timeout,
                 on_subprocess=lambda proc: (self._register_subprocess(tid, proc), None)[
                     1
                 ],
                 hide_paths=self._config.sandbox.hide_paths,  # B3
                 extra_rw_paths=self._config.sandbox.extra_rw_paths,
+                attachments_path=host_attachments_dir,
+                files=files_attach,
             )
         except OpenCodeTimeout:
             logger.error("OpenCode resume timed out for %s", tid)

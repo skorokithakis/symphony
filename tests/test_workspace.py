@@ -22,10 +22,13 @@ from symphony_linear.workspace import (
     ServeScriptMissing,
     SetupFailed,
     WorkspaceError,
+    _ATTACHMENTS_DIR,
     _check_containment,
     _sanitize_identifier,
     _workspace_is_clean,
     clone_workspace,
+    compute_attachments_path,
+    ensure_attachments_dir,
     finalize_workspace,
     prepare,
     remove,
@@ -193,6 +196,49 @@ class TestCheckContainment:
 
 
 # ---------------------------------------------------------------------------
+# Unit: ensure_attachments_dir
+# ---------------------------------------------------------------------------
+
+
+class TestEnsureAttachmentsDir:
+    """Tests for :func:`ensure_attachments_dir`."""
+
+    def test_creates_and_returns_validated_path(self, tmp_path: Path) -> None:
+        root = tmp_path / "ws"
+        root.mkdir()
+        result = ensure_attachments_dir("TICKET-1", str(root))
+
+        expected = os.path.realpath(root / _ATTACHMENTS_DIR / "TICKET-1")
+        assert result == expected
+        assert os.path.isdir(result)
+        # Check mode: directory should have 0700 permissions.
+        st = os.stat(result)
+        assert (st.st_mode & 0o777) == 0o700
+
+    def test_symlink_attack_rejected(self, tmp_path: Path) -> None:
+        """If <workspace_root>/.attachments is a symlink pointing outside,
+        ensure_attachments_dir must raise PathContainmentError."""
+        root = tmp_path / "ws"
+        root.mkdir()
+        # Create a symlink at <root>/.attachments → /tmp/elsewhere
+        escape_target = tmp_path / "outside"
+        escape_target.mkdir()
+        (root / _ATTACHMENTS_DIR).symlink_to(escape_target)
+
+        with pytest.raises(PathContainmentError):
+            ensure_attachments_dir("TICKET-2", str(root))
+
+    def test_idempotent(self, tmp_path: Path) -> None:
+        """Calling ensure_attachments_dir twice returns the same path."""
+        root = tmp_path / "ws"
+        root.mkdir()
+        first = ensure_attachments_dir("T-42", str(root))
+        second = ensure_attachments_dir("T-42", str(root))
+        assert first == second
+        assert os.path.isdir(first)
+
+
+# ---------------------------------------------------------------------------
 # Unit: typed exceptions
 # ---------------------------------------------------------------------------
 
@@ -267,6 +313,91 @@ class TestRemovePathContainment:
         remove("NONEXISTENT-TICKET", str(root))
 
 
+class TestAttachmentsRemove:
+    """remove() also deletes the per-ticket attachments directory."""
+
+    def test_remove_deletes_attachments_dir(self, tmp_path: Path) -> None:
+        """remove() deletes both the workspace and the .attachments directory."""
+        root = tmp_path / "ws"
+        root.mkdir()
+
+        ticket = "TEAM-42"
+        workspace_key = _sanitize_identifier(ticket)
+        workspace_dir = root / workspace_key
+        workspace_dir.mkdir()
+        (workspace_dir / "README.md").write_text("hello")
+
+        # Create the attachments dir with the same layout as prepare() would.
+        attachments_dir = root / _ATTACHMENTS_DIR / workspace_key
+        os.makedirs(attachments_dir, mode=0o700, exist_ok=True)
+        (attachments_dir / "screenshot.png").write_text("fake image")
+
+        remove(ticket, str(root))
+
+        assert not workspace_dir.exists()
+        assert not attachments_dir.exists()
+        # The .attachments parent directory still exists, but the ticket subdir is gone.
+        assert not (root / _ATTACHMENTS_DIR / workspace_key).exists()
+
+    def test_remove_idempotent_when_attachments_missing(self, tmp_path: Path) -> None:
+        """remove() is idempotent even when only the attachments dir is missing."""
+        root = tmp_path / "ws"
+        root.mkdir()
+
+        ticket = "TEAM-42"
+        workspace_key = _sanitize_identifier(ticket)
+        workspace_dir = root / workspace_key
+        workspace_dir.mkdir()
+
+        # No attachments dir this time.
+        remove(ticket, str(root))
+
+        assert not workspace_dir.exists()
+        # Calling again is idempotent.
+        remove(ticket, str(root))  # no exception
+
+    def test_remove_idempotent_when_workspace_missing(self, tmp_path: Path) -> None:
+        """remove() is idempotent even when only the workspace dir is missing."""
+        root = tmp_path / "ws"
+        root.mkdir()
+
+        ticket = "TEAM-42"
+        workspace_key = _sanitize_identifier(ticket)
+
+        # Only the attachments dir exists.
+        attachments_dir = root / _ATTACHMENTS_DIR / workspace_key
+        os.makedirs(attachments_dir, mode=0o700)
+        (attachments_dir / "file.txt").write_text("data")
+
+        remove(ticket, str(root))
+
+        assert not attachments_dir.exists()
+        # Calling again is idempotent.
+        remove(ticket, str(root))  # no exception
+
+    def test_remove_both_missing_is_idempotent(self, tmp_path: Path) -> None:
+        """remove() is idempotent when neither workspace nor attachments exist."""
+        root = tmp_path / "ws"
+        root.mkdir()
+
+        remove("NO-SUCH-TICKET", str(root))  # no exception
+        remove("NO-SUCH-TICKET", str(root))  # still no exception
+
+
+class TestComputeAttachmentsPath:
+    """compute_attachments_path returns the expected path."""
+
+    def test_basic(self, tmp_path: Path) -> None:
+        root = tmp_path / "ws"
+        result = compute_attachments_path("TEAM-42", str(root))
+        assert result == os.path.join(str(root), ".attachments", "TEAM-42")
+
+    def test_sanitized_identifier(self, tmp_path: Path) -> None:
+        root = tmp_path / "ws"
+        result = compute_attachments_path("Team/With Spaces", str(root))
+        assert result == os.path.join(str(root), ".attachments", "Team_With_Spaces")
+
+
 # ---------------------------------------------------------------------------
 # Integration: full prepare / remove cycle
 # ---------------------------------------------------------------------------
@@ -309,6 +440,12 @@ class TestPrepareRemoveIntegration:
         assert os.path.isdir(result_path)
         assert os.path.isdir(os.path.join(result_path, ".git"))
 
+        # 3a. Verify the attachments directory was created.
+        attachments_dir = compute_attachments_path(ticket, str(workspace_root))
+        assert os.path.isdir(attachments_dir)
+        # Check mode 0700 (allow user rwx only).
+        assert (os.stat(attachments_dir).st_mode & 0o777) == 0o700
+
         # 4. Verify we are on the right branch.
         branch_result = subprocess.run(
             ["git", "branch", "--show-current"],
@@ -343,6 +480,7 @@ class TestPrepareRemoveIntegration:
         # 7. Remove the workspace.
         remove(ticket, str(workspace_root))
         assert not os.path.isdir(result_path)
+        assert not os.path.isdir(attachments_dir)
 
         # 8. Remove is idempotent.
         remove(ticket, str(workspace_root))  # no error

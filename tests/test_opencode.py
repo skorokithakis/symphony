@@ -10,12 +10,19 @@ from __future__ import annotations
 
 import json
 import logging
+import subprocess
 from pathlib import Path
 from typing import Any
+from unittest.mock import MagicMock, patch
 
 import pytest
 
-from symphony_linear.opencode import _assemble_message, _extract_context_tokens
+from symphony_linear.opencode import (
+    _assemble_message,
+    _extract_context_tokens,
+    run_initial,
+    run_resume,
+)
 
 # ---------------------------------------------------------------------------
 # Helpers
@@ -253,6 +260,171 @@ class TestAssembleMessage:
         assert result == "*My Tool*"
         assert "_My Tool_" not in result
         assert "**My Tool**" not in result
+
+
+# ---------------------------------------------------------------------------
+# Unit: --file flag argv construction
+# ---------------------------------------------------------------------------
+
+
+class TestFilesArgv:
+    """Verify --file flags are placed correctly in the constructed command."""
+
+    def _make_fake_popen(self) -> MagicMock:
+        """Return a mock Popen with valid NDJSON stdout and exit code 0."""
+        events = [
+            {"type": "step_start", "sessionID": "ses_test", "part": {}},
+            {"type": "text", "sessionID": "ses_test", "part": {"text": "ok"}},
+            {"type": "step_finish", "sessionID": "ses_test", "part": {}},
+        ]
+        stdout = "\n".join(json.dumps(e) for e in events).encode()
+        proc = MagicMock(spec=subprocess.Popen)
+        proc.returncode = 0
+        proc.communicate.return_value = (stdout, b"")
+        return proc
+
+    def test_run_initial_no_files(self) -> None:
+        """When files is None, no --file flags appear."""
+        fake_proc = self._make_fake_popen()
+        with patch(
+            "symphony_linear.opencode.run_in_sandbox", return_value=fake_proc
+        ) as mock_sandbox:
+            run_initial(
+                workspace_path="/ws",
+                prompt="hello",
+                timeout_seconds=60,
+                on_subprocess=lambda p: None,
+            )
+        cmd = mock_sandbox.call_args.kwargs["cmd"]
+        assert "--file" not in cmd
+
+    def test_run_initial_empty_files(self) -> None:
+        """When files is an empty list, no --file flags appear."""
+        fake_proc = self._make_fake_popen()
+        with patch(
+            "symphony_linear.opencode.run_in_sandbox", return_value=fake_proc
+        ) as mock_sandbox:
+            run_initial(
+                workspace_path="/ws",
+                prompt="hello",
+                timeout_seconds=60,
+                on_subprocess=lambda p: None,
+                files=[],
+            )
+        cmd = mock_sandbox.call_args.kwargs["cmd"]
+        assert "--file" not in cmd
+
+    def test_run_initial_single_file(self) -> None:
+        """A single file emits one --file <path> pair."""
+        fake_proc = self._make_fake_popen()
+        with patch(
+            "symphony_linear.opencode.run_in_sandbox", return_value=fake_proc
+        ) as mock_sandbox:
+            run_initial(
+                workspace_path="/ws",
+                prompt="hello",
+                timeout_seconds=60,
+                on_subprocess=lambda p: None,
+                files=["/tmp/foo.txt"],
+            )
+        cmd = mock_sandbox.call_args.kwargs["cmd"]
+        file_idx = cmd.index("--file")
+        assert cmd[file_idx + 1] == "/tmp/foo.txt"
+
+    def test_run_initial_multiple_files(self) -> None:
+        """Multiple files emit --file pairs in order."""
+        fake_proc = self._make_fake_popen()
+        with patch(
+            "symphony_linear.opencode.run_in_sandbox", return_value=fake_proc
+        ) as mock_sandbox:
+            run_initial(
+                workspace_path="/ws",
+                prompt="hello",
+                timeout_seconds=60,
+                on_subprocess=lambda p: None,
+                files=["/a.txt", "/b.txt"],
+            )
+        cmd = mock_sandbox.call_args.kwargs["cmd"]
+        # Find all --file positions
+        file_positions = [i for i, a in enumerate(cmd) if a == "--file"]
+        assert len(file_positions) == 2
+        assert cmd[file_positions[0] + 1] == "/a.txt"
+        assert cmd[file_positions[1] + 1] == "/b.txt"
+
+    def test_run_initial_file_before_separator(self) -> None:
+        """--file flags appear before the -- separator."""
+        fake_proc = self._make_fake_popen()
+        with patch(
+            "symphony_linear.opencode.run_in_sandbox", return_value=fake_proc
+        ) as mock_sandbox:
+            run_initial(
+                workspace_path="/ws",
+                prompt="hello",
+                timeout_seconds=60,
+                on_subprocess=lambda p: None,
+                files=["/x.txt"],
+            )
+        cmd = mock_sandbox.call_args.kwargs["cmd"]
+        file_idx = cmd.index("--file")
+        sep_idx = cmd.index("--")
+        assert file_idx < sep_idx
+
+    def test_run_resume_no_files(self) -> None:
+        """When files is None, no --file flags appear in resume."""
+        fake_proc = self._make_fake_popen()
+        with patch(
+            "symphony_linear.opencode.run_in_sandbox", return_value=fake_proc
+        ) as mock_sandbox:
+            run_resume(
+                workspace_path="/ws",
+                session_id="ses_x",
+                message="continue",
+                timeout_seconds=60,
+                on_subprocess=lambda p: None,
+            )
+        cmd = mock_sandbox.call_args.kwargs["cmd"]
+        assert "--file" not in cmd
+
+    def test_run_resume_with_files(self) -> None:
+        """Files are emitted as --file pairs in the resume command."""
+        fake_proc = self._make_fake_popen()
+        with patch(
+            "symphony_linear.opencode.run_in_sandbox", return_value=fake_proc
+        ) as mock_sandbox:
+            run_resume(
+                workspace_path="/ws",
+                session_id="ses_x",
+                message="continue",
+                timeout_seconds=60,
+                on_subprocess=lambda p: None,
+                files=["/f1.txt", "/f2.txt"],
+            )
+        cmd = mock_sandbox.call_args.kwargs["cmd"]
+        file_positions = [i for i, a in enumerate(cmd) if a == "--file"]
+        assert len(file_positions) == 2
+        assert cmd[file_positions[0] + 1] == "/f1.txt"
+        assert cmd[file_positions[1] + 1] == "/f2.txt"
+        # --file before --
+        assert file_positions[1] < cmd.index("--")
+
+    def test_run_resume_file_before_separator(self) -> None:
+        """--file appears before -- in resume command."""
+        fake_proc = self._make_fake_popen()
+        with patch(
+            "symphony_linear.opencode.run_in_sandbox", return_value=fake_proc
+        ) as mock_sandbox:
+            run_resume(
+                workspace_path="/ws",
+                session_id="ses_x",
+                message="continue",
+                timeout_seconds=60,
+                on_subprocess=lambda p: None,
+                files=["/f.txt"],
+            )
+        cmd = mock_sandbox.call_args.kwargs["cmd"]
+        file_idx = cmd.index("--file")
+        sep_idx = cmd.index("--")
+        assert file_idx < sep_idx
 
 
 # ---------------------------------------------------------------------------

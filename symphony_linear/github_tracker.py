@@ -16,6 +16,9 @@ import re
 import threading
 from dataclasses import dataclass, field
 from typing import Any
+from urllib.parse import urlparse
+
+import httpx
 
 from symphony_linear.github import (
     GitHubClient,
@@ -25,11 +28,51 @@ from symphony_linear.github import (
 from symphony_linear.linear import Comment, Issue
 from symphony_linear.state import StateManager
 from symphony_linear.tracker import (
+    AttachmentDownloadError,
+    AttachmentTooLargeError,
     TrackerError,
     TransitionTarget,
+    normalise_content_type,
 )
 
 logger = logging.getLogger(__name__)
+
+
+# ---------------------------------------------------------------------------
+# Auth class for attachment downloads
+# ---------------------------------------------------------------------------
+
+_GITHUB_UPLOAD_HOSTS: frozenset[str] = frozenset(
+    {
+        "user-images.githubusercontent.com",
+        "private-user-images.githubusercontent.com",
+        "github.com",
+        "objects.githubusercontent.com",
+    }
+)
+
+
+class _GitHubAuth(httpx.Auth):
+    """Attach a GitHub Bearer token only to HTTPS requests whose host is
+    in the GitHub upload-URL allowlist.
+
+    ``auth_flow`` is called **once** per logical request by httpx, *not*
+    on every redirect hop.  Cross-origin redirect stripping of the
+    ``Authorization`` header is handled by httpx itself (verified with
+    httpx ≥ 0.20 — see ``_redirect_headers`` in httpx's ``_client.py``).
+    This class provides defence-in-depth for the initial request.
+    """
+
+    requires_request_body = False
+
+    def __init__(self, token: str) -> None:
+        self._token = token
+
+    def auth_flow(self, request: httpx.Request):
+        if request.url.scheme == "https" and request.url.host in _GITHUB_UPLOAD_HOSTS:
+            request.headers["Authorization"] = f"Bearer {self._token}"
+        yield request
+
 
 # ---------------------------------------------------------------------------
 # Project-ref parsing
@@ -1056,6 +1099,66 @@ class GitHubTracker:
             f"set the `{self._config.trigger_field}` field to off "
             f"(or remove the item from the project)"
         )
+
+    # ------------------------------------------------------------------
+    # Attachments
+    # ------------------------------------------------------------------
+
+    def download_attachment(self, url: str) -> tuple[bytes, str | None]:
+        """Download an attachment using the GitHub token for auth.
+
+        Auth is only sent to known GitHub upload/cdn hosts on the initial
+        request.  Cross-origin redirect stripping is handled by httpx
+        itself; :class:`_GitHubAuth` provides defence-in-depth.
+        """
+        _MAX_BYTES = 10 * 1024 * 1024  # 10 MB
+
+        # --- SSRF defence: reject non-allowlisted hosts before any I/O ---
+        parsed = urlparse(url)
+        if parsed.scheme != "https" or parsed.hostname not in _GITHUB_UPLOAD_HOSTS:
+            raise AttachmentDownloadError("host not on allowlist")
+
+        try:
+            with httpx.stream(
+                "GET",
+                url,
+                auth=_GitHubAuth(self._config.token),
+                follow_redirects=True,
+                timeout=30.0,
+            ) as response:
+                if response.status_code >= 400:
+                    raise AttachmentDownloadError(
+                        f"HTTP {response.status_code} downloading {url}"
+                    )
+
+                content_length = response.headers.get("content-length")
+                if content_length:
+                    try:
+                        if int(content_length) > _MAX_BYTES:
+                            raise AttachmentTooLargeError(
+                                f"Attachment at {url} is "
+                                f"{int(content_length)} bytes (limit {_MAX_BYTES})"
+                            )
+                    except ValueError:
+                        pass  # non-numeric content-length — proceed
+
+                content_type = normalise_content_type(
+                    response.headers.get("content-type")
+                )
+
+                data = bytearray()
+                for chunk in response.iter_bytes(65536):
+                    data.extend(chunk)
+                    if len(data) > _MAX_BYTES:
+                        raise AttachmentTooLargeError(
+                            f"Attachment at {url} exceeds {_MAX_BYTES} bytes"
+                        )
+
+                return bytes(data), content_type
+        except (AttachmentDownloadError, AttachmentTooLargeError):
+            raise
+        except (httpx.TimeoutException, httpx.NetworkError) as exc:
+            raise AttachmentDownloadError(f"Download failed for {url}: {exc}") from exc
 
     # ------------------------------------------------------------------
     # QA helpers

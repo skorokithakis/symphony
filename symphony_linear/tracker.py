@@ -26,6 +26,17 @@ def is_bot_comment(body: str) -> bool:
     return _BOT_MARKER in body
 
 
+def normalise_content_type(value: str | None) -> str | None:
+    """Return the lowercased media type from *value*, stripping parameters.
+
+    ``"text/plain; charset=utf-8"`` → ``"text/plain"``.
+    Returns ``None`` when *value* is falsy or cannot be parsed.
+    """
+    if not value:
+        return None
+    return value.split(";", 1)[0].strip().lower() or None
+
+
 # ---------------------------------------------------------------------------
 # Tracker-neutral exception hierarchy
 # ---------------------------------------------------------------------------
@@ -54,6 +65,14 @@ class TrackerTransientError(TrackerError):
 
 class TrackerNotFoundError(TrackerError):
     """A requested resource (issue, project, comment, label) was not found."""
+
+
+class AttachmentDownloadError(TrackerError):
+    """Failed to download an attachment (HTTP error, network error, etc.)."""
+
+
+class AttachmentTooLargeError(AttachmentDownloadError):
+    """The attachment exceeds the configured size limit (10 MB)."""
 
 
 # ---------------------------------------------------------------------------
@@ -153,6 +172,17 @@ class Tracker(Protocol):
         repository can be determined (e.g. the issue has no project,
         the project has no repo link, or the issue has no associated
         repo in the tracker).
+        """
+        ...
+
+    def download_attachment(self, url: str) -> tuple[bytes, str | None]:
+        """Download an attachment from *url* using tracker credentials.
+
+        Returns ``(content_bytes, content_type_or_None)`` where
+        *content_type* is the lowercased media type without parameters.
+
+        Raises ``AttachmentDownloadError`` on HTTP / network errors and
+        ``AttachmentTooLargeError`` when the response body exceeds 10 MB.
         """
         ...
 

@@ -246,7 +246,6 @@ class TestBackwardCompat:
         """A state.json without provisioned_label_name must load cleanly."""
         old_state: dict[str, Any] = {"tickets": []}
         path = tmp_path / "state.json"
-        import json
 
         path.write_text(json.dumps(old_state))
 
@@ -254,3 +253,46 @@ class TestBackwardCompat:
         store = mgr.load()
         assert store.tickets == []
         assert store.provisioned_label_name is None
+
+    def test_old_state_json_without_attachment_count_loads(
+        self, tmp_path: Path
+    ) -> None:
+        """A state.json without attachment_count must load with the default (0)."""
+        old_state: dict[str, Any] = {
+            "tickets": [
+                {
+                    "ticket_id": "42",
+                    "ticket_identifier": "TEAM-42",
+                    "project_id": None,
+                    "repo_url": "https://github.com/org/repo-42.git",
+                    "session_id": None,
+                    "workspace_path": "/tmp/ws/42",
+                    "branch": "feature/ticket-42",
+                    "last_seen_comment_id": None,
+                    "status": "bootstrapping",
+                    "metadata_comment_id": None,
+                }
+            ]
+        }
+        path = tmp_path / "state.json"
+        path.write_text(json.dumps(old_state))
+
+        mgr = StateManager(path)
+        store = mgr.load()
+        assert len(store.tickets) == 1
+        assert store.tickets[0].attachment_count == 0
+
+    def test_attachment_count_roundtrips_through_save_load(
+        self, tmp_path: Path
+    ) -> None:
+        """New attachment_count field must survive a save/load cycle."""
+        path = tmp_path / "state.json"
+        mgr = StateManager(path)
+        mgr.load()
+        mgr.upsert(_make_ticket("1", attachment_count=7))
+        mgr.save()
+
+        mgr2 = StateManager(path)
+        store = mgr2.load()
+        assert len(store.tickets) == 1
+        assert store.tickets[0].attachment_count == 7

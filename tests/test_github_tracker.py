@@ -20,11 +20,14 @@ from symphony_linear.github import (
 from symphony_linear.github_tracker import (
     GitHubTracker,
     GitHubTrackerConfig,
+    _GitHubAuth,
     _parse_project_ref,
 )
 from symphony_linear.linear import Issue
 from symphony_linear.state import StateManager
 from symphony_linear.tracker import (
+    AttachmentDownloadError,
+    AttachmentTooLargeError,
     Tracker,
     TrackerError,
     TrackerNotFoundError,
@@ -2424,3 +2427,300 @@ class TestCloneProtocol:
             tracker_data={"clone_url": "https://github.com/o/r.git"},
         )
         assert tracker.repo_url_for(issue) == "https://github.com/o/r.git"
+
+
+# ---------------------------------------------------------------------------
+# download_attachment
+# ---------------------------------------------------------------------------
+
+
+class TestDownloadAttachment:
+    """Tests for download_attachment on GitHubTracker."""
+
+    def test_success_returns_bytes_and_content_type(
+        self, tracker: GitHubTracker
+    ) -> None:
+        from unittest.mock import patch
+
+        mock_response = MagicMock()
+        mock_response.status_code = 200
+        mock_response.headers = {"content-type": "application/json; charset=utf-8"}
+        mock_response.iter_bytes.return_value = [b'{"key":', b" 123}"]
+
+        with patch("symphony_linear.github_tracker.httpx.stream") as mock_stream:
+            mock_stream.return_value.__enter__.return_value = mock_response
+            data, ct = tracker.download_attachment(
+                "https://github.com/some/repo/assets/data.json"
+            )
+
+        assert data == b'{"key": 123}'
+        assert ct == "application/json"
+        mock_stream.assert_called_once()
+        call_kwargs = mock_stream.call_args.kwargs
+        assert isinstance(call_kwargs["auth"], _GitHubAuth)
+        assert call_kwargs["auth"]._token == "ghp_test"
+        assert call_kwargs["follow_redirects"] is True
+        assert call_kwargs["timeout"] == 30.0
+
+    def test_missing_content_type_returns_none(self, tracker: GitHubTracker) -> None:
+        from unittest.mock import patch
+
+        mock_response = MagicMock()
+        mock_response.status_code = 200
+        mock_response.headers = {}
+        mock_response.iter_bytes.return_value = [b"binary-data"]
+
+        with patch("symphony_linear.github_tracker.httpx.stream") as mock_stream:
+            mock_stream.return_value.__enter__.return_value = mock_response
+            data, ct = tracker.download_attachment(
+                "https://user-images.githubusercontent.com/123/f.bin"
+            )
+
+        assert data == b"binary-data"
+        assert ct is None
+
+    def test_http_404_raises_attachment_download_error(
+        self, tracker: GitHubTracker
+    ) -> None:
+        from unittest.mock import patch
+
+        mock_response = MagicMock()
+        mock_response.status_code = 404
+
+        with patch("symphony_linear.github_tracker.httpx.stream") as mock_stream:
+            mock_stream.return_value.__enter__.return_value = mock_response
+            with pytest.raises(AttachmentDownloadError, match="HTTP 404"):
+                tracker.download_attachment("https://github.com/some/repo/missing.txt")
+
+    def test_content_length_exceeds_limit_raises_too_large(
+        self, tracker: GitHubTracker
+    ) -> None:
+        from unittest.mock import patch
+
+        mock_response = MagicMock()
+        mock_response.status_code = 200
+        mock_response.headers = {"content-length": str(15 * 1024 * 1024)}
+
+        with patch("symphony_linear.github_tracker.httpx.stream") as mock_stream:
+            mock_stream.return_value.__enter__.return_value = mock_response
+            with pytest.raises(AttachmentTooLargeError, match="bytes"):
+                tracker.download_attachment(
+                    "https://objects.githubusercontent.com/huge.bin"
+                )
+
+    def test_oversize_response_body_raises_too_large(
+        self, tracker: GitHubTracker
+    ) -> None:
+        from unittest.mock import patch
+
+        big_chunk = b"x" * (11 * 1024 * 1024)
+
+        mock_response = MagicMock()
+        mock_response.status_code = 200
+        mock_response.headers = {}
+        mock_response.iter_bytes.return_value = [big_chunk]
+
+        with patch("symphony_linear.github_tracker.httpx.stream") as mock_stream:
+            mock_stream.return_value.__enter__.return_value = mock_response
+            with pytest.raises(AttachmentTooLargeError, match="exceeds"):
+                tracker.download_attachment(
+                    "https://private-user-images.githubusercontent.com/huge.bin"
+                )
+
+    def test_network_error_raises_attachment_download_error(
+        self, tracker: GitHubTracker
+    ) -> None:
+        from unittest.mock import patch
+
+        import httpx
+
+        with patch(
+            "symphony_linear.github_tracker.httpx.stream",
+            side_effect=httpx.NetworkError("connection reset"),
+        ):
+            with pytest.raises(AttachmentDownloadError, match="Download failed"):
+                tracker.download_attachment("https://github.com/some/repo/f.txt")
+
+    def test_timeout_raises_attachment_download_error(
+        self, tracker: GitHubTracker
+    ) -> None:
+        from unittest.mock import patch
+
+        import httpx
+
+        with patch(
+            "symphony_linear.github_tracker.httpx.stream",
+            side_effect=httpx.TimeoutException("timed out"),
+        ):
+            with pytest.raises(AttachmentDownloadError, match="Download failed"):
+                tracker.download_attachment("https://github.com/some/repo/f.txt")
+
+    # ------------------------------------------------------------------
+    # SSRF defence — host allowlist validation before any I/O
+    # ------------------------------------------------------------------
+
+    def test_allowlisted_host_downloads(self, tracker: GitHubTracker) -> None:
+        from unittest.mock import patch
+
+        mock_response = MagicMock()
+        mock_response.status_code = 200
+        mock_response.headers = {"content-type": "text/plain"}
+        mock_response.iter_bytes.return_value = [b"data"]
+
+        with patch("symphony_linear.github_tracker.httpx.stream") as mock_stream:
+            mock_stream.return_value.__enter__.return_value = mock_response
+            data, ct = tracker.download_attachment(
+                "https://user-images.githubusercontent.com/12345/img.png"
+            )
+
+        assert data == b"data"
+        mock_stream.assert_called_once()
+
+    def test_non_allowlisted_host_raises_before_http(
+        self, tracker: GitHubTracker
+    ) -> None:
+        from unittest.mock import patch
+
+        with patch("symphony_linear.github_tracker.httpx.stream") as mock_stream:
+            with pytest.raises(AttachmentDownloadError, match="host not on allowlist"):
+                tracker.download_attachment("https://evil.example.com/x.png")
+
+        mock_stream.assert_not_called()
+
+    def test_http_allowlisted_host_raises_before_http(
+        self, tracker: GitHubTracker
+    ) -> None:
+        from unittest.mock import patch
+
+        with patch("symphony_linear.github_tracker.httpx.stream") as mock_stream:
+            with pytest.raises(AttachmentDownloadError, match="host not on allowlist"):
+                tracker.download_attachment(
+                    "http://user-images.githubusercontent.com/12345/img.png"
+                )
+
+        mock_stream.assert_not_called()
+
+    def test_ip_literal_raises_before_http(self, tracker: GitHubTracker) -> None:
+        from unittest.mock import patch
+
+        with patch("symphony_linear.github_tracker.httpx.stream") as mock_stream:
+            with pytest.raises(AttachmentDownloadError, match="host not on allowlist"):
+                tracker.download_attachment("https://169.254.169.254/x.png")
+
+        mock_stream.assert_not_called()
+
+
+# ---------------------------------------------------------------------------
+# _GitHubAuth (host-based auth header restriction)
+# ---------------------------------------------------------------------------
+
+
+class TestGitHubAuth:
+    """Tests for the _GitHubAuth custom httpx.Auth class."""
+
+    def test_allowlisted_host_gets_auth_header(self) -> None:
+        import httpx
+
+        auth = _GitHubAuth("ghp_secret")
+        req = httpx.Request(
+            "GET", "https://user-images.githubusercontent.com/12345/img.png"
+        )
+        flow = auth.auth_flow(req)
+        result = next(flow)
+        assert result.headers["Authorization"] == "Bearer ghp_secret"
+
+    def test_allowlisted_host_private(self) -> None:
+        import httpx
+
+        auth = _GitHubAuth("ghp_secret")
+        req = httpx.Request(
+            "GET",
+            "https://private-user-images.githubusercontent.com/67890/pic.jpg",
+        )
+        flow = auth.auth_flow(req)
+        result = next(flow)
+        assert result.headers["Authorization"] == "Bearer ghp_secret"
+
+    def test_allowlisted_host_github_dotcom(self) -> None:
+        import httpx
+
+        auth = _GitHubAuth("ghp_secret")
+        req = httpx.Request("GET", "https://github.com/some/repo/assets/file.gif")
+        flow = auth.auth_flow(req)
+        result = next(flow)
+        assert result.headers["Authorization"] == "Bearer ghp_secret"
+
+    def test_allowlisted_host_objects(self) -> None:
+        import httpx
+
+        auth = _GitHubAuth("ghp_secret")
+        req = httpx.Request("GET", "https://objects.githubusercontent.com/s3-key")
+        flow = auth.auth_flow(req)
+        result = next(flow)
+        assert result.headers["Authorization"] == "Bearer ghp_secret"
+
+    def test_non_allowlisted_host_gets_no_auth_header(self) -> None:
+        import httpx
+
+        auth = _GitHubAuth("ghp_secret")
+        req = httpx.Request("GET", "https://evil.example.com/log")
+        flow = auth.auth_flow(req)
+        result = next(flow)
+        assert "Authorization" not in result.headers
+
+    def test_http_allowlisted_host_denied(self) -> None:
+        """An HTTP (not HTTPS) request to an allowlisted host does NOT
+        receive the auth header — prevents plaintext token leaks."""
+        import httpx
+
+        auth = _GitHubAuth("ghp_secret")
+        req = httpx.Request(
+            "GET", "http://user-images.githubusercontent.com/12345/img.png"
+        )
+        flow = auth.auth_flow(req)
+        result = next(flow)
+        assert "Authorization" not in result.headers
+
+    def test_cross_origin_redirect_strips_auth(self) -> None:
+        """Verify that httpx itself strips the Authorization header on
+        cross-origin redirects (not our Auth class — httpx does this in
+        ``_redirect_headers``).  This is a real integration test using
+        ``MockTransport`` with ``follow_redirects=True``.
+
+        Rationale (path A, see ticket S6-zalxc):
+        httpx ≥ 0.20 strips the ``Authorization`` header on cross-origin
+        redirects automatically (see ``_redirect_headers`` in
+        ``httpx/_client.py``).  We rely on that behaviour and keep our
+        ``_GitHubAuth`` class as defence-in-depth for the first request.
+        This test confirms that when a GitHub CDN host redirects to an
+        external host the second hop carries no credentials.
+        """
+        import httpx
+
+        target_seen = False
+
+        def handler(request: httpx.Request) -> httpx.Response:
+            nonlocal target_seen
+            if request.url.host.endswith("githubusercontent.com"):
+                return httpx.Response(
+                    302,
+                    headers={"Location": "https://external-cdn.example.com/final.jpg"},
+                )
+            # This is the redirect target — must NOT carry Authorization.
+            target_seen = True
+            assert "Authorization" not in request.headers
+            return httpx.Response(200, content=b"ok")
+
+        transport = httpx.MockTransport(handler)
+        auth = _GitHubAuth("ghp_secret")
+
+        with httpx.Client(
+            transport=transport,
+            auth=auth,
+            follow_redirects=True,
+            base_url="https://user-images.githubusercontent.com",
+        ) as client:
+            resp = client.get("/12345/img.png")
+
+        assert resp.status_code == 200
+        assert target_seen, "redirect target was never requested"

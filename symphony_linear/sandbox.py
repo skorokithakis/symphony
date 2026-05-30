@@ -33,6 +33,7 @@ def run_in_sandbox(
     stdout: int = subprocess.PIPE,
     stderr: int = subprocess.PIPE,
     extra_rw_paths: list[str] | None = None,
+    attachments_path: str | None = None,
 ) -> subprocess.Popen[bytes]:
     """Run *cmd* inside a bwrap sandbox and return the :class:`~subprocess.Popen` handle.
 
@@ -63,6 +64,10 @@ def run_in_sandbox(
         extra_rw_paths: Additional host paths to bind read-write inside the
             sandbox using ``--bind`` (not ``--bind-try``).  Applied before
             *hide_paths* so hide wins on collision.  ``~`` is expanded.
+        attachments_path: Optional host path to a per-ticket attachments
+            directory.  When set, the directory is mounted read-only at
+            ``/tmp/symphony-attachments`` inside the sandbox.
+            ``~`` is expanded.
 
     Returns:
         A :class:`subprocess.Popen` instance for the bwrap process.  The
@@ -101,8 +106,16 @@ def run_in_sandbox(
     # 2. Read-write bind for the workspace
     bwrap_args.extend(["--bind", expanded_workspace, expanded_workspace])
 
-    # 3. Read-write bind for /tmp
+    # 3. Read-write bind for /tmp (must come BEFORE the attachments mount
+    #    so that bwrap can create /tmp/symphony-attachments).
     bwrap_args.extend(["--bind", "/tmp", "/tmp"])
+
+    # 3a. Read-only bind for the per-ticket attachments directory (if any).
+    if attachments_path is not None:
+        expanded_attachments = _expand(attachments_path)
+        bwrap_args.extend(
+            ["--ro-bind", expanded_attachments, "/tmp/symphony-attachments"]
+        )
 
     # 4. Read-write binds for tool caches and state (OpenCode, pip, etc.).
     #    Using --bind-try so missing dirs don't cause a fatal error.

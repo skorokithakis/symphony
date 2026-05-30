@@ -3,15 +3,137 @@
 These are pure unit tests — they patch shutil.which (to bypass the bwrap
 pre-flight check) and subprocess.Popen (to capture the bwrap command line).
 They do NOT require bwrap or any external binary.
+
+Integration tests (marked ``pytest.mark.integration``) at the bottom of
+this file actually launch bwrap to verify end-to-end sandbox behaviour.
 """
 
 from __future__ import annotations
 
+import shutil
+import subprocess
 from pathlib import Path
 from unittest import mock
 
+import pytest
 
 from symphony_linear.sandbox import run_in_sandbox
+
+
+class TestAttachmentsArgv:
+    """Verify argv construction for attachments_path.
+
+    - When attachments_path is set, ``--ro-bind <path> /tmp/symphony-attachments`` appears.
+    - When attachments_path is None, no ``/tmp/symphony-attachments`` mount appears.
+    - The mount appears after the /tmp bind.
+    """
+
+    def test_attachments_path_included(self) -> None:
+        """When attachments_path is set, --ro-bind appears in argv."""
+        with mock.patch(
+            "symphony_linear.sandbox.shutil.which",
+            return_value="/usr/bin/bwrap",
+        ):
+            with mock.patch("subprocess.Popen") as popen_mock:
+                popen_mock.return_value.returncode = 0
+                popen_mock.return_value.communicate.return_value = (b"", b"")
+
+                run_in_sandbox(
+                    cmd=["echo", "hi"],
+                    workspace_path="/fake/workspace",
+                    hide_paths=[],
+                    env={"HOME": "/fake/home"},
+                    attachments_path="/fake/ws/.attachments/TEAM-42",
+                )
+
+                args = popen_mock.call_args[0][0]
+
+                # Should contain --ro-bind with the path and /tmp/symphony-attachments
+                assert "--ro-bind" in args
+                ro_bind_count = 0
+                for i, arg in enumerate(args):
+                    if (
+                        arg == "--ro-bind"
+                        and args[i + 2] == "/tmp/symphony-attachments"
+                    ):
+                        ro_bind_count += 1
+                        # The path should be expanded (realpath resolved)
+                        assert args[i + 1] == "/fake/ws/.attachments/TEAM-42"
+                assert ro_bind_count == 1, (
+                    f"Expected exactly one --ro-bind ... /tmp/symphony-attachments in args: {args}"
+                )
+
+    def test_attachments_path_order(self) -> None:
+        """The attachments --ro-bind appears after the /tmp --bind."""
+        with mock.patch(
+            "symphony_linear.sandbox.shutil.which",
+            return_value="/usr/bin/bwrap",
+        ):
+            with mock.patch("subprocess.Popen") as popen_mock:
+                popen_mock.return_value.returncode = 0
+                popen_mock.return_value.communicate.return_value = (b"", b"")
+
+                run_in_sandbox(
+                    cmd=["echo", "hi"],
+                    workspace_path="/fake/workspace",
+                    hide_paths=[],
+                    env={"HOME": "/fake/home"},
+                    attachments_path="/fake/ws/.attachments/TEAM-42",
+                )
+
+                args = popen_mock.call_args[0][0]
+
+                # workspace --bind must come before /tmp --bind
+                tmp_bind_idx = None
+                att_ro_bind_idx = None
+                for i, arg in enumerate(args):
+                    if arg == "--bind" and args[i + 1] == "/tmp":
+                        tmp_bind_idx = i
+                        break
+                for i, arg in enumerate(args):
+                    if (
+                        arg == "--ro-bind"
+                        and args[i + 2] == "/tmp/symphony-attachments"
+                    ):
+                        att_ro_bind_idx = i
+                        break
+
+                assert tmp_bind_idx is not None
+                assert att_ro_bind_idx is not None
+                assert tmp_bind_idx < att_ro_bind_idx, (
+                    f"Expected /tmp bind ({tmp_bind_idx}) < attachments bind "
+                    f"({att_ro_bind_idx})"
+                )
+
+    def test_attachments_path_absent_when_none(self) -> None:
+        """When attachments_path is None, no /tmp/symphony-attachments mount appears."""
+        with mock.patch(
+            "symphony_linear.sandbox.shutil.which",
+            return_value="/usr/bin/bwrap",
+        ):
+            with mock.patch("subprocess.Popen") as popen_mock:
+                popen_mock.return_value.returncode = 0
+                popen_mock.return_value.communicate.return_value = (b"", b"")
+
+                run_in_sandbox(
+                    cmd=["echo", "hi"],
+                    workspace_path="/fake/workspace",
+                    hide_paths=[],
+                    env={"HOME": "/fake/home"},
+                    # attachments_path omitted (defaults to None)
+                )
+
+                args = popen_mock.call_args[0][0]
+
+                # /tmp/symphony-attachments should not appear anywhere in the args
+                assert "/tmp/symphony-attachments" not in args, (
+                    f"Unexpected /tmp/symphony-attachments in args: {args}"
+                )
+
+
+# ---------------------------------------------------------------------------
+# Existing tests
+# ---------------------------------------------------------------------------
 
 
 class TestExtraRWPathsArgv:
@@ -116,3 +238,60 @@ class TestExtraRWPathsArgv:
                 args = popen_mock.call_args[0][0]
                 # Only 2 --bind: workspace and /tmp (no extras)
                 assert args.count("--bind") == 2
+
+
+# ---------------------------------------------------------------------------
+# Integration tests — actually launch bwrap
+# ---------------------------------------------------------------------------
+
+
+def _bwrap_available() -> bool:
+    return shutil.which("bwrap") is not None
+
+
+def _require_bwrap() -> None:
+    if not _bwrap_available():
+        pytest.skip("bwrap not available")
+
+
+@pytest.mark.integration
+class TestAttachmentsSandboxIntegration:
+    """Verify that attachments_path is correctly mounted inside the sandbox
+    using the real bwrap binary.
+    """
+
+    def test_attachments_mount_visible(self, tmp_path: Path) -> None:
+        """A file in the attachments dir is readable at
+        /tmp/symphony-attachments/<filename> inside the sandbox."""
+        _require_bwrap()
+
+        # Create a host-side attachments directory with a test file.
+        attachments_dir = tmp_path / "attachments"
+        attachments_dir.mkdir()
+        test_file = attachments_dir / "hello.txt"
+        test_file.write_text("hello from attachments")
+
+        workspace = tmp_path / "workspace"
+        workspace.mkdir()
+
+        # Launch bwrap with attachments_path set and cat the file.
+        proc = run_in_sandbox(
+            cmd=["cat", "/tmp/symphony-attachments/hello.txt"],
+            workspace_path=str(workspace),
+            hide_paths=[],
+            env={"HOME": str(Path.home())},
+            attachments_path=str(attachments_dir),
+            stdout=subprocess.PIPE,
+            stderr=subprocess.PIPE,
+        )
+
+        stdout, stderr = proc.communicate(timeout=30)
+        output = stdout.decode(errors="replace").strip()
+
+        assert proc.returncode == 0, (
+            f"Sandbox failed with exit code {proc.returncode}\n"
+            f"stderr:\n{stderr.decode(errors='replace')}"
+        )
+        assert output == "hello from attachments", (
+            f"Expected 'hello from attachments', got: {output}"
+        )
