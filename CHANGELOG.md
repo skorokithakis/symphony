@@ -1,5 +1,17 @@
 # Changelog
 
+## [0.5.0](https://github.com/skorokithakis/symphony/compare/v0.4.0...v0.5.0) (2026-06-10)
+
+
+### Features
+
+* Pass ticket images to OpenCode as file attachments ([a58f700](https://github.com/skorokithakis/symphony/commit/a58f7009454e9606af75be6d46e89609479dfc1e))
+
+
+### Bug Fixes
+
+* Preserve OpenCode session across workspace cleanup and re-trigger ([3b45d2d](https://github.com/skorokithakis/symphony/commit/3b45d2d4236633c94eac67afbdb379af45fabdee))
+
 ## [0.4.0](https://github.com/skorokithakis/symphony/compare/v0.3.0...v0.4.0) (2026-05-24)
 
 
