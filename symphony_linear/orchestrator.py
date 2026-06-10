@@ -30,7 +30,7 @@ from symphony_linear.project_config import (
     ProjectConfigError,
     load_project_config,
 )
-from symphony_linear.state import StateManager, TicketState, TicketStatus
+from symphony_linear.state import SessionRecord, StateManager, TicketState, TicketStatus
 from symphony_linear.tracker import (
     Tracker,
     TrackerError,
@@ -377,6 +377,7 @@ class Orchestrator:
                     self._cancel_ticket(tid)
                     identifier = ticket_state.ticket_identifier
                     self._state.remove(tid)
+                    self._state.remove_session(tid)
                     try:
                         remove(identifier, str(self._workspace))
                     except Exception:
@@ -401,6 +402,15 @@ class Orchestrator:
                 )
                 self._cancel_ticket(tid)
                 identifier = ticket_state.ticket_identifier
+
+                # Snapshot session into persistent mapping before removing state.
+                if ticket_state.session_id is not None:
+                    record = SessionRecord(
+                        session_id=ticket_state.session_id,
+                        last_seen_comment_id=ticket_state.last_seen_comment_id,
+                    )
+                    self._state.set_session(tid, record)
+
                 self._state.remove(tid)
                 try:
                     remove(identifier, str(self._workspace))
@@ -992,6 +1002,40 @@ class Orchestrator:
             logger.exception("Failed to post metadata comment for %s", tid)
 
         if self._is_cancelled(tid):
+            return
+
+        # --- Rehydrate from session snapshot (if any) ---
+        session_record = self._state.get_session(tid)
+        if session_record is not None:
+            logger.info(
+                "Rehydrating session for %s from persistent snapshot (session=%s)",
+                tid,
+                session_record.session_id,
+            )
+            ticket_state.session_id = session_record.session_id
+            ticket_state.last_seen_comment_id = session_record.last_seen_comment_id
+            ticket_state.status = TicketStatus.needs_input
+            ticket_state.updated_at = _iso_now()
+            with self._state_lock:
+                self._state.upsert(ticket_state)
+                self._state.save()
+
+            # Transition the tracker to needs_input.
+            try:
+                self._tracker.transition_to(tid, TransitionTarget.needs_input)
+            except Exception:
+                logger.exception(
+                    "Failed to transition %s to '%s' during rehydrate",
+                    tid,
+                    TransitionTarget.needs_input.value,
+                )
+
+            self._post_comment_safe(
+                tid,
+                "Workspace restored — previous session will resume on your next comment.",
+                kind="workspace",
+            )
+            logger.info("New ticket pipeline rehydrated for %s", tid)
             return
 
         # --- Fetch description + build prompt ---

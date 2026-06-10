@@ -29,6 +29,25 @@ class TicketStatus(str, Enum):
 
 
 # ---------------------------------------------------------------------------
+# Session record model
+# ---------------------------------------------------------------------------
+
+
+class SessionRecord(BaseModel):
+    """Persistent mapping from ticket_id to the last known OpenCode session.
+
+    Survives workspace cleanup so a re-triggered ticket can resume its
+    previous session instead of starting a fresh one.
+    """
+
+    session_id: str = Field(..., description="OpenCode session identifier")
+    last_seen_comment_id: str | None = Field(
+        None,
+        description="Last comment ID the bot had seen when the session was snapshotted",
+    )
+
+
+# ---------------------------------------------------------------------------
 # Ticket state model
 # ---------------------------------------------------------------------------
 
@@ -79,6 +98,10 @@ class StateStore(BaseModel):
     tickets: list[TicketState] = Field(default_factory=list)
     provisioned_label_name: str | None = Field(
         None, description="The last trigger label name we successfully provisioned"
+    )
+    sessions: dict[str, SessionRecord] = Field(
+        default_factory=dict,
+        description="Per-ticket session snapshots keyed by ticket_id; survive workspace cleanup",
     )
 
 
@@ -186,6 +209,22 @@ class StateManager:
     def clear(self) -> None:
         """Remove all tracked tickets from the in-memory store."""
         self._store.tickets.clear()
+
+    # ------------------------------------------------------------------
+    # Session mapping accessors
+    # ------------------------------------------------------------------
+
+    def get_session(self, ticket_id: str) -> SessionRecord | None:
+        """Return the session snapshot for *ticket_id*, or ``None``."""
+        return self._store.sessions.get(ticket_id)
+
+    def set_session(self, ticket_id: str, record: SessionRecord) -> None:
+        """Store (or overwrite) a session snapshot for *ticket_id*."""
+        self._store.sessions[ticket_id] = record
+
+    def remove_session(self, ticket_id: str) -> None:
+        """Delete the session snapshot for *ticket_id* (no-op if absent)."""
+        self._store.sessions.pop(ticket_id, None)
 
     @property
     def provisioned_label_name(self) -> str | None:

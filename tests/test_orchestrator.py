@@ -1036,6 +1036,228 @@ class TestNewTicketProjectConfig:
 
 
 # ---------------------------------------------------------------------------
+# Session rehydration in new-ticket pipeline
+# ---------------------------------------------------------------------------
+
+
+class TestNewTicketRehydrate:
+    def test_rehydrate_restores_session_and_skips_run_initial(
+        self, orchestrator: Orchestrator, linear: FakeLinearClient
+    ) -> None:
+        """When a session mapping exists, _new_ticket_pipeline rehydrates and returns early."""
+        from symphony_linear.state import SessionRecord
+
+        # Pre-populate a session mapping.
+        orchestrator._state.set_session(
+            "ticket-1",
+            SessionRecord(
+                session_id="ses-rehydrated", last_seen_comment_id="cmt-prior"
+            ),
+        )
+
+        linear.set_response(
+            "get_project",
+            Project(
+                id="proj-1",
+                name="Test",
+                links=[
+                    ProjectLink(label="Repo", url="https://github.com/org/repo.git")
+                ],
+            ),
+        )
+        linear.set_response("get_issue", _make_issue(description="Fix"))
+        with (
+            mock.patch(
+                "symphony_linear.orchestrator.clone_workspace",
+                return_value=("/tmp/ws/TEAM-1", False),
+            ),
+            mock.patch(
+                "symphony_linear.orchestrator.finalize_workspace",
+            ),
+            mock.patch(
+                "symphony_linear.orchestrator.load_project_config",
+                return_value=ProjectConfig(),
+            ),
+            mock.patch(
+                "symphony_linear.orchestrator.run_initial",
+            ) as mock_run_initial,
+            mock.patch(
+                "symphony_linear.orchestrator.process_attachments",
+            ) as mock_process,
+        ):
+            orchestrator._new_ticket_pipeline(_make_issue())
+
+        # run_initial must NOT have been called.
+        mock_run_initial.assert_not_called()
+        # process_attachments must NOT have been called.
+        mock_process.assert_not_called()
+
+        # State should be in needs_input with rehydrated session.
+        ts = orchestrator._state.get("ticket-1")
+        assert ts is not None
+        assert ts.status == TicketStatus.needs_input
+        assert ts.session_id == "ses-rehydrated"
+        assert ts.last_seen_comment_id == "cmt-prior"
+        assert ts.workspace_path == "/tmp/ws/TEAM-1"
+
+        # Tracker transition to needs_input was called.
+        transition_calls = linear.calls.get("transition_to_state", [])
+        assert any(
+            tid == "ticket-1" and state == "Needs Input"
+            for tid, state in transition_calls
+        )
+
+        # Restore comment was posted.
+        post_calls = linear.calls.get("post_comment", [])
+        assert any("Workspace restored" in body for _, body in post_calls)
+        assert any("*Symphony · workspace*" in body for _, body in post_calls)
+
+        # Session mapping is NOT deleted on use (durable).
+        assert orchestrator._state.get_session("ticket-1") is not None
+
+    def test_rehydrate_no_mapping_unchanged_behavior(
+        self, orchestrator: Orchestrator, linear: FakeLinearClient
+    ) -> None:
+        """Without a session mapping, _new_ticket_pipeline proceeds normally."""
+        linear.set_response(
+            "get_project",
+            Project(
+                id="proj-1",
+                name="Test",
+                links=[
+                    ProjectLink(label="Repo", url="https://github.com/org/repo.git")
+                ],
+            ),
+        )
+        linear.set_response("get_issue", _make_issue(description="Fix"))
+        with (
+            mock.patch(
+                "symphony_linear.orchestrator.clone_workspace",
+                return_value=("/tmp/ws/TEAM-1", False),
+            ),
+            mock.patch(
+                "symphony_linear.orchestrator.finalize_workspace",
+            ),
+            mock.patch(
+                "symphony_linear.orchestrator.load_project_config",
+                return_value=ProjectConfig(),
+            ),
+            mock.patch(
+                "symphony_linear.orchestrator.run_initial",
+                return_value=("ses-fresh", "Done.", None),
+            ) as mock_run_initial,
+        ):
+            orchestrator._new_ticket_pipeline(_make_issue())
+
+        # Normal flow: run_initial was called.
+        mock_run_initial.assert_called_once()
+
+        ts = orchestrator._state.get("ticket-1")
+        assert ts is not None
+        assert ts.session_id == "ses-fresh"
+        assert ts.status == TicketStatus.needs_input
+
+    def test_rehydrate_transition_failure_does_not_crash(
+        self, orchestrator: Orchestrator, linear: FakeLinearClient
+    ) -> None:
+        """When tracker transition fails during rehydrate, the pipeline still returns."""
+        from symphony_linear.state import SessionRecord
+
+        orchestrator._state.set_session(
+            "ticket-1",
+            SessionRecord(session_id="ses-rehydrated"),
+        )
+        # Make transition_to_state fail.
+        linear.set_response("transition_to_state", LinearError("nope"))
+
+        linear.set_response(
+            "get_project",
+            Project(
+                id="proj-1",
+                name="Test",
+                links=[
+                    ProjectLink(label="Repo", url="https://github.com/org/repo.git")
+                ],
+            ),
+        )
+        linear.set_response("get_issue", _make_issue(description="Fix"))
+        with (
+            mock.patch(
+                "symphony_linear.orchestrator.clone_workspace",
+                return_value=("/tmp/ws/TEAM-1", False),
+            ),
+            mock.patch(
+                "symphony_linear.orchestrator.finalize_workspace",
+            ),
+            mock.patch(
+                "symphony_linear.orchestrator.load_project_config",
+                return_value=ProjectConfig(),
+            ),
+            mock.patch(
+                "symphony_linear.orchestrator.run_initial",
+            ) as mock_run_initial,
+        ):
+            orchestrator._new_ticket_pipeline(_make_issue())
+
+        # Must not have crashed; run_initial not called.
+        mock_run_initial.assert_not_called()
+        # State still saved in needs_input.
+        ts = orchestrator._state.get("ticket-1")
+        assert ts is not None
+        assert ts.status == TicketStatus.needs_input
+        assert ts.session_id == "ses-rehydrated"
+
+    def test_rehydrate_posts_restore_comment_with_workspace_kind(
+        self, orchestrator: Orchestrator, linear: FakeLinearClient
+    ) -> None:
+        """The restore comment uses kind='workspace'."""
+        from symphony_linear.state import SessionRecord
+
+        orchestrator._state.set_session(
+            "ticket-1",
+            SessionRecord(session_id="ses-abc"),
+        )
+
+        linear.set_response(
+            "get_project",
+            Project(
+                id="proj-1",
+                name="Test",
+                links=[
+                    ProjectLink(label="Repo", url="https://github.com/org/repo.git")
+                ],
+            ),
+        )
+        linear.set_response("get_issue", _make_issue(description="Fix"))
+        with (
+            mock.patch(
+                "symphony_linear.orchestrator.clone_workspace",
+                return_value=("/tmp/ws/TEAM-1", False),
+            ),
+            mock.patch(
+                "symphony_linear.orchestrator.finalize_workspace",
+            ),
+            mock.patch(
+                "symphony_linear.orchestrator.load_project_config",
+                return_value=ProjectConfig(),
+            ),
+            mock.patch(
+                "symphony_linear.orchestrator.run_initial",
+                return_value=("ses-fresh", "Done.", None),
+            ),
+        ):
+            orchestrator._new_ticket_pipeline(_make_issue())
+
+        # Verify the restore comment has the workspace kind footer.
+        post_calls = linear.calls.get("post_comment", [])
+        restore_comments = [
+            body for _, body in post_calls if "Workspace restored" in body
+        ]
+        assert len(restore_comments) == 1
+        assert "*Symphony · workspace*" in restore_comments[0]
+
+
+# ---------------------------------------------------------------------------
 # Resume pipeline
 # ---------------------------------------------------------------------------
 
@@ -2434,6 +2656,137 @@ class TestTick:
                 time.sleep(0.2)
 
         m_new.assert_not_called()
+
+    # --- Session snapshotting during cleanup ---
+
+    def test_cleanup_snapshots_session_on_untrigger(
+        self,
+        orchestrator: Orchestrator,
+        linear: FakeLinearClient,
+        tmp_path: Path,
+    ) -> None:
+        """Untriggered ticket with session_id → snapshot saved to sessions map."""
+        ws_root = tmp_path / "workspaces"
+        ws_dir = ws_root / "TEAM-1"
+        ws_dir.mkdir(parents=True)
+        (ws_dir / "sentinel").write_text("x")
+
+        self._add_state(
+            orchestrator,
+            workspace_path=str(ws_dir),
+            session_id="ses-abc",
+            last_seen_comment_id="cmt-42",
+        )
+        linear.set_response("list_triggered_issues", [])
+        linear.set_response("get_issue", _make_issue(labels=[]))
+
+        orchestrator._tick()
+        time.sleep(0.2)
+
+        # State entry removed.
+        assert orchestrator._state.get("ticket-1") is None
+        # Session snapshot persisted.
+        sr = orchestrator._state.get_session("ticket-1")
+        assert sr is not None
+        assert sr.session_id == "ses-abc"
+        assert sr.last_seen_comment_id == "cmt-42"
+
+    def test_cleanup_no_session_does_not_snapshot(
+        self,
+        orchestrator: Orchestrator,
+        linear: FakeLinearClient,
+        tmp_path: Path,
+    ) -> None:
+        """Untriggered ticket without session_id → no session snapshot created."""
+        ws_root = tmp_path / "workspaces"
+        ws_dir = ws_root / "TEAM-1"
+        ws_dir.mkdir(parents=True)
+        (ws_dir / "sentinel").write_text("x")
+
+        self._add_state(
+            orchestrator,
+            workspace_path=str(ws_dir),
+            session_id=None,
+        )
+        linear.set_response("list_triggered_issues", [])
+        linear.set_response("get_issue", _make_issue(labels=[]))
+
+        orchestrator._tick()
+        time.sleep(0.2)
+
+        assert orchestrator._state.get("ticket-1") is None
+        assert orchestrator._state.get_session("ticket-1") is None
+
+    def test_cleanup_deleted_ticket_removes_session(
+        self,
+        orchestrator: Orchestrator,
+        linear: FakeLinearClient,
+        tmp_path: Path,
+    ) -> None:
+        """TrackerNotFoundError → session mapping is pruned."""
+        from symphony_linear.state import SessionRecord
+
+        ws_root = tmp_path / "workspaces"
+        ws_dir = ws_root / "TEAM-1"
+        ws_dir.mkdir(parents=True)
+        (ws_dir / "sentinel").write_text("x")
+
+        self._add_state(
+            orchestrator,
+            workspace_path=str(ws_dir),
+            session_id="ses-abc",
+        )
+        # Pre-populate a session mapping that should be removed.
+        orchestrator._state.set_session(
+            "ticket-1",
+            SessionRecord(session_id="ses-old", last_seen_comment_id="cmt-1"),
+        )
+
+        linear.set_response("list_triggered_issues", [])
+        linear.set_response("get_issue", LinearNotFoundError("gone"))
+
+        orchestrator._tick()
+        time.sleep(0.2)
+
+        assert orchestrator._state.get("ticket-1") is None
+        assert orchestrator._state.get_session("ticket-1") is None
+
+    def test_cleanup_snapshots_overwrite_prior_session(
+        self,
+        orchestrator: Orchestrator,
+        linear: FakeLinearClient,
+        tmp_path: Path,
+    ) -> None:
+        """Repeated trigger→cleanup cycles overwrite the session record with fresh values."""
+        from symphony_linear.state import SessionRecord
+
+        ws_root = tmp_path / "workspaces"
+        ws_dir = ws_root / "TEAM-1"
+        ws_dir.mkdir(parents=True)
+        (ws_dir / "sentinel").write_text("x")
+
+        # Pre-populate an old session.
+        orchestrator._state.set_session(
+            "ticket-1",
+            SessionRecord(session_id="ses-old", last_seen_comment_id="cmt-old"),
+        )
+
+        self._add_state(
+            orchestrator,
+            workspace_path=str(ws_dir),
+            session_id="ses-new",
+            last_seen_comment_id="cmt-new",
+        )
+        linear.set_response("list_triggered_issues", [])
+        linear.set_response("get_issue", _make_issue(labels=[]))
+
+        orchestrator._tick()
+        time.sleep(0.2)
+
+        sr = orchestrator._state.get_session("ticket-1")
+        assert sr is not None
+        assert sr.session_id == "ses-new"
+        assert sr.last_seen_comment_id == "cmt-new"
 
 
 # ---------------------------------------------------------------------------
