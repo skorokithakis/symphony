@@ -1,5 +1,22 @@
 # Changelog
 
+## [0.5.0](https://github.com/skorokithakis/symphony/compare/v0.4.0...v0.5.0) (2026-08-08)
+
+
+### Features
+
+* Pass ticket images to OpenCode as file attachments ([a58f700](https://github.com/skorokithakis/symphony/commit/a58f7009454e9606af75be6d46e89609479dfc1e))
+* Post partial output and salvage session id on turn timeout ([4d043ab](https://github.com/skorokithakis/symphony/commit/4d043ab4fdc6abe6a1462c1dc3f52b84139d79ef))
+* Refuse to delete a workspace that has uncommitted work ([2e05798](https://github.com/skorokithakis/symphony/commit/2e05798b4ea1226799b4b01fdbefea82ec2f314e))
+
+
+### Bug Fixes
+
+* Break QA serve retry loop when serve fails to start ([e455005](https://github.com/skorokithakis/symphony/commit/e455005d48ffc9cd72df64fab4645e46594071bc))
+* Preserve OpenCode session across workspace cleanup and re-trigger ([3b45d2d](https://github.com/skorokithakis/symphony/commit/3b45d2d4236633c94eac67afbdb379af45fabdee))
+* Quiet transient errors in poll-loop issue fetch ([392f979](https://github.com/skorokithakis/symphony/commit/392f97992601652a241168b0f3fdf6f1f65e8d69))
+* Run the full initial prompt when a ticket has no session ([9ec2b58](https://github.com/skorokithakis/symphony/commit/9ec2b589f27ec801d48b0754de3ffa472ef413bb))
+
 ## [0.4.0](https://github.com/skorokithakis/symphony/compare/v0.3.0...v0.4.0) (2026-05-24)
 
 
