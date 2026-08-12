@@ -1,5 +1,28 @@
 # Changelog
 
+## [0.6.0](https://github.com/skorokithakis/symphony/compare/v0.5.0...v0.6.0) (2026-08-12)
+
+
+### ⚠ BREAKING CHANGES
+
+* The per-ticket on-disk layout changed from <root>/<id> plus <root>/.attachments/<id> to <root>/<id>/{repo,attachments,tmp}. Existing workspaces are not migrated — drain or wipe workspace_root before upgrading.
+
+### Features
+
+* Bind per-ticket tmp dir at /tmp inside the bwrap sandbox ([eb462c8](https://github.com/skorokithakis/symphony/commit/eb462c8597e31d6e991225e97fa6d79465ba881e))
+* Restructure per-ticket layout to &lt;root&gt;/&lt;id&gt;/{repo,attachments,tmp} ([e1de8ba](https://github.com/skorokithakis/symphony/commit/e1de8ba537d6e4edc090b494098378bfc5029e84))
+* Stop OpenCode turns hanging forever, and add an idle watchdog ([97df7c3](https://github.com/skorokithakis/symphony/commit/97df7c3039854db117a070b774c2a834b3800814))
+
+
+### Bug Fixes
+
+* Re-run the interrupted turn after a daemon restart ([6471b43](https://github.com/skorokithakis/symphony/commit/6471b438ea855acff820881bc5b616ac3cb6f592))
+
+
+### Documentation
+
+* Update docs for the per-ticket directory layout and sandbox /tmp ([c5b1af4](https://github.com/skorokithakis/symphony/commit/c5b1af49e263fc7f15077db47c61d1ed68247fdc))
+
 ## [0.5.0](https://github.com/skorokithakis/symphony/compare/v0.4.0...v0.5.0) (2026-08-08)
 
 
