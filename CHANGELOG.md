@@ -1,5 +1,26 @@
 # Changelog
 
+## [0.7.0](https://github.com/skorokithakis/symphony/compare/v0.6.0...v0.7.0) (2026-08-22)
+
+
+### Features
+
+* Add per-issue model override via Model labels ([c7ad2e3](https://github.com/skorokithakis/symphony/commit/c7ad2e3cd4ce981989dfd7753fb6ca8a4a2e2546))
+* Reject malformed model ids at config load ([e92838d](https://github.com/skorokithakis/symphony/commit/e92838d89fe9a8ce0615cbb0a3c67ebb52f81943))
+* Trim tracker comments to the agent's closing reply ([b33d183](https://github.com/skorokithakis/symphony/commit/b33d18328700a37b406183e0b23f35d7928aa3ed))
+
+
+### Bug Fixes
+
+* Move failed tickets to Needs Input ([2682e1d](https://github.com/skorokithakis/symphony/commit/2682e1d7a329a2d4144310571f97b977ad2c2c8e))
+* Report the tail of OpenCode stderr on failure ([0492f8d](https://github.com/skorokithakis/symphony/commit/0492f8d1c6b429baf283adb9ec1917b68f59a9fb))
+* Skip the misleading rehydrate message when a comment is pending ([bc0d4ce](https://github.com/skorokithakis/symphony/commit/bc0d4ce34a9d60eabf07826f61141c2baf2c14b0))
+
+
+### Documentation
+
+* Clarify systemd configuration for sandbox PATH and SSH agent ([7e0f474](https://github.com/skorokithakis/symphony/commit/7e0f4745c4538855cf94707d348dad6228067718))
+
 ## [0.6.0](https://github.com/skorokithakis/symphony/compare/v0.5.0...v0.6.0) (2026-08-12)
 
 
