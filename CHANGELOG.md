@@ -1,5 +1,12 @@
 # Changelog
 
+## [0.8.0](https://github.com/skorokithakis/symphony/compare/v0.7.0...v0.8.0) (2026-08-22)
+
+
+### Features
+
+* Add sandbox.dir_map for per-ticket and shared bind mounts ([7424d9a](https://github.com/skorokithakis/symphony/commit/7424d9a217d9baf489b6a43f0b1fa63cbce324b3))
+
 ## [0.7.0](https://github.com/skorokithakis/symphony/compare/v0.6.0...v0.7.0) (2026-08-22)
 
 
