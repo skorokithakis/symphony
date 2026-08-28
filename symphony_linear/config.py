@@ -218,9 +218,9 @@ class AppConfig(BaseModel):
 
     model_config = ConfigDict(extra="forbid")
 
-    agent: Literal["opencode", "omp"] = Field(
+    agent: Literal["opencode", "omp", "pi"] = Field(
         "opencode",
-        description="Coding-agent CLI to run: 'opencode' (default) or 'omp'",
+        description="Coding-agent CLI to run: 'opencode' (default), 'omp', or 'pi'",
     )
     linear: _LinearConfig | None = Field(
         None, description="Linear backend configuration block"

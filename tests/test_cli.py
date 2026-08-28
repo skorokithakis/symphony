@@ -283,3 +283,65 @@ linear:
         assert "PATH" in stderr
         assert str(sandbox_bin) in stderr
         assert "SYMPHONY_SANDBOX_PATH" in stderr
+
+
+# ---------------------------------------------------------------------------
+# Pi agent binary check
+# ---------------------------------------------------------------------------
+
+
+class TestPiAgentBinaryCheck:
+    def test_pi_agent_present_on_sandbox_path_passes(self, tmp_path: Path) -> None:
+        """agent: pi with `pi` present on sandbox PATH passes startup."""
+        _write_config(
+            tmp_path,
+            """\
+agent: pi
+linear:
+  api_key: test-key
+""",
+        )
+        with (
+            mock.patch("symphony_linear.cli.load_state") as mock_load_state,
+            mock.patch("symphony_linear.cli._create_tracker") as mock_create_tracker,
+            mock.patch("symphony_linear.cli.Orchestrator") as mock_orch_class,
+            mock.patch(
+                "symphony_linear.cli.shutil.which", return_value="/usr/bin/pi"
+            ) as mock_which,
+        ):
+            mock_load_state.return_value = mock.MagicMock()
+            mock_create_tracker.return_value = mock.MagicMock()
+            mock_orch_class.return_value = mock.MagicMock()
+
+            main(["--workspace", str(tmp_path)])
+
+        mock_which.assert_called_once_with("pi", path=mock.ANY)
+
+    def test_pi_agent_absent_exits_1_naming_pi(
+        self,
+        tmp_path: Path,
+        monkeypatch: pytest.MonkeyPatch,
+        capsys: pytest.CaptureFixture[str],
+    ) -> None:
+        """agent: pi with `pi` absent on sandbox PATH exits 1 naming 'pi'."""
+        _write_config(
+            tmp_path,
+            """\
+agent: pi
+linear:
+  api_key: test-key
+""",
+        )
+        sandbox_bin = tmp_path / "sandbox-bin"
+        sandbox_bin.mkdir()
+        monkeypatch.setenv("PATH", str(tmp_path / "daemon-bin"))
+        monkeypatch.setenv("SYMPHONY_SANDBOX_PATH", str(sandbox_bin))
+        monkeypatch.setattr("symphony_linear.cli.shutil.which", shutil_which)
+
+        with pytest.raises(SystemExit) as excinfo:
+            main(["--workspace", str(tmp_path), "--validate-config"])
+
+        assert excinfo.value.code == 1
+        stderr = capsys.readouterr().err
+        assert "pi" in stderr
+        assert "SYMPHONY_SANDBOX_PATH" in stderr

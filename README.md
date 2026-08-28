@@ -289,7 +289,7 @@ directly; that is often nicer for systemd or secret managers.
 ### Coding agent
 
 The optional top-level `agent` key selects the coding-agent CLI for the
-daemon. It accepts `opencode` (the default) or `omp`:
+daemon. It accepts `opencode` (the default), `omp`, or `pi`:
 
 ```yaml
 agent: omp
@@ -310,7 +310,7 @@ documented there side by side.
 ```yaml
 # config.yaml (placed in the workspace directory)
 
-# Coding-agent CLI to run (default: opencode). Must be `opencode` or `omp`.
+# Coding-agent CLI to run (default: opencode). One of `opencode`, `omp`, or `pi`.
 agent: opencode
 
 # Choose exactly one backend — linear or github.
@@ -680,6 +680,16 @@ session resumes work both from inside the daemon and from your shell. OMP
 sessions live under `~/.omp/agent/sessions/<slugified-cwd>/`; use OMP's resume
 command from the same workspace path. `~/.omp` is likewise bind-mounted into
 the sandbox for OMP's session, authentication, and run state.
+
+For a Pi session:
+
+```bash
+cd <workspace>/TEAM-42/repo
+pi --session 01b035ff-248a-735c-8173-f5ee428fe918
+```
+
+Pi sessions live under `~/.pi/agent/sessions/`; `~/.pi` is likewise
+bind-mounted into the sandbox for Pi's session and authentication state.
 
 ### Check daemon state
 

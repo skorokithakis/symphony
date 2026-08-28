@@ -13,7 +13,7 @@ from datetime import datetime, timezone
 from pathlib import Path
 from typing import Any
 
-from symphony_linear import omp, opencode
+from symphony_linear import omp, opencode, pi
 from symphony_linear.agent_runner import AgentCancelled, AgentError, AgentTimeout
 from symphony_linear.attachments import process_attachments
 from symphony_linear.config import AppConfig
@@ -120,7 +120,11 @@ def _agent_callables(agent: str) -> tuple[Any, Any]:
     """Return the initial and resume callables for a configured agent."""
     if agent == "opencode":
         return run_initial, run_resume
-    return omp.run_initial, omp.run_resume
+    if agent == "omp":
+        return omp.run_initial, omp.run_resume
+    if agent == "pi":
+        return pi.run_initial, pi.run_resume
+    raise ValueError(f"Unknown agent: {agent!r}")
 
 
 # ---------------------------------------------------------------------------

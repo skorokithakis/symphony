@@ -318,6 +318,38 @@ class TestNewTicketPipeline:
         assert ticket_state is not None
         assert ticket_state.agent == "omp"
 
+    def test_pi_dispatches_initial_and_tags_session(
+        self, orchestrator: Orchestrator, linear: FakeLinearClient
+    ) -> None:
+        orchestrator._config.agent = "pi"
+        with (
+            mock.patch("symphony_linear.orchestrator.clone_workspace") as mock_clone,
+            mock.patch(
+                "symphony_linear.orchestrator.finalize_workspace"
+            ) as mock_finalize,
+            mock.patch(
+                "symphony_linear.orchestrator.load_project_config"
+            ) as mock_load_config,
+            mock.patch("symphony_linear.orchestrator.run_initial") as mock_opencode,
+            mock.patch("symphony_linear.orchestrator.omp.run_initial") as mock_omp,
+            mock.patch("symphony_linear.orchestrator.pi.run_initial") as mock_pi,
+        ):
+            issue = self._setup_mocks(
+                mock_clone,
+                mock_finalize,
+                mock_load_config,
+                mock_pi,
+                linear,
+            )
+            orchestrator._new_ticket_pipeline(issue)
+
+        mock_opencode.assert_not_called()
+        mock_omp.assert_not_called()
+        mock_pi.assert_called_once()
+        ticket_state = orchestrator._state.get("ticket-1")
+        assert ticket_state is not None
+        assert ticket_state.agent == "pi"
+
     def test_turn_input_marker_set_to_baseline(
         self, orchestrator: Orchestrator, linear: FakeLinearClient
     ) -> None:
@@ -2063,6 +2095,196 @@ class TestResumePipeline:
 
         mock_opencode.assert_not_called()
         mock_omp.assert_called_once()
+
+    def test_pi_dispatches_resume(
+        self, orchestrator: Orchestrator, linear: FakeLinearClient
+    ) -> None:
+        orchestrator._config.agent = "pi"
+        ts = self._make_ts(agent="pi")
+        orchestrator._state.upsert(ts)
+        linear.set_response("list_comments_since", [_make_comment("c1", "Fix please")])
+        with (
+            mock.patch(
+                "symphony_linear.orchestrator.load_project_config",
+                return_value=ProjectConfig(),
+            ),
+            mock.patch("symphony_linear.orchestrator.run_resume") as mock_opencode,
+            mock.patch("symphony_linear.orchestrator.omp.run_resume") as mock_omp,
+            mock.patch(
+                "symphony_linear.orchestrator.pi.run_resume",
+                return_value=("Done!", None),
+            ) as mock_pi,
+        ):
+            orchestrator._resume_pipeline(ts)
+
+        mock_opencode.assert_not_called()
+        mock_omp.assert_not_called()
+        mock_pi.assert_called_once()
+
+    def test_pi_agent_mismatch_starts_initial_pipeline(
+        self, orchestrator: Orchestrator, linear: FakeLinearClient
+    ) -> None:
+        """A stored opencode session is discarded when config agent is pi."""
+        from symphony_linear.state import SessionRecord
+
+        orchestrator._config.agent = "pi"
+        ts = self._make_ts(agent="opencode")
+        orchestrator._state.upsert(ts)
+        orchestrator._state.set_session(
+            "ticket-1", SessionRecord(session_id="ses-opencode", agent="opencode")
+        )
+        linear.set_response("list_comments_since", [_make_comment("c1", "Fix please")])
+        linear.set_response("get_issue", _make_issue(description="Fix the bug"))
+        linear.set_response(
+            "get_project",
+            Project(
+                id="proj-1",
+                name="Test",
+                links=[
+                    ProjectLink(label="Repo", url="https://github.com/org/repo.git")
+                ],
+            ),
+        )
+        with (
+            mock.patch(
+                "symphony_linear.orchestrator.clone_workspace",
+                return_value=("/tmp/ws/TEAM-1", False),
+            ),
+            mock.patch("symphony_linear.orchestrator.finalize_workspace"),
+            mock.patch(
+                "symphony_linear.orchestrator.load_project_config",
+                return_value=ProjectConfig(),
+            ),
+            mock.patch("symphony_linear.orchestrator.omp.run_initial") as mock_omp,
+            mock.patch(
+                "symphony_linear.orchestrator.run_resume"
+            ) as mock_opencode_resume,
+            mock.patch(
+                "symphony_linear.orchestrator.pi.run_initial",
+                return_value=("pi-session", "Done.", None),
+            ) as mock_pi_initial,
+            mock.patch("symphony_linear.orchestrator.pi.run_resume") as mock_pi_resume,
+        ):
+            orchestrator._resume_pipeline(ts)
+
+        mock_omp.assert_not_called()
+        mock_opencode_resume.assert_not_called()
+        mock_pi_resume.assert_not_called()
+        mock_pi_initial.assert_called_once()
+        prompt = mock_pi_initial.call_args.kwargs["prompt"]
+        assert "Fix the bug" in prompt
+        assert "Fix please" in prompt
+        ticket_state = orchestrator._state.get("ticket-1")
+        assert ticket_state is not None
+        assert ticket_state.session_id == "pi-session"
+        assert ticket_state.agent == "pi"
+        assert orchestrator._state.get_session("ticket-1") is None
+
+    def test_pi_session_discarded_under_opencode(
+        self, orchestrator: Orchestrator, linear: FakeLinearClient
+    ) -> None:
+        """A pi-tagged stored session is discarded when config agent is opencode."""
+        from symphony_linear.state import SessionRecord
+
+        # Default config agent is "opencode"
+        ts = self._make_ts(agent="pi")
+        orchestrator._state.upsert(ts)
+        orchestrator._state.set_session(
+            "ticket-1", SessionRecord(session_id="ses-pi", agent="pi")
+        )
+        linear.set_response("list_comments_since", [_make_comment("c1", "Fix please")])
+        linear.set_response("get_issue", _make_issue(description="Fix the bug"))
+        linear.set_response(
+            "get_project",
+            Project(
+                id="proj-1",
+                name="Test",
+                links=[
+                    ProjectLink(label="Repo", url="https://github.com/org/repo.git")
+                ],
+            ),
+        )
+        with (
+            mock.patch(
+                "symphony_linear.orchestrator.clone_workspace",
+                return_value=("/tmp/ws/TEAM-1", False),
+            ),
+            mock.patch("symphony_linear.orchestrator.finalize_workspace"),
+            mock.patch(
+                "symphony_linear.orchestrator.load_project_config",
+                return_value=ProjectConfig(),
+            ),
+            mock.patch(
+                "symphony_linear.orchestrator.run_initial",
+                return_value=("oc-session", "Done.", None),
+            ) as mock_opencode_initial,
+            mock.patch(
+                "symphony_linear.orchestrator.pi.run_initial"
+            ) as mock_pi_initial,
+            mock.patch("symphony_linear.orchestrator.pi.run_resume") as mock_pi_resume,
+        ):
+            orchestrator._resume_pipeline(ts)
+
+        mock_pi_initial.assert_not_called()
+        mock_pi_resume.assert_not_called()
+        mock_opencode_initial.assert_called_once()
+        ticket_state = orchestrator._state.get("ticket-1")
+        assert ticket_state is not None
+        assert ticket_state.session_id == "oc-session"
+        assert ticket_state.agent == "opencode"
+        assert orchestrator._state.get_session("ticket-1") is None
+
+    def test_none_agent_session_discarded_under_pi(
+        self, orchestrator: Orchestrator, linear: FakeLinearClient
+    ) -> None:
+        """A legacy session (agent=None, meaning opencode) is discarded under pi config."""
+        from symphony_linear.state import SessionRecord
+
+        orchestrator._config.agent = "pi"
+        ts = self._make_ts(agent=None)  # legacy / no agent tag
+        orchestrator._state.upsert(ts)
+        orchestrator._state.set_session(
+            "ticket-1", SessionRecord(session_id="ses-legacy", agent=None)
+        )
+        linear.set_response("list_comments_since", [_make_comment("c1", "Fix please")])
+        linear.set_response("get_issue", _make_issue(description="Fix the bug"))
+        linear.set_response(
+            "get_project",
+            Project(
+                id="proj-1",
+                name="Test",
+                links=[
+                    ProjectLink(label="Repo", url="https://github.com/org/repo.git")
+                ],
+            ),
+        )
+        with (
+            mock.patch(
+                "symphony_linear.orchestrator.clone_workspace",
+                return_value=("/tmp/ws/TEAM-1", False),
+            ),
+            mock.patch("symphony_linear.orchestrator.finalize_workspace"),
+            mock.patch(
+                "symphony_linear.orchestrator.load_project_config",
+                return_value=ProjectConfig(),
+            ),
+            mock.patch(
+                "symphony_linear.orchestrator.run_resume"
+            ) as mock_opencode_resume,
+            mock.patch(
+                "symphony_linear.orchestrator.pi.run_initial",
+                return_value=("pi-session", "Done.", None),
+            ) as mock_pi_initial,
+            mock.patch("symphony_linear.orchestrator.pi.run_resume") as mock_pi_resume,
+        ):
+            orchestrator._resume_pipeline(ts)
+
+        mock_opencode_resume.assert_not_called()
+        mock_pi_resume.assert_not_called()
+        mock_pi_initial.assert_called_once()
+        ticket_state = orchestrator._state.get("ticket-1")
+        assert ticket_state is not None
+        assert ticket_state.agent == "pi"
 
     def test_agent_mismatch_starts_initial_pipeline(
         self, orchestrator: Orchestrator, linear: FakeLinearClient

@@ -115,6 +115,18 @@ class TestLoadConfig:
         config = load_config(tmp_path)
         assert config.agent == "omp"
 
+    def test_agent_can_be_pi(self, tmp_path: Path) -> None:
+        cfg = {
+            "agent": "pi",
+            "linear": {
+                "api_key": "test-key",
+            },
+        }
+        _write_yaml(tmp_path / "config.yaml", cfg)
+
+        config = load_config(tmp_path)
+        assert config.agent == "pi"
+
     def test_invalid_agent_is_rejected(self, tmp_path: Path) -> None:
         cfg = {
             "agent": "other",

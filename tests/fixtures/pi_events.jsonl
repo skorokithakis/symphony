@@ -1,0 +1,13 @@
+{"type":"session","version":3,"id":"01b035ff-248a-735c-8173-f5ee428fe918","timestamp":"2026-08-24T23:10:05.123Z","cwd":"/tmp/pi/pi-probe"}
+{"type":"agent_start"}
+{"type":"turn_start"}
+{"type":"message_start","message":{"role":"user","content":[{"type":"text","text":"Say exactly: hello"}],"attribution":"user","timestamp":1787612400000}}
+{"type":"message_end","message":{"role":"user","content":[{"type":"text","text":"Say exactly: hello"}],"attribution":"user","timestamp":1787612400000}}
+{"type":"message_start","message":{"role":"assistant","content":[{"type":"text","text":"h"}],"api":"anthropic-messages","provider":"anthropic","model":"claude-opus-5","usage":{"input":5,"output":1,"cacheRead":10,"cacheWrite":3000,"totalTokens":3016},"stopReason":"stop","timestamp":1787612400100,"responseId":"msg_pitest01"}}
+{"type":"message_update","assistantMessageEvent":{"type":"text_start","contentIndex":0}}
+{"type":"message_update","assistantMessageEvent":{"type":"text_delta","contentIndex":0,"delta":"h"}}
+{"type":"message_update","assistantMessageEvent":{"type":"text_delta","contentIndex":0,"delta":"ello"}}
+{"type":"message_update","assistantMessageEvent":{"type":"text_end","contentIndex":0,"content":"hello"}}
+{"type":"message_end","message":{"role":"assistant","content":[{"type":"text","text":"hello"}],"api":"anthropic-messages","provider":"anthropic","model":"claude-opus-5","usage":{"input":5,"output":4,"cacheRead":10,"cacheWrite":3000,"totalTokens":3019},"stopReason":"stop","timestamp":1787612400100,"responseId":"msg_pitest01","duration":1200.0,"ttft":800.0}}
+{"type":"turn_end","message":{"role":"assistant","content":[{"type":"text","text":"hello"}],"api":"anthropic-messages","provider":"anthropic","model":"claude-opus-5","usage":{"input":5,"output":4,"cacheRead":10,"cacheWrite":3000,"totalTokens":3019},"stopReason":"stop","timestamp":1787612400100,"responseId":"msg_pitest01","duration":1200.0,"ttft":800.0},"toolResults":[]}
+{"type":"agent_end","messages":[{"role":"user","content":[{"type":"text","text":"Say exactly: hello"}],"attribution":"user","timestamp":1787612400000},{"role":"assistant","content":[{"type":"text","text":"hello"}],"api":"anthropic-messages","provider":"anthropic","model":"claude-opus-5","usage":{"input":5,"output":4,"cacheRead":10,"cacheWrite":3000,"totalTokens":3019},"stopReason":"stop","timestamp":1787612400100,"responseId":"msg_pitest01","duration":1200.0,"ttft":800.0}],"isTerminal":true}
