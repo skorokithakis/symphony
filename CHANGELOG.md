@@ -1,5 +1,28 @@
 # Changelog
 
+## [0.8.0](https://github.com/skorokithakis/symphony/compare/v0.7.0...v0.8.0) (2026-09-04)
+
+
+### Features
+
+* Add a project-wide default model ([bc8772a](https://github.com/skorokithakis/symphony/commit/bc8772a16e54b4dcb87bd4a7125301fff07cbf83))
+* Add OMP as a selectable coding agent alongside OpenCode ([b5a1a6d](https://github.com/skorokithakis/symphony/commit/b5a1a6d25effb6afb0030d0893964bfc74d0d300))
+* Add pi as a selectable coding agent ([36a3d8f](https://github.com/skorokithakis/symphony/commit/36a3d8fa4dfa5fd67af5341040f02e10f1df3d6f))
+* Add sandbox.dir_map for per-ticket and shared bind mounts ([7424d9a](https://github.com/skorokithakis/symphony/commit/7424d9a217d9baf489b6a43f0b1fa63cbce324b3))
+* Make the Linear trigger label optional ([3eb911c](https://github.com/skorokithakis/symphony/commit/3eb911c6a0c6f3dd5aea7c8ae248e4ae851c5783))
+
+
+### Bug Fixes
+
+* Detect pi-family mid-turn failures despite a zero exit code ([1f0f1ba](https://github.com/skorokithakis/symphony/commit/1f0f1ba42d88c8176828d35d181a1822674f962b))
+* Keep a QA-interrupted ticket reachable by comment ([2ea5f07](https://github.com/skorokithakis/symphony/commit/2ea5f07798976207821a0050381f5fb91c702b93))
+* Tell the user when a mid-turn comment is ignored ([e4da13a](https://github.com/skorokithakis/symphony/commit/e4da13a3cd49751f0f02402a46eeea9ff9a617a6))
+
+
+### Documentation
+
+* Document trigger_label: null in the example config ([7a67339](https://github.com/skorokithakis/symphony/commit/7a67339091b4ccb87bef6d3741205756b09756f6))
+
 ## [0.7.0](https://github.com/skorokithakis/symphony/compare/v0.6.0...v0.7.0) (2026-08-22)
 
 
