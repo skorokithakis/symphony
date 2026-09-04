@@ -70,6 +70,17 @@ def config_no_qa() -> _LinearConfig:
 
 
 @pytest.fixture
+def config_no_label() -> _LinearConfig:
+    return _LinearConfig(
+        api_key="test-key",
+        trigger_label=None,
+        in_progress_state="In Progress",
+        needs_input_state="Needs Input",
+        qa_state=None,
+    )
+
+
+@pytest.fixture
 def linear_mock() -> MagicMock:
     return MagicMock(spec=LinearClient)
 
@@ -176,6 +187,45 @@ class TestListTriggeredIssues:
             active_states=["In Progress", "Needs Input"],
         )
 
+    def test_none_label_filters_issues_without_repo_link(
+        self,
+        linear_mock: MagicMock,
+        config_no_label: _LinearConfig,
+    ) -> None:
+        tracker = LinearTracker(linear_mock, config_no_label)
+        repo_issue = Issue(
+            id="i-1",
+            identifier="T-1",
+            title="Repo",
+            state="In Progress",
+            updatedAt="2025-01-01T00:00:00Z",
+            project=Project(
+                id="p-1",
+                name="Repo project",
+                links=[ProjectLink(label=" Repo ", url="https://github.com/org/repo")],
+            ),
+        )
+        no_repo_issue = Issue(
+            id="i-2",
+            identifier="T-2",
+            title="No repo",
+            state="In Progress",
+            labels=["Agent"],
+            updatedAt="2025-01-01T00:00:00Z",
+            project=Project(
+                id="p-2",
+                name="Docs project",
+                links=[ProjectLink(label="Docs", url="https://docs.example.com")],
+            ),
+        )
+        linear_mock.list_triggered_issues.return_value = [repo_issue, no_repo_issue]
+
+        assert tracker.list_triggered_issues() == [repo_issue]
+        linear_mock.list_triggered_issues.assert_called_once_with(
+            label=None,
+            active_states=["In Progress", "Needs Input"],
+        )
+
 
 class TestGetIssue:
     def test_delegates(self, tracker: LinearTracker, linear_mock: MagicMock) -> None:
@@ -258,6 +308,49 @@ class TestIsStillTriggered:
             updatedAt="2025-01-01T00:00:00Z",
         )
         assert tracker.is_still_triggered(issue) is True
+
+    def test_repo_link_triggers_when_label_is_none(
+        self,
+        linear_mock: MagicMock,
+        config_no_label: _LinearConfig,
+    ) -> None:
+        tracker = LinearTracker(linear_mock, config_no_label)
+        issue = Issue(
+            id="i-1",
+            identifier="T-1",
+            title="T",
+            state="In Progress",
+            updatedAt="2025-01-01T00:00:00Z",
+            project=Project(
+                id="p-1",
+                name="Backend",
+                links=[ProjectLink(label=" repo ", url="https://github.com/org/repo")],
+            ),
+        )
+
+        assert tracker.is_still_triggered(issue) is True
+
+    def test_non_repo_link_does_not_trigger_when_label_is_none(
+        self,
+        linear_mock: MagicMock,
+        config_no_label: _LinearConfig,
+    ) -> None:
+        tracker = LinearTracker(linear_mock, config_no_label)
+        issue = Issue(
+            id="i-1",
+            identifier="T-1",
+            title="T",
+            state="In Progress",
+            labels=["Agent"],
+            updatedAt="2025-01-01T00:00:00Z",
+            project=Project(
+                id="p-1",
+                name="Backend",
+                links=[ProjectLink(label="Docs", url="https://docs.example.com")],
+            ),
+        )
+
+        assert tracker.is_still_triggered(issue) is False
 
     def test_missing_label(self, tracker: LinearTracker) -> None:
         issue = Issue(
@@ -438,6 +531,31 @@ class TestEnsureTriggerSetup:
             mock_provision.assert_called_once_with(linear_mock, state, "Agent")
             mock_models.assert_called_once_with(linear_mock, [])
 
+    def test_skips_trigger_label_when_none(
+        self,
+        linear_mock: MagicMock,
+        config_no_label: _LinearConfig,
+        tmp_path: Any,
+    ) -> None:
+        from unittest.mock import patch
+
+        tracker = LinearTracker(linear_mock, config_no_label)
+        state = StateManager(tmp_path / "state.json")
+        state.load()
+
+        with (
+            patch(
+                "symphony_linear.linear_tracker.provision_trigger_label"
+            ) as mock_provision,
+            patch(
+                "symphony_linear.linear_tracker.provision_model_labels"
+            ) as mock_models,
+        ):
+            tracker.ensure_trigger_setup(state, ["Model: Strong"])
+
+        mock_provision.assert_not_called()
+        mock_models.assert_called_once_with(linear_mock, ["Model: Strong"])
+
 
 class TestHumanTriggerDescription:
     def test_includes_label_name(self, tracker: LinearTracker) -> None:
@@ -452,6 +570,18 @@ class TestHumanTriggerDescription:
         )
         t = LinearTracker(linear_mock, config)
         assert t.human_trigger_description() == "remove the `Symphony` label"
+
+    def test_none_label_names_active_states(
+        self,
+        linear_mock: MagicMock,
+        config_no_label: _LinearConfig,
+    ) -> None:
+        tracker = LinearTracker(linear_mock, config_no_label)
+
+        assert (
+            tracker.human_trigger_description()
+            == "move the ticket out of `In Progress`/`Needs Input`"
+        )
 
 
 # ---------------------------------------------------------------------------

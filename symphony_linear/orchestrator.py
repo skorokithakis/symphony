@@ -523,10 +523,10 @@ class Orchestrator:
                 self._schedule_task(issue.id, self._new_ticket_pipeline, issue)
 
             # --- Step 3: cleanup tickets that are no longer triggered ---
-            # Build a lookup from the trigger list.  Tickets that appear there
-            # already have the label, are in an active state, and are not archived
-            # (Linear excludes archived by default), so they are still triggered
-            # and we can skip the per-ticket get_issue call for them.
+            # Build a lookup from the trigger list. Tickets that appear there
+            # already meet the configured trigger condition, are in an active state,
+            # and are not archived (Linear excludes archived by default), so they
+            # are still triggered and we can skip the per-ticket get_issue call.
             issues_by_id = {i.id: i for i in issues}
 
             for ticket_state in list(self._state.tickets):

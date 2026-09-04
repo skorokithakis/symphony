@@ -12,7 +12,7 @@ from urllib.parse import urlparse
 import httpx
 
 from symphony_linear.config import _LinearConfig
-from symphony_linear.linear import Comment, Issue, LinearClient
+from symphony_linear.linear import Comment, Issue, LinearClient, Project, ProjectLink
 from symphony_linear.provisioning import provision_model_labels, provision_trigger_label
 from symphony_linear.state import StateManager
 from symphony_linear.tracker import (
@@ -112,9 +112,10 @@ class LinearTracker:
     """Issue-tracker adapter that delegates to the Linear GraphQL client.
 
     Construct with a ready-to-use ``LinearClient`` and the Linear subsection
-    of the app config.  The config supplies the trigger label and state names
-    that ``list_triggered_issues``, ``is_still_triggered``, and ``transition_to``
-    compose internally, so the orchestrator never touches those names.
+    of the app config. The config supplies trigger configuration and state
+    names that ``list_triggered_issues``, ``is_still_triggered``, and
+    ``transition_to`` compose internally, so the orchestrator never touches
+    those names.
     """
 
     def __init__(self, linear: LinearClient, config: _LinearConfig) -> None:
@@ -132,10 +133,13 @@ class LinearTracker:
         ]
         if self._config.qa_state is not None:
             active_states.append(self._config.qa_state)
-        return self._linear.list_triggered_issues(
+        issues = self._linear.list_triggered_issues(
             label=self._config.trigger_label,
             active_states=active_states,
         )
+        if self._config.trigger_label is None:
+            return [issue for issue in issues if _repo_link(issue.project) is not None]
+        return issues
 
     def get_issue(self, id: str) -> Issue:
         return self._linear.get_issue(id)
@@ -169,8 +173,12 @@ class LinearTracker:
         }
         if self._config.qa_state is not None:
             active_states.add(self._config.qa_state)
+        if self._config.trigger_label is None:
+            trigger_matches = _repo_link(issue.project) is not None
+        else:
+            trigger_matches = self._config.trigger_label in issue.labels
         return (
-            self._config.trigger_label in issue.labels
+            trigger_matches
             and issue.state in active_states
             and issue.archived_at is None
         )
@@ -179,12 +187,12 @@ class LinearTracker:
         if issue.project is None or not issue.project.id:
             raise TrackerError("No project linked to this ticket.")
         project = self._linear.get_project(issue.project.id)
-        for link in project.links:
-            if link.label.strip().lower() == "repo":
-                return _maybe_rewrite_to_ssh(link.url)
-        raise TrackerError(
-            "No `Repo` link found on the project. Add one and re-trigger."
-        )
+        link = _repo_link(project)
+        if link is None:
+            raise TrackerError(
+                "No `Repo` link found on the project. Add one and re-trigger."
+            )
+        return _maybe_rewrite_to_ssh(link.url)
 
     # ------------------------------------------------------------------
     # Attachments
@@ -266,19 +274,39 @@ class LinearTracker:
         self, state: StateManager, model_labels: list[str]
     ) -> None:
         # Delegate to the existing provisioning logic so we don't duplicate
-        # the race-tolerant find/create/retry flow.  Calls into provisioning.py
-        # which uses the LinearClient directly.  This will be inlined or
+        # the race-tolerant find/create/retry flow. Calls into provisioning.py
+        # which uses the LinearClient directly. This will be inlined or
         # restructured in the follow-up migration ticket if needed.
-        provision_trigger_label(self._linear, state, self._config.trigger_label)
+        if self._config.trigger_label is not None:
+            provision_trigger_label(self._linear, state, self._config.trigger_label)
         provision_model_labels(self._linear, model_labels)
 
     def human_trigger_description(self) -> str:
-        return f"remove the `{self._config.trigger_label}` label"
+        if self._config.trigger_label is not None:
+            return f"remove the `{self._config.trigger_label}` label"
+        active_states = [
+            self._config.in_progress_state,
+            self._config.needs_input_state,
+        ]
+        if self._config.qa_state is not None:
+            active_states.append(self._config.qa_state)
+        return "move the ticket out of " + "/".join(
+            f"`{state}`" for state in active_states
+        )
 
 
 # ---------------------------------------------------------------------------
 # Package-private helpers
 # ---------------------------------------------------------------------------
+
+
+def _repo_link(project: Project | None) -> ProjectLink | None:
+    """Return the first Repo external link on *project*, if any."""
+    if project is not None:
+        for link in project.links:
+            if link.label.strip().lower() == "repo":
+                return link
+    return None
 
 
 def _target_to_linear_state_name(

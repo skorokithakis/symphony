@@ -261,6 +261,84 @@ class TestListTriggeredIssues:
         assert len(issues) == 1
         assert issues[0].id == "i-1"
 
+    def test_none_label_filters_by_state_and_queries_projects(self) -> None:
+        def node(
+            issue_id: str, state: str, links: list[dict[str, str]] | None
+        ) -> dict[str, Any]:
+            return {
+                "id": issue_id,
+                "identifier": issue_id.upper(),
+                "title": "T",
+                "updatedAt": "2025-06-01T00:00:00Z",
+                "state": {"name": state},
+                "labels": {"nodes": []},
+                "branchName": None,
+                "project": (
+                    {
+                        "id": f"p-{issue_id}",
+                        "name": "Project",
+                        "externalLinks": {"nodes": links},
+                    }
+                    if links is not None
+                    else None
+                ),
+            }
+
+        raw = {
+            "data": {
+                "issues": {
+                    "nodes": [
+                        node(
+                            "i-1",
+                            "In Progress",
+                            [
+                                {
+                                    "label": " Repo ",
+                                    "url": "https://github.com/org/repo",
+                                }
+                            ],
+                        ),
+                        node(
+                            "i-2",
+                            "In Progress",
+                            [{"label": "Docs", "url": "https://docs.example.com"}],
+                        ),
+                        node(
+                            "i-3",
+                            "Backlog",
+                            [{"label": "Repo", "url": "https://github.com/org/other"}],
+                        ),
+                        node("i-4", "In Progress", None),
+                    ]
+                }
+            }
+        }
+        payloads: list[dict[str, Any]] = []
+
+        def handler(request: httpx.Request) -> httpx.Response:
+            payloads.append(json.loads(request.content))
+            return _json_response(raw)
+
+        issues = _client(_make_transport(handler)).list_triggered_issues(
+            None, ["In Progress"]
+        )
+
+        assert [issue.id for issue in issues] == ["i-1", "i-2", "i-4"]
+        assert issues[0].project is not None
+        assert issues[0].project.links == [
+            ProjectLink(label=" Repo ", url="https://github.com/org/repo")
+        ]
+        assert issues[1].project is not None
+        assert issues[1].project.links == [
+            ProjectLink(label="Docs", url="https://docs.example.com")
+        ]
+        assert issues[2].project is None
+        assert payloads[0]["variables"] == {"states": ["In Progress"]}
+        query = payloads[0]["query"]
+        assert "state: { name: { in: $states } }" in query
+        assert "project: { null: false }" in query
+        assert "labels: { name: { eq: $label } }" not in query
+
     def test_empty_result(self) -> None:
         raw: dict[str, Any] = {"data": {"issues": {"nodes": []}}}
         transport = _make_transport(lambda req: _json_response(raw))
@@ -349,6 +427,7 @@ class TestListTriggeredIssues:
             {"data": {"issues": {"nodes": []}}},
         )
         assert "labels(first: 50) { nodes { name } }" in query
+        assert "externalLinks { nodes { label url } }" in query
 
 
 # ---------------------------------------------------------------------------
@@ -464,6 +543,7 @@ class TestGetIssue:
             },
         )
         assert "labels(first: 50) { nodes { name } }" in query
+        assert "externalLinks { nodes { label url } }" in query
 
 
 # ---------------------------------------------------------------------------

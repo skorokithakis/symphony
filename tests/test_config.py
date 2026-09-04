@@ -91,6 +91,26 @@ class TestLoadConfig:
         assert config.turn_idle_timeout_seconds == 1200
         assert config.auto_branch is True  # default
 
+    def test_null_trigger_label_is_accepted(self, tmp_path: Path) -> None:
+        _write_yaml(
+            tmp_path / "config.yaml",
+            {"linear": {"api_key": "test-key", "trigger_label": None}},
+        )
+
+        config = load_config(tmp_path)
+
+        assert config.linear is not None
+        assert config.linear.trigger_label is None
+
+    def test_empty_trigger_label_is_rejected(self, tmp_path: Path) -> None:
+        _write_yaml(
+            tmp_path / "config.yaml",
+            {"linear": {"api_key": "test-key", "trigger_label": ""}},
+        )
+
+        with pytest.raises(ValueError, match="trigger_label"):
+            load_config(tmp_path)
+
     def test_auto_branch_can_be_disabled(self, tmp_path: Path) -> None:
         cfg = {
             "linear": {

@@ -78,7 +78,21 @@ class _LinearConfig(BaseModel):
     model_config = ConfigDict(extra="forbid")
 
     api_key: str = Field(..., description="Linear API key (bearer token)")
-    trigger_label: str = Field("Agent", description="Label that triggers the bot")
+    trigger_label: str | None = Field(
+        "Agent",
+        description=(
+            "Optional label that triggers the bot; null uses active states and "
+            "a project Repo link"
+        ),
+    )
+
+    @field_validator("trigger_label")
+    @classmethod
+    def _validate_trigger_label(cls, v: str | None) -> str | None:
+        if v == "":
+            raise ValueError("trigger_label must be a non-empty string or null")
+        return v
+
     in_progress_state: str = Field(
         "In Progress", description="Linear state for active work"
     )

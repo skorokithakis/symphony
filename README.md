@@ -133,8 +133,12 @@ to reply. You can rename this state later; the name lives in `config.yaml`.
 
 ### Create the trigger label
 
-Add a label called **Agent** to the team. Any ticket carrying this label
-becomes eligible for the agent. The label name is configurable.
+By default, add a label called **Agent** to the team. Any ticket carrying this
+label becomes eligible for the agent, and the label name is configurable.
+
+This is optional: set `linear.trigger_label: null` to skip creating a trigger
+label. In that mode, a ticket is eligible when it is in a configured active
+state and its project has a **Repo** external link.
 
 ### Optional: a QA workflow state
 
@@ -324,7 +328,8 @@ linear:
   # The key can belong to your own account or a dedicated bot account.
   api_key: ${LINEAR_API_KEY}
 
-  # Name of the label that triggers the bot (default: Agent).
+  # Name of the label that triggers the bot (default: Agent). Set to null to
+  # use active workflow states plus a project's Repo external link instead.
   trigger_label: Agent
 
   # Workflow state set while the AI is working (default: In Progress).
@@ -423,10 +428,11 @@ works with no config change:
 - `Model: anthropic/claude-sonnet-4-6` → `--model anthropic/claude-sonnet-4-6`
 
 On Linear each alias is created for you at startup — once as an issue label
-and once as a project label — alongside the trigger label, which is only ever
-an issue label. Linear keeps issue labels and project labels in two unrelated
-namespaces (`IssueLabel` and `ProjectLabel`), and neither can be applied
-where the other belongs. Nothing records what was already created, so the
+and once as a project label. In label-triggered configurations, this happens
+alongside the trigger label, which is only ever an issue label. Linear keeps
+issue labels and project labels in two unrelated namespaces (`IssueLabel` and
+`ProjectLabel`), and neither can be applied where the other belongs. Nothing
+records what was already created, so the
 daemon re-checks both namespaces on every start — two API calls per
 configured alias.
 
@@ -727,9 +733,10 @@ session id.
   there. Comment on the ticket to re-trigger.
 - **Single workspace per ticket.** A ticket's workspace is reused across
   turns; the agent works in the same clone every time.
-- **Trigger-only enrolment.** The trigger label (Linear) or trigger field
-  (GitHub) is the only way to enrol a ticket. There is no manual nudge,
-  slash command, or webhook.
+- **Trigger-only enrolment.** The Linear trigger condition (a label by default,
+  or active state plus a project Repo link with `linear.trigger_label: null`)
+  or trigger field (GitHub) is the only way to enrol a ticket. There is no
+  manual nudge, slash command, or webhook.
 - **No priority.** Tickets are picked in whatever order the tracker returns
   them. There is no queue.
 - **One QA serve at a time.** A single `.symphony/serve` runs globally with

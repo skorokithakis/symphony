@@ -112,8 +112,11 @@ shutting down, or the ticket is no longer triggered — see `_is_still_triggered
   step 3 fires cleanup (cancel subprocesses, remove state entry, remove workspace)
   whenever a tracked ticket is no longer *triggered* — i.e. the trigger label
   is absent, the Linear state is no longer an active state, the ticket is
-  archived, or the ticket was deleted. **Dirty workspaces are never deleted
-  without a second move.** On the first cleanup of a dirty workspace (per
+  archived, or the ticket was deleted. With `linear.trigger_label: null`, the
+  trigger instead requires an active state and a project `Repo` external link,
+  with its label compared case-insensitively after stripping whitespace.
+  **Dirty workspaces are never deleted without a second move.** On the first
+  cleanup of a dirty workspace (per
   `workspace.dirty_summary`), the daemon refuses: it posts a comment, transitions
   the ticket back to Needs Input, and sets `TicketState.cleanup_refused_state`
   to the workflow state the ticket was left in (Needs Input if the transition

@@ -29,6 +29,24 @@ logger = logging.getLogger(__name__)
 
 LINEAR_GRAPHQL_URL = "https://api.linear.app/graphql"
 
+_ISSUE_SUMMARY_NODES = """
+            nodes {
+              id
+              identifier
+              title
+              updatedAt
+              state { name }
+              labels { nodes { name } }
+              branchName
+              project {
+                id
+                name
+                labels(first: 50) { nodes { name } }
+                externalLinks { nodes { label url } }
+              }
+            }
+"""
+
 # ---------------------------------------------------------------------------
 # Typed exceptions
 # ---------------------------------------------------------------------------
@@ -222,34 +240,50 @@ class LinearClient:
 
     def list_triggered_issues(
         self,
-        label: str,
+        label: str | None,
         active_states: list[str],
     ) -> list[Issue]:
-        """Return issues that have *label* and are in one of *active_states*.
+        """Return issues matching *label* or active state/project candidates.
 
-        State filtering is done client-side for simplicity and to avoid
-        relying on filter operators that may vary across Linear API versions.
+        State filtering remains client-side in both modes. In no-label mode,
+        the server also filters on state and project presence before applying
+        the ``first: 50`` limit; the tracker applies the Repo-link condition.
         """
-        query = """
-        query($label: String!) {
-          issues(
+        variables: dict[str, Any]
+        if label is None:
+            query_declaration = "query($states: [String!]!)"
+            issue_filter = """
+            filter: {
+              state: { name: { in: $states } }
+              project: { null: false }
+            }
+            """
+            variables = {"states": active_states}
+        else:
+            query_declaration = "query($label: String!)"
+            issue_filter = """
             filter: { labels: { name: { eq: $label } } }
+            """
+            variables = {"label": label}
+
+        query = (
+            query_declaration
+            + """
+        {
+          issues(
+"""
+            + issue_filter
+            + """
             first: 50
           ) {
-            nodes {
-              id
-              identifier
-              title
-              updatedAt
-              state { name }
-              labels { nodes { name } }
-              branchName
-              project { id name labels(first: 50) { nodes { name } } }
-            }
+"""
+            + _ISSUE_SUMMARY_NODES
+            + """
           }
         }
         """
-        data = self._query(query, {"label": label})
+        )
+        data = self._query(query, variables)
         nodes: list[dict[str, Any]] = data.get("issues", {}).get("nodes", [])
 
         issues: list[Issue] = []
@@ -274,7 +308,12 @@ class LinearClient:
             state { name }
             labels { nodes { name } }
             branchName
-            project { id name labels(first: 50) { nodes { name } } }
+            project {
+              id
+              name
+              labels(first: 50) { nodes { name } }
+              externalLinks { nodes { label url } }
+            }
             comments(first: 50, orderBy: createdAt) {
               nodes {
                 id
@@ -631,9 +670,7 @@ def _parse_issue_full(raw: dict[str, Any]) -> Issue:
 
 
 def _parse_project(raw: dict[str, Any]) -> Project:
-    """Parse a project from a ``get_project`` response node, or from a nested
-    ``project { ... }`` selection on an issue (which carries no ``externalLinks``).
-    """
+    """Parse a project from a project response or nested issue selection."""
     return Project(
         id=raw["id"],
         name=raw["name"],
