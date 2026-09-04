@@ -11,7 +11,11 @@ linear:
   # The key can belong to your own account or a dedicated bot account.
   api_key: ${LINEAR_API_KEY}
 
-  # Name of the label that triggers the bot (default: Agent).
+  # Name of the label that triggers the bot (default: Agent). Set to null to
+  # skip the label: a ticket is then triggered when it is in an active state
+  # (in_progress_state, needs_input_state, qa_state) and its Linear project
+  # has a "Repo" external link.
+  # trigger_label: null
   trigger_label: Agent
 
   # Linear workflow state set while the AI is working (default: In Progress).
