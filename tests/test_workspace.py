@@ -7,12 +7,14 @@ Integration tests (marked ``@pytest.mark.integration``) exercise the full
 
 from __future__ import annotations
 
+import logging
 import os
 import shutil
 import stat
 import subprocess
 from pathlib import Path
 from unittest import mock
+from urllib.parse import urlsplit
 
 import pytest
 
@@ -26,8 +28,11 @@ from symphony_linear.workspace import (
     WorkspaceError,
     _ATTACHMENTS_DIR,
     _check_containment,
+    _git_switch_branch,
     _MOUNTS_DIR,
+    _redact_url,
     _REPO_DIR,
+    _run_git as _workspace_run_git,
     _sanitize_identifier,
     _TMP_DIR,
     clone_workspace,
@@ -203,6 +208,38 @@ class TestCheckContainment:
         child = root / "sub" / ".." / "ticket"  # normalises to root/ticket
         result = _check_containment(str(child), str(root))
         assert result == os.path.realpath(root / "ticket")
+
+
+# ---------------------------------------------------------------------------
+# Unit: degenerate ticket identifiers
+# ---------------------------------------------------------------------------
+
+
+class TestDegenerateIdentifier:
+    """Identifiers that sanitize to "", "." or ".." resolve to the workspace
+    root (or its parent), so they must be rejected before a path is computed.
+    Otherwise ``remove()`` would ``rmtree`` the root."""
+
+    @pytest.mark.parametrize("identifier", ["", ".", ".."])
+    def test_compute_ticket_dir_rejects_degenerate(
+        self, tmp_path: Path, identifier: str
+    ) -> None:
+        with pytest.raises(PathContainmentError):
+            compute_ticket_dir(identifier, str(tmp_path))
+
+    def test_remove_rejects_degenerate_without_deleting_root(
+        self, tmp_path: Path
+    ) -> None:
+        root = tmp_path / "ws"
+        root.mkdir()
+        sentinel = root / "config.yaml"
+        sentinel.write_text("secret")
+
+        with pytest.raises(PathContainmentError):
+            remove("..", str(root))
+
+        assert sentinel.exists()
+        assert root.exists()
 
 
 # ---------------------------------------------------------------------------
@@ -942,6 +979,156 @@ class TestPrepareRemoveIntegration:
         assert os.path.realpath(result_path) == os.path.realpath(expected_dir)
 
         remove("Team/With Spaces", str(workspace_root))
+
+
+# ---------------------------------------------------------------------------
+# Unit: URL redaction in logs
+# ---------------------------------------------------------------------------
+
+
+class TestRedactUrl:
+    """_redact_url strips userinfo so credentials never reach the log."""
+
+    def test_strips_token_userinfo(self) -> None:
+        assert (
+            _redact_url("https://sekrit-token@github.com/org/repo.git")
+            == "https://github.com/org/repo.git"
+        )
+
+    def test_strips_user_and_password_and_keeps_port(self) -> None:
+        assert (
+            _redact_url("https://user:secret@host:8443/repo")
+            == "https://host:8443/repo"
+        )
+
+    def test_leaves_plain_url_unchanged(self) -> None:
+        url = "https://github.com/org/repo"
+        assert _redact_url(url) == url
+
+    def test_leaves_local_path_unchanged(self) -> None:
+        path = "/tmp/some path/repo"
+        assert _redact_url(path) == path
+
+    def test_leaves_scp_like_remote_unchanged(self) -> None:
+        remote = "git@github.com:org/repo.git"
+        assert _redact_url(remote) == remote
+
+    def test_malformed_schemed_url_fails_closed(self) -> None:
+        """A URL urlsplit cannot parse (invalid IPv6 host) must still have its
+        userinfo stripped rather than being logged verbatim."""
+        url = "https://fake-secret@[broken/repo"
+        with pytest.raises(ValueError):
+            urlsplit(url)
+        redacted = _redact_url(url)
+        assert "fake-secret" not in redacted
+        assert redacted == "https://[broken/repo"
+
+
+class TestGitLogRedaction:
+    """Credentials are redacted from the git debug log, but the credential is
+    still passed to git itself."""
+
+    def test_run_git_debug_log_redacts_userinfo(
+        self, caplog: pytest.LogCaptureFixture
+    ) -> None:
+        completed = subprocess.CompletedProcess(
+            args=[], returncode=0, stdout="", stderr=""
+        )
+        with mock.patch(
+            "symphony_linear.workspace.subprocess.run", return_value=completed
+        ) as run:
+            with caplog.at_level(logging.DEBUG, logger="symphony_linear.workspace"):
+                _workspace_run_git(
+                    ["clone", "https://sekrit-token@github.com/org/repo.git", "/tmp/x"]
+                )
+
+        assert "sekrit-token" not in caplog.text
+        assert "github.com/org/repo.git" in caplog.text
+        # The real argv passed to git still carries the credential.
+        assert run.call_args[0][0] == [
+            "git",
+            "clone",
+            "https://sekrit-token@github.com/org/repo.git",
+            "/tmp/x",
+        ]
+
+    def test_clone_info_log_redacts_userinfo(
+        self, tmp_path: Path, caplog: pytest.LogCaptureFixture
+    ) -> None:
+        root = tmp_path / "ws"
+        root.mkdir()
+
+        with mock.patch("symphony_linear.workspace._run_git"):
+            with caplog.at_level(logging.INFO, logger="symphony_linear.workspace"):
+                clone_workspace(
+                    ticket_identifier="T-1",
+                    repo_url="https://sekrit-token@github.com/org/repo.git",
+                    workspace_root=str(root),
+                )
+
+        assert "sekrit-token" not in caplog.text
+        assert "github.com/org/repo.git" in caplog.text
+
+
+# ---------------------------------------------------------------------------
+# Unit: git option termination
+# ---------------------------------------------------------------------------
+
+
+class TestGitOptionTermination:
+    """Untrusted repo URLs and branch names must not reach git as options."""
+
+    def test_clone_passes_double_dash_before_repo_url(self, tmp_path: Path) -> None:
+        root = tmp_path / "ws"
+        root.mkdir()
+
+        with mock.patch("symphony_linear.workspace._run_git") as run_git:
+            path, recovered = clone_workspace(
+                ticket_identifier="T-1",
+                repo_url="https://github.com/org/repo.git",
+                workspace_root=str(root),
+            )
+
+        assert not recovered
+        run_git.assert_called_once_with(
+            ["clone", "--", "https://github.com/org/repo.git", path],
+            description="clone",
+        )
+
+    def test_repo_url_leading_dash_rejected(self, tmp_path: Path) -> None:
+        root = tmp_path / "ws"
+        root.mkdir()
+
+        with mock.patch("symphony_linear.workspace._run_git") as run_git:
+            with pytest.raises(CloneFailed, match="must not begin with"):
+                clone_workspace(
+                    ticket_identifier="T-1",
+                    repo_url="--upload-pack=/bin/sh",
+                    workspace_root=str(root),
+                )
+        run_git.assert_not_called()
+
+    def test_switch_branch_terminates_options(self, tmp_path: Path) -> None:
+        failed = subprocess.CompletedProcess(
+            args=[], returncode=1, stdout="", stderr="no such branch"
+        )
+        succeeded = subprocess.CompletedProcess(
+            args=[], returncode=0, stdout="", stderr=""
+        )
+        with mock.patch(
+            "symphony_linear.workspace.subprocess.run",
+            side_effect=[failed, succeeded],
+        ) as run:
+            _git_switch_branch("-weird", str(tmp_path))
+
+        assert run.call_args_list[0][0][0] == ["git", "switch", "--", "-weird"]
+        assert run.call_args_list[1][0][0] == [
+            "git",
+            "switch",
+            "-c",
+            "-weird",
+            "--",
+        ]
 
 
 # ---------------------------------------------------------------------------
