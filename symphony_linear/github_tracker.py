@@ -11,6 +11,7 @@ disk — resolution is repeated on every daemon startup.
 
 from __future__ import annotations
 
+import hashlib
 import logging
 import re
 import threading
@@ -641,16 +642,7 @@ class GitHubTracker:
 
                 issue = Issue(
                     id=issue_id,
-                    identifier=(
-                        # README documents the identifier as <owner>-<repo>-<number>
-                        # (flat, no slash). GitHub returns nameWithOwner as
-                        # "owner/repo", so we flatten the slash to a hyphen
-                        # before appending the issue number — otherwise the
-                        # slash leaks into workspace paths and branch names.
-                        f"{name_with_owner.replace('/', '-')}-{content['number']}"
-                        if name_with_owner
-                        else str(content["number"])
-                    ),
+                    identifier=_issue_identifier(name_with_owner, content["number"]),
                     title=content.get("title", ""),
                     state=status_name,
                     labels=[n["name"] for n in labels_conn.get("nodes") or []],
@@ -769,14 +761,7 @@ class GitHubTracker:
 
         return Issue(
             id=id,
-            identifier=(
-                # See note in list_triggered_issues — flatten the slash in
-                # nameWithOwner to keep the identifier matching the documented
-                # <owner>-<repo>-<number> shape.
-                f"{name_with_owner.replace('/', '-')}-{raw['number']}"
-                if name_with_owner
-                else str(raw["number"])
-            ),
+            identifier=_issue_identifier(name_with_owner, raw["number"]),
             title=raw.get("title", ""),
             description=raw.get("body"),
             state=status_name,
@@ -1273,6 +1258,26 @@ class GitHubTracker:
 # ---------------------------------------------------------------------------
 # Package-private helpers
 # ---------------------------------------------------------------------------
+
+
+def _issue_identifier(name_with_owner: str | None, number: int | str) -> str:
+    """Build a unique, human-readable identifier for a GitHub issue.
+
+    ``nameWithOwner`` is flattened by replacing the slash with a hyphen so it
+    is safe in workspace paths and branch names.  Owner and repo names may
+    themselves contain hyphens, though, so that flattening alone collides:
+    ``foo-bar/baz`` and ``foo/bar-baz`` both become ``foo-bar-baz``.  Appending
+    a short digest of the exact ``nameWithOwner`` keeps the identifier readable
+    and makes the two distinct.
+
+    A missing/empty ``nameWithOwner`` yields the bare issue number, matching
+    the previous behaviour for repository-less payloads.
+    """
+    if not name_with_owner:
+        return str(number)
+    flattened = name_with_owner.replace("/", "-")
+    digest = hashlib.sha256(name_with_owner.encode("utf-8")).hexdigest()[:8]
+    return f"{flattened}-{number}-{digest}"
 
 
 def _find_field(
