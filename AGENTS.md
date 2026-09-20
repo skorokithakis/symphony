@@ -159,6 +159,26 @@ shutting down, or the ticket is no longer triggered — see `_is_still_triggered
   `--clearenv` and the adapters set only `HOME` (plus `PATH`), so a sandboxed
   pi always resolves its state to `~/.pi`, which is why that exact path is the
   one bound read-write.
+- **The daemon workspace root is masked from the sandbox**, except the current
+  ticket's own dir. Because `run_in_sandbox` binds the whole host filesystem
+  read-only at `/` and the agent's cwd is `<workspace_root>/<ticket>/repo`,
+  `config.yaml` (live Linear/GitHub tokens), `state.json` and every sibling
+  ticket dir were readable with a plain `cat ../../config.yaml`.
+  `Orchestrator._sandbox_hide_paths_for` appends every workspace-root entry
+  except this ticket's to the configured `sandbox.hide_paths`, and all four
+  sandbox launch points use it (initial turn, resume turn, `.symphony/setup`,
+  QA serve). It is one rule rather than a list of known-sensitive names, so a
+  file added to that dir later is masked by default. Three details are
+  load-bearing. The list is rebuilt per call, because the set of ticket dirs
+  changes between turns. The exclusion compares `os.path.realpath` against
+  `compute_ticket_dir`, not directory names, because `sandbox.py` resolves
+  hide paths before mounting and a root-level symlink to the current ticket
+  would otherwise tmpfs over the ticket's own repo. An unlistable root raises
+  `WorkspaceError` and aborts the launch rather than falling back to the
+  configured paths: a dir can be unlistable while `config.yaml` stays readable
+  by name, so failing open is worst-case behaviour. `dir_map` can still punch
+  through, by design. Note that `DEFAULT_HIDE_PATHS` deliberately does **not**
+  cover this; masking is computed, not configured.
 - **The OpenCode session id is captured from the first NDJSON event** that
   includes `sessionID`; that value is the main session and any event whose
   top-level `sessionID` differs is subagent chatter. The final assistant
@@ -418,8 +438,15 @@ fixtures.
 ## Things not to do
 
 - Don't push from inside the sandboxed agent unless the user explicitly asked
-  for it. Credentials (`~/.ssh`, `~/.config/gh`, etc.) are hidden by default,
-  so pushing requires the user to opt in by unhiding those paths via config.
+  for it. This is a rule, not something the sandbox enforces. `~/.ssh` and
+  `~/.gnupg` are in `DEFAULT_HIDE_PATHS`, so the private key *files* are not
+  readable, but the sandbox runs as the same user and does not unshare the
+  network or block socket access, so the host's SSH agent and the `gh` token
+  are both still reachable. Assume you *can* push and don't.
+- Don't add `~/.config/gh` or git credential files to `DEFAULT_HIDE_PATHS`.
+  Their absence is deliberate, not an oversight: the agent is meant to be able
+  to use the `gh` binary and check repositories out. The default list covers
+  credentials the agent has no use for, not every credential on the host.
 - Don't widen the sandbox to bind extra host paths unless there's a clear
   reason; the credential-hiding logic depends on the current mount layout.
 - Don't add retries/backoff to tracker API calls without thinking through the

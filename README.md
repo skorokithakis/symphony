@@ -255,10 +255,16 @@ The default is `ssh`; omit the field to keep the current behaviour.
 
 ### Identifier convention
 
-Symphony uses `<owner>-<repo>-<number>` as the identifier for GitHub
-issues — for example `my-org-my-repo-42`. This appears in workspace
+Symphony uses `<owner>-<repo>-<number>-<hash>` as the identifier for GitHub
+issues — for example `my-org-my-repo-42-bcc89b7f`. This appears in workspace
 directory names and metadata comments, and is used to derive the branch
 name when `auto_branch` is enabled.
+
+The trailing hash is a short digest of `owner/repo`. It is there because
+flattening the slash would otherwise let two different repositories collide:
+`foo-bar/baz` and `foo/bar-baz` both shorten to `foo-bar-baz`, and since a
+project can span repositories, both issues could be live at once and would
+then share a workspace directory.
 
 ## Configuration
 
@@ -499,12 +505,8 @@ After=network-online.target
 [Service]
 Type=simple
 WorkingDirectory=%h/symphony
-# Set the env var that matches your backend. Use exactly one of these two
-# Environment= lines (systemd does not support trailing `#` comments on
-# Environment= values — the `#` and everything after it become part of the
-# value).
-Environment=LINEAR_API_KEY=lin_api_...
-# Environment=GITHUB_TOKEN=ghp_...
+# No API key here. Keep it in config.yaml in the WorkingDirectory above —
+# see "Where to keep credentials" below for why.
 # systemd strips PATH. SYMPHONY_SANDBOX_PATH tells the sandbox (and startup
 # validation) where to find the selected coding agent and anything your
 # .symphony/setup script calls. Include %h/.local/bin if your setup script uses
@@ -526,6 +528,27 @@ WantedBy=default.target
 ```
 
 Then `systemctl --user daemon-reload && systemctl --user enable --now symphony`.
+
+#### Where to keep credentials
+
+The rule: the literal key should only ever be written into a file the agent
+cannot read. Earlier versions of this file suggested
+`Environment=LINEAR_API_KEY=lin_api_...` in the unit. Don't do that.
+
+The coding agent reads files as you, and the sandbox masks the workspace
+directory but not `~/.config`, which it should be able to read for other
+reasons. So the same key is unreadable in `config.yaml` and readable in a
+systemd unit.
+
+Two options that satisfy the rule. Put the value in `config.yaml` in the
+workspace directory, which is masked. Or keep using the environment
+variables and load them with `EnvironmentFile=`, pointing at a file in the
+workspace directory so the masking covers it too. The daemon's own
+environment is never passed into the sandbox, so either is fine.
+
+`${LINEAR_API_KEY}` in `config.yaml`, as used in the examples above, is a
+reference rather than a value, so it is safe wherever it appears. What
+matters is where the value it resolves to is stored.
 
 Two variables in that sample cause most deployment failures, because both
 work by accident when you launch Symphony from a terminal and stop working
@@ -606,15 +629,31 @@ user, PID, IPC and UTS namespaces are isolated. Environment is wiped down;
 its `PATH` comes from a caller-supplied value when present, otherwise from
 `SYMPHONY_SANDBOX_PATH` or the daemon's `PATH`.
 
+The daemon's own workspace directory is masked as well, apart from the
+ticket being worked on. Without that, `config.yaml` and `state.json` sit two
+levels above the agent's working directory and would be plain reads, and so
+would every other ticket's checkout. This masking is computed rather than
+configured, so a file you later add to that directory is hidden by default.
+
 `/tmp` inside the sandbox is not the host's shared `/tmp`: it is bound to
 the ticket's own `tmp/` directory on disk, so scratch files are per-ticket,
 survive the sandbox process, and are deleted along with the ticket's
 directory when the ticket is cleaned up.
 
 Git operations run outside the sandbox using the daemon's own credentials,
-so cloning private repositories works without exposing your keys to the
-agent. The flip side is that the agent itself cannot `git push`; you do
-that yourself, after reviewing.
+so cloning private repositories works without your SSH private key files
+being readable by the agent. Note the narrowness of that: HTTPS credential
+stores such as `~/.config/gh` stay readable on purpose, because the agent is
+meant to use the `gh` binary and check repositories out. Pushing is left to
+you, after reviewing.
+
+Be clear about how strong that last part is. It is a convention, not a
+barrier. The sandbox runs as your own user, and a read-only mount does not
+stop a process connecting to a socket, so your SSH agent is still reachable
+from inside. Hiding `~/.ssh` stops the key files being read; it does not
+stop the agent asking the SSH agent to sign for it. Treat the sandbox as
+protection against an agent that blunders, not against one that is trying
+to get out.
 
 ## Manual QA
 
@@ -690,7 +729,7 @@ this shape:
 
 The workspace path is where the repo was cloned (Linear tickets use the
 team key + number like `TEAM-42`; GitHub issues use
-`<owner>-<repo>-<number>`; the clone itself lives in the `repo/`
+`<owner>-<repo>-<number>-<hash>`; the clone itself lives in the `repo/`
 subdirectory of the ticket's directory). The session id belongs to the
 configured coding agent. Sessions are keyed by the workspace path, so moving
 the repo path prevents either agent from resuming its session.
@@ -722,9 +761,11 @@ session id.
 
 ## Limitations
 
-- **No `git push` from inside the agent.** The sandbox conceals
-  credentials, so the agent cannot push. Pushing is a deliberate human
-  step.
+- **No `git push` from inside the agent**, by convention rather than by
+  enforcement. Pushing is a deliberate human step, and the agent is told
+  not to do it. The sandbox hides your SSH private keys, but it does not
+  and cannot prevent a determined agent from pushing. See the Sandbox
+  section.
 - **No mid-turn steering.** You cannot interrupt or redirect a turn while
   it is running. Comments you post mid-turn are not read: the daemon posts
   a short notice saying so, and you can comment again once the turn
