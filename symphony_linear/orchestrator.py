@@ -244,6 +244,7 @@ class Orchestrator:
             "symphony-lite daemon starting (poll interval=%ds)",
             self._config.poll_interval_seconds,
         )
+        self._warn_if_dir_map_exposes_config()
         self._recover_state()
         if self._webhook_server is not None:
             self._webhook_server.start()
@@ -274,6 +275,40 @@ class Orchestrator:
     # ==================================================================
     # Startup recovery
     # ==================================================================
+
+    def _warn_if_dir_map_exposes_config(self) -> None:
+        """Warn, once at startup, when a dir_map source exposes config.yaml.
+
+        Absolute ``sandbox.dir_map`` values are shared host directories with no
+        containment check, and their binds are emitted after the sandbox's hide
+        block, so they punch through the workspace-root masking by design.  An
+        operator who maps the workspace root or an ancestor of it (for example
+        their home directory) therefore makes ``config.yaml`` — including the
+        live API token — readable inside the sandbox.  That is the operator's
+        call, so this only makes the footgun visible; it never blocks.
+
+        Only absolute values are considered: relative values resolve under the
+        ticket's ``mounts/`` directory with ``..`` rejected and a containment
+        check, so they cannot reach the workspace root.  ``extra_rw_paths`` are
+        emitted before the hide block and so cannot defeat the masking either.
+        """
+        workspace_real = os.path.realpath(self._workspace)
+        for dest, source in self._config.sandbox.dir_map.items():
+            if not os.path.isabs(source):
+                continue
+            source_real = os.path.realpath(source)
+            if source_real != workspace_real and not workspace_real.startswith(
+                source_real.rstrip(os.sep) + os.sep
+            ):
+                continue
+            logger.warning(
+                "sandbox.dir_map maps host %r onto sandbox %r, which contains "
+                "the daemon workspace root: config.yaml (including the API "
+                "token) will be readable inside the sandbox at %r",
+                source,
+                dest,
+                dest,
+            )
 
     def _recover_state(self) -> None:
         # Only bootstrapping entries are handled at startup: their workspaces

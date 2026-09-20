@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import logging
 import os
 import shutil
 import subprocess
@@ -6766,6 +6767,186 @@ class TestDirMapPlumbing:
         _, kwargs = m_serve.call_args
         assert kwargs.get("dir_map") == self.PAIRS
         assert m_ensure.call_args.args[0] == orch._config.sandbox.dir_map
+
+
+# ---------------------------------------------------------------------------
+# dir_map config-exposure warning
+# ---------------------------------------------------------------------------
+
+
+class TestDirMapConfigExposureWarning:
+    """Startup warns — but does not block — when an absolute dir_map source
+    contains the workspace root, re-exposing config.yaml inside the sandbox."""
+
+    def _make_orchestrator(
+        self,
+        tmp_path: Path,
+        state_mgr: StateManager,
+        linear: FakeLinearClient,
+        dir_map: dict[str, str] | None,
+        *,
+        workspace: Path | None = None,
+    ) -> Orchestrator:
+        overrides: dict[str, Any] = (
+            {"sandbox": {"dir_map": dir_map}} if dir_map is not None else {}
+        )
+        config = _make_config(tmp_path, **overrides)
+        return Orchestrator(
+            config=config,
+            state=state_mgr,
+            tracker=LinearTracker(linear=linear, config=config.linear),  # type: ignore[arg-type]
+            workspace=workspace if workspace is not None else tmp_path / "ws",
+        )
+
+    def test_workspace_root_itself_warns(
+        self,
+        tmp_path: Path,
+        state_mgr: StateManager,
+        linear: FakeLinearClient,
+        caplog: pytest.LogCaptureFixture,
+    ) -> None:
+        workspace = tmp_path / "ws"
+        workspace.mkdir()
+        orch = self._make_orchestrator(
+            tmp_path,
+            state_mgr,
+            linear,
+            {"/sandbox/root": str(workspace)},
+            workspace=workspace,
+        )
+
+        with caplog.at_level(logging.WARNING, logger="symphony_linear.orchestrator"):
+            orch._warn_if_dir_map_exposes_config()
+
+        assert "/sandbox/root" in caplog.text
+        assert str(workspace) in caplog.text
+        assert "config.yaml" in caplog.text
+        assert "API token" in caplog.text
+
+    def test_ancestor_of_workspace_root_warns(
+        self,
+        tmp_path: Path,
+        state_mgr: StateManager,
+        linear: FakeLinearClient,
+        caplog: pytest.LogCaptureFixture,
+    ) -> None:
+        # The operator maps their home directory, which contains the workspace.
+        home = tmp_path / "home"
+        workspace = home / "user" / "ws"
+        workspace.mkdir(parents=True)
+        orch = self._make_orchestrator(
+            tmp_path,
+            state_mgr,
+            linear,
+            {"/sandbox/home": str(home)},
+            workspace=workspace,
+        )
+
+        with caplog.at_level(logging.WARNING, logger="symphony_linear.orchestrator"):
+            orch._warn_if_dir_map_exposes_config()
+
+        assert str(home) in caplog.text
+        assert "readable inside the sandbox" in caplog.text
+
+    def test_unrelated_source_does_not_warn(
+        self,
+        tmp_path: Path,
+        state_mgr: StateManager,
+        linear: FakeLinearClient,
+        caplog: pytest.LogCaptureFixture,
+    ) -> None:
+        workspace = tmp_path / "ws"
+        workspace.mkdir()
+        other = tmp_path / "other"
+        other.mkdir()
+        orch = self._make_orchestrator(
+            tmp_path,
+            state_mgr,
+            linear,
+            {"/sandbox/other": str(other)},
+            workspace=workspace,
+        )
+
+        with caplog.at_level(logging.WARNING, logger="symphony_linear.orchestrator"):
+            orch._warn_if_dir_map_exposes_config()
+
+        assert caplog.text == ""
+
+    def test_source_inside_workspace_does_not_warn(
+        self,
+        tmp_path: Path,
+        state_mgr: StateManager,
+        linear: FakeLinearClient,
+        caplog: pytest.LogCaptureFixture,
+    ) -> None:
+        workspace = tmp_path / "ws"
+        inside = workspace / "sub"
+        inside.mkdir(parents=True)
+        orch = self._make_orchestrator(
+            tmp_path,
+            state_mgr,
+            linear,
+            {"/sandbox/sub": str(inside)},
+            workspace=workspace,
+        )
+
+        with caplog.at_level(logging.WARNING, logger="symphony_linear.orchestrator"):
+            orch._warn_if_dir_map_exposes_config()
+
+        assert caplog.text == ""
+
+    def test_relative_source_does_not_warn(
+        self,
+        tmp_path: Path,
+        state_mgr: StateManager,
+        linear: FakeLinearClient,
+        caplog: pytest.LogCaptureFixture,
+    ) -> None:
+        workspace = tmp_path / "ws"
+        workspace.mkdir()
+        orch = self._make_orchestrator(
+            tmp_path,
+            state_mgr,
+            linear,
+            {"/sandbox/npm": "npm"},
+            workspace=workspace,
+        )
+
+        with caplog.at_level(logging.WARNING, logger="symphony_linear.orchestrator"):
+            orch._warn_if_dir_map_exposes_config()
+
+        assert caplog.text == ""
+
+    def test_run_warns_once_at_startup(
+        self,
+        tmp_path: Path,
+        state_mgr: StateManager,
+        linear: FakeLinearClient,
+        caplog: pytest.LogCaptureFixture,
+    ) -> None:
+        """run() emits the warning once, before recovery, and exits cleanly."""
+        workspace = tmp_path / "ws"
+        workspace.mkdir()
+        orch = self._make_orchestrator(
+            tmp_path,
+            state_mgr,
+            linear,
+            {"/sandbox/root": str(workspace)},
+            workspace=workspace,
+        )
+        orch._install_signal_handlers = lambda: None  # type: ignore[method-assign]
+        # Force the poll loop to exit immediately after startup.
+        orch._recover_state = lambda: orch._shutdown.set()  # type: ignore[method-assign]
+
+        with caplog.at_level(logging.WARNING, logger="symphony_linear.orchestrator"):
+            orch.run()
+
+        warnings = [
+            r.getMessage()
+            for r in caplog.records
+            if "readable inside the sandbox" in r.getMessage()
+        ]
+        assert len(warnings) == 1
 
 
 # ---------------------------------------------------------------------------

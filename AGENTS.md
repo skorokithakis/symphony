@@ -176,9 +176,15 @@ shutting down, or the ticket is no longer triggered — see `_is_still_triggered
   would otherwise tmpfs over the ticket's own repo. An unlistable root raises
   `WorkspaceError` and aborts the launch rather than falling back to the
   configured paths: a dir can be unlistable while `config.yaml` stays readable
-  by name, so failing open is worst-case behaviour. `dir_map` can still punch
-  through, by design. Note that `DEFAULT_HIDE_PATHS` deliberately does **not**
-  cover this; masking is computed, not configured.
+  by name, so failing open is worst-case behaviour. Note that
+  `DEFAULT_HIDE_PATHS` deliberately does **not** cover this; masking is
+  computed, not configured. An absolute `dir_map` value can still punch
+  through, by design and without a containment check, so mapping the
+  workspace root — or any ancestor of it, which is the likelier accident —
+  re-exposes `config.yaml`. `_warn_if_dir_map_exposes_config` logs that once
+  from `run()` at startup. It warns rather than blocks on purpose: exposing
+  the workspace has legitimate uses, such as running Symphony on Symphony
+  where the agent needs a real `state.json`.
 - **The OpenCode session id is captured from the first NDJSON event** that
   includes `sessionID`; that value is the main session and any event whose
   top-level `sessionID` differs is subagent chatter. The final assistant

@@ -381,7 +381,12 @@ sandbox:
   # ticket's mounts/ directory and are deleted with the ticket; absolute
   # values are shared host directories that survive ticket cleanup. Both
   # sides are created on the host. Binds apply after hide_paths, so an
-  # explicit mapping can punch through a broad hide.
+  # explicit mapping can punch through a broad hide. That includes the
+  # masking of the daemon's own workspace directory: if an absolute value
+  # is the workspace root, or any parent of it such as your home directory,
+  # config.yaml becomes readable inside the sandbox. The daemon warns at
+  # startup when that happens but does not stop you, because there are
+  # legitimate reasons to want it.
   # CAUTION: a shared absolute directory is used by up to 5 concurrent
   # ticket workers — not every tool tolerates that.
   # dir_map:
