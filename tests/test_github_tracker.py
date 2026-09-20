@@ -771,7 +771,7 @@ class TestListTriggeredIssues:
         issues = tracker.list_triggered_issues()
         assert len(issues) == 1
         assert issues[0].id == "I_1"
-        assert issues[0].identifier == "my-org-my-repo-42"
+        assert issues[0].identifier == "my-org-my-repo-42-bcc89b7f"
         assert issues[0].title == "Fix bug"
         assert issues[0].state == "In Progress"
         # No labels key in the payload — extraction must tolerate it.
@@ -974,6 +974,41 @@ class TestListTriggeredIssues:
         assert issues[0].tracker_data is not None
         assert issues[0].tracker_data["clone_url"] is None
 
+    def test_colliding_flattened_repo_names_get_distinct_identifiers(
+        self, tracker: GitHubTracker, client_mock: MagicMock
+    ) -> None:
+        """``foo-bar/baz`` and ``foo/bar-baz`` both flatten to ``foo-bar-baz``;
+        the identifier must disambiguate them or the two issues would share a
+        workspace directory."""
+        client_mock._query.return_value = {
+            "node": {
+                "items": {
+                    "pageInfo": {"hasNextPage": False},
+                    "nodes": [
+                        _issue_item(
+                            item_id="PVTI_1",
+                            issue_id="I_1",
+                            number=1,
+                            repo_name="foo-bar/baz",
+                        ),
+                        _issue_item(
+                            item_id="PVTI_2",
+                            issue_id="I_2",
+                            number=1,
+                            repo_name="foo/bar-baz",
+                        ),
+                    ],
+                }
+            }
+        }
+        issues = tracker.list_triggered_issues()
+
+        identifiers = [issue.identifier for issue in issues]
+        assert len(set(identifiers)) == 2
+        # The readable flattened form is preserved as a prefix.
+        assert identifiers[0].startswith("foo-bar-baz-1")
+        assert identifiers[1].startswith("foo-bar-baz-1")
+
     def test_includes_qa_when_configured(
         self, tracker: GitHubTracker, client_mock: MagicMock
     ) -> None:
@@ -1101,7 +1136,7 @@ class TestGetIssue:
 
         issue = tracker.get_issue("I_1")
         assert issue.id == "I_1"
-        assert issue.identifier == "my-org-my-repo-42"
+        assert issue.identifier == "my-org-my-repo-42-bcc89b7f"
         assert issue.description == "Description text"
         assert issue.state == "In Progress"
         assert issue.labels == ["Model: strong"]

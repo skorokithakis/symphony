@@ -45,6 +45,12 @@ class SessionRecord(BaseModel):
         None,
         description="Agent that created the session; None means legacy OpenCode",
     )
+    workspace_path: str | None = Field(
+        None,
+        description="Checkout path the session was created against. Agent "
+        "sessions are keyed by path, so a snapshot recorded elsewhere cannot "
+        "be resumed. None means a pre-upgrade snapshot with an unknown path.",
+    )
     last_seen_comment_id: str | None = Field(
         None,
         description="Last comment ID the bot had seen when the session was snapshotted",

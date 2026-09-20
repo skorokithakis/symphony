@@ -14,6 +14,7 @@ import shutil
 import subprocess
 from pathlib import Path
 from typing import Callable
+from urllib.parse import urlsplit, urlunsplit
 
 from symphony_linear.sandbox import run_in_sandbox
 
@@ -25,6 +26,11 @@ logger = logging.getLogger(__name__)
 
 # Character class for valid ticket identifier characters.
 _VALID_CHARS_RE = re.compile(r"[^A-Za-z0-9._-]")
+
+# A URL scheme followed by ``://``; used to tell a malformed URL (which may
+# carry credentials) from a local path or scp-style remote when ``urlsplit``
+# cannot parse the string.
+_URL_SCHEME_RE = re.compile(r"^[A-Za-z][A-Za-z0-9+.\-]*://")
 
 # Default timeout for the setup script (5 minutes).
 SETUP_TIMEOUT_SECONDS = 300
@@ -83,6 +89,53 @@ def _sanitize_identifier(identifier: str) -> str:
     return _VALID_CHARS_RE.sub("_", identifier)
 
 
+def _validate_identifier(identifier: str) -> str:
+    """Sanitize *identifier* and reject degenerate results.
+
+    An empty identifier or one consisting only of dots sanitizes to ``""``,
+    ``"."`` or ``".."``, all of which make ``compute_ticket_dir`` resolve to
+    the workspace root itself (or its parent).  ``remove()`` would then
+    ``rmtree`` the root, destroying ``config.yaml``, ``state.json`` and every
+    ticket, so reject such identifiers before a path is computed.
+
+    Raises:
+        PathContainmentError: If the sanitized identifier is degenerate.
+    """
+    workspace_key = _sanitize_identifier(identifier)
+    if workspace_key in ("", ".", ".."):
+        raise PathContainmentError(
+            f"Ticket identifier {identifier!r} sanitizes to {workspace_key!r}, "
+            f"which would resolve to or escape the workspace root"
+        )
+    return workspace_key
+
+
+def _redact_url(url: str) -> str:
+    """Strip the userinfo (credentials) from *url* for safe logging.
+
+    A clone URL of the form ``https://TOKEN@host/repo`` would otherwise leak
+    the token into the daemon log.  Returns *url* unchanged when it carries no
+    scheme or no userinfo, so local paths and scp-like SSH remotes
+    (``git@host:repo``) pass through untouched.
+    """
+    try:
+        parsed = urlsplit(url)
+    except ValueError:
+        # urlsplit rejects malformed URLs (e.g. an unclosed IPv6 bracket).  A
+        # schemed URL there may still carry credentials, so fail closed and
+        # strip anything before the last ``@`` rather than log it verbatim.
+        if _URL_SCHEME_RE.match(url):
+            scheme, _, rest = url.partition("://")
+            if "@" in rest:
+                rest = rest.rsplit("@", 1)[1]
+            return f"{scheme}://{rest}"
+        return url
+    if not parsed.netloc or "@" not in parsed.netloc:
+        return url
+    host = parsed.netloc.rsplit("@", 1)[1]
+    return urlunsplit((parsed.scheme, host, parsed.path, parsed.query, parsed.fragment))
+
+
 def compute_ticket_dir(ticket_identifier: str, workspace_root: str) -> str:
     """Return the per-ticket directory path for *ticket_identifier*.
 
@@ -90,7 +143,7 @@ def compute_ticket_dir(ticket_identifier: str, workspace_root: str) -> str:
     per-ticket state (``repo/``, ``attachments/``, ``tmp/``).
     This function does **not** create the directory or check containment.
     """
-    workspace_key = _sanitize_identifier(ticket_identifier)
+    workspace_key = _validate_identifier(ticket_identifier)
     return os.path.join(workspace_root, workspace_key)
 
 
@@ -301,7 +354,11 @@ def _run_git(
             with a non-zero code.
     """
     cmd = ["git"] + args
-    logger.debug("Running git: %s (cwd=%s)", " ".join(cmd), cwd)
+    logger.debug(
+        "Running git: %s (cwd=%s)",
+        " ".join(_redact_url(arg) for arg in cmd),
+        cwd,
+    )
     result = subprocess.run(
         cmd,
         cwd=cwd,
@@ -492,8 +549,10 @@ def _git_switch_branch(
         BranchFailed: If both attempts fail.
     """
     # Attempt 1: plain switch (works if branch exists locally or on remote).
+    # ``--`` terminates option parsing so a branch name beginning with ``-``
+    # cannot be interpreted as a git option.
     result = subprocess.run(
-        ["git", "switch", branch_name],
+        ["git", "switch", "--", branch_name],
         cwd=workspace_path,
         capture_output=True,
         text=True,
@@ -511,9 +570,12 @@ def _git_switch_branch(
         else "(no stderr)",
     )
 
-    # Attempt 2: create a new branch from HEAD.
+    # Attempt 2: create a new branch from HEAD.  ``--`` after the branch name
+    # terminates option parsing (``git switch -c -- <name>`` is not valid
+    # syntax); the value is already attached to ``-c`` so it is never treated
+    # as an option.
     result = subprocess.run(
-        ["git", "switch", "-c", branch_name],
+        ["git", "switch", "-c", branch_name, "--"],
         cwd=workspace_path,
         capture_output=True,
         text=True,
@@ -645,17 +707,23 @@ def clone_workspace(
     Raises:
         PathContainmentError: If the computed workspace path escapes
             *workspace_root*.
-        CloneFailed: If ``git clone`` fails (initial clone or re-clone).
+        CloneFailed: If *repo_url* begins with ``-`` or ``git clone`` fails
+            (initial clone or re-clone).
     """
+    # Reject a repo_url that git would parse as an option.  The URL comes from
+    # the tracker's project external link, so it is untrusted input.
+    if repo_url.startswith("-"):
+        raise CloneFailed(f"Invalid repo_url {repo_url!r}: must not begin with '-'")
+
     # 1. Compute and validate workspace path
     workspace_path = compute_workspace_path(ticket_identifier, workspace_root)
     real_path = _check_containment(workspace_path, workspace_root)
 
     # 3. Clone if the workspace does not exist; refresh if it does.
     if not os.path.isdir(real_path):
-        logger.info("Cloning %s into %s", repo_url, real_path)
+        logger.info("Cloning %s into %s", _redact_url(repo_url), real_path)
         _run_git(
-            ["clone", repo_url, real_path],
+            ["clone", "--", repo_url, real_path],
             description="clone",
         )
         return real_path, False
@@ -682,7 +750,7 @@ def clone_workspace(
         )
         shutil.rmtree(real_path, ignore_errors=False)
         _run_git(
-            ["clone", repo_url, real_path],
+            ["clone", "--", repo_url, real_path],
             description="clone (recovery)",
         )
         return real_path, True
