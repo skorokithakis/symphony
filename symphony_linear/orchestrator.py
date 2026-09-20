@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import logging
+import os
 import signal
 import subprocess
 import threading
@@ -40,6 +41,7 @@ from symphony_linear.workspace import (
     ServeScriptMissing,
     WorkspaceError,
     clone_workspace,
+    compute_ticket_dir,
     compute_workspace_path,
     dirty_summary,
     ensure_attachments_dir,
@@ -103,7 +105,11 @@ def _build_initial_prompt(title: str, description: str | None) -> str:
         "and their replies will be delivered to you as user messages. There's no "
         "other way to talk to them. Only your last message is posted. Anything you "
         "say between tool calls is dropped, so put the whole answer in your final "
-        "message — do not spread it across the turn.\n\n---\n\n"
+        "message — do not spread it across the turn.\n\n"
+        "You are running on the human's own machine, with their home directory "
+        "readable. Unless the ticket actually calls for it, don't read files "
+        "that usually hold secrets — credential and token files, environment "
+        "files, shell history, and private keys.\n\n---\n\n"
         f"# {title}\n\n{desc}"
     )
 
@@ -661,6 +667,7 @@ class Orchestrator:
                             record = SessionRecord(
                                 session_id=ticket_state.session_id,
                                 agent=ticket_state.agent or "opencode",
+                                workspace_path=ticket_state.workspace_path,
                                 last_seen_comment_id=ticket_state.last_seen_comment_id,
                             )
                             self._state.set_session(tid, record)
@@ -697,6 +704,7 @@ class Orchestrator:
                     record = SessionRecord(
                         session_id=ticket_state.session_id,
                         agent=ticket_state.agent or "opencode",
+                        workspace_path=ticket_state.workspace_path,
                         last_seen_comment_id=ticket_state.last_seen_comment_id,
                     )
                     self._state.set_session(tid, record)
@@ -1013,7 +1021,9 @@ class Orchestrator:
             )
             proc = start_serve(
                 workspace_path=workspace_path,
-                hide_paths=self._config.sandbox.hide_paths,
+                hide_paths=self._sandbox_hide_paths_for(
+                    winner.identifier, workspace_path
+                ),
                 extra_rw_paths=self._config.sandbox.extra_rw_paths,
                 dir_map=dir_map,
                 tmp_path=tmp_path,
@@ -1290,6 +1300,57 @@ class Orchestrator:
             self._subprocesses[ticket_id] = proc
             return True
 
+    def _sandbox_hide_paths_for(
+        self, identifier: str, workspace_path: str | None = None
+    ) -> list[str]:
+        """Return sandbox hide paths that also mask the daemon workspace root.
+
+        The sandbox binds the whole host filesystem read-only, so the agent's
+        cwd under ``<workspace_root>/<ticket>/`` would otherwise expose
+        ``config.yaml`` (API tokens), ``state.json`` and every sibling ticket
+        directory.  Every workspace-root entry except this ticket's own dir is
+        appended to the configured ``sandbox.hide_paths``; directories are
+        tmpfs-overlaid and files become ``/dev/null`` by ``run_in_sandbox``.
+
+        The list is computed per call because the set of ticket directories
+        changes between turns.  When *workspace_path* is given it is the
+        directory actually being mounted, so whichever root entry contains it
+        is excluded — the current identifier may derive a different (newer)
+        directory name than the existing checkout, e.g. after an
+        identifier-format change.  The new-ticket pipeline has no pre-existing
+        checkout yet, so it passes only *identifier*.
+
+        The exclusion is compared after symlink resolution: ``run_in_sandbox``
+        resolves every hide path, so a root-level symlink pointing at the
+        current ticket dir must be left alone rather than resolved into a
+        mount that would tmpfs the ticket's own repo.
+
+        Fail closed: if the workspace root cannot be listed, no safe hide list
+        can be produced, so :class:`WorkspaceError` is raised and the caller
+        aborts the sandbox launch instead of silently dropping the mask.
+        """
+        hide_paths = list(self._config.sandbox.hide_paths)
+        if workspace_path:
+            mounted = os.path.realpath(workspace_path)
+        else:
+            mounted = os.path.realpath(
+                compute_ticket_dir(identifier, str(self._workspace))
+            )
+        try:
+            entries = list(self._workspace.iterdir())
+        except OSError as exc:
+            raise WorkspaceError(
+                f"Cannot list workspace root {self._workspace} to mask it: {exc}"
+            ) from exc
+        for entry in entries:
+            entry_real = os.path.realpath(entry)
+            # Keep visible the entry that is (or contains) the checkout being
+            # mounted; mask everything else.
+            if mounted == entry_real or mounted.startswith(entry_real + os.sep):
+                continue
+            hide_paths.append(str(entry))
+        return hide_paths
+
     # ==================================================================
     # New-ticket pipeline
     # ==================================================================
@@ -1449,7 +1510,7 @@ class Orchestrator:
                 workspace_path=workspace_path,
                 ticket_identifier=issue.identifier,
                 branch_name=issue.branch_name,
-                sandbox_hide_paths=self._config.sandbox.hide_paths,
+                sandbox_hide_paths=self._sandbox_hide_paths_for(issue.identifier),
                 on_subprocess=lambda proc: (self._register_subprocess(tid, proc), None)[
                     1
                 ],
@@ -1502,15 +1563,25 @@ class Orchestrator:
             return
 
         # --- Rehydrate from session snapshot (if any) ---
+        # A snapshot is only resumable when it was created by the configured
+        # agent against the checkout we are about to mount: session ids are
+        # keyed by both.  Any mismatch is treated like a stale agent session
+        # and discarded, starting fresh rather than attempting a doomed resume.
         session_record = self._state.get_session(tid)
-        if session_record is not None and not self._session_matches_current_agent(
-            session_record.agent
+        if session_record is not None and (
+            not self._session_matches_current_agent(session_record.agent)
+            or not self._session_matches_current_workspace(
+                session_record.workspace_path, workspace_path
+            )
         ):
             logger.info(
-                "Discarding %s session snapshot for %s; configured agent is %s",
-                session_record.agent or "opencode",
+                "Discarding session snapshot for %s; recorded agent/workspace "
+                "(%s, %s) does not match configured agent/workspace (%s, %s)",
                 tid,
+                session_record.agent or "opencode",
+                session_record.workspace_path,
                 self._config.agent,
+                workspace_path,
             )
             self._drop_stale_session(ticket_state)
             session_record = None
@@ -1670,7 +1741,7 @@ class Orchestrator:
                 on_subprocess=lambda proc: (self._register_subprocess(tid, proc), None)[
                     1
                 ],
-                hide_paths=self._config.sandbox.hide_paths,
+                hide_paths=self._sandbox_hide_paths_for(issue.identifier),
                 extra_rw_paths=self._config.sandbox.extra_rw_paths,
                 attachments_path=host_attachments_dir,
                 dir_map=dir_map,
@@ -2007,7 +2078,9 @@ class Orchestrator:
                 on_subprocess=lambda proc: (self._register_subprocess(tid, proc), None)[
                     1
                 ],
-                hide_paths=self._config.sandbox.hide_paths,  # B3
+                hide_paths=self._sandbox_hide_paths_for(
+                    ticket_state.ticket_identifier, ticket_state.workspace_path
+                ),
                 extra_rw_paths=self._config.sandbox.extra_rw_paths,
                 attachments_path=host_attachments_dir,
                 dir_map=dir_map,
@@ -2133,6 +2206,22 @@ class Orchestrator:
         Session IDs are adapter-specific; an untagged legacy session is OpenCode.
         """
         return (agent or "opencode") == self._config.agent
+
+    def _session_matches_current_workspace(
+        self, recorded_workspace_path: str | None, current_workspace_path: str
+    ) -> bool:
+        """Whether a recorded session was created against the current checkout.
+
+        Agent sessions are keyed by the checkout path, so a snapshot recorded
+        elsewhere cannot be resumed.  A record without a path (a pre-upgrade
+        snapshot) cannot be verified, so it is treated as a mismatch and the
+        session is started fresh instead.
+        """
+        if recorded_workspace_path is None:
+            return False
+        return os.path.realpath(recorded_workspace_path) == os.path.realpath(
+            current_workspace_path
+        )
 
     def _drop_stale_session(self, ticket_state: TicketState) -> None:
         """Forget an incompatible live session and its durable snapshot."""

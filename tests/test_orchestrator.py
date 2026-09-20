@@ -2,7 +2,10 @@
 
 from __future__ import annotations
 
+import os
+import shutil
 import subprocess
+import tempfile
 import threading
 import time
 from concurrent.futures import Future
@@ -40,9 +43,11 @@ from symphony_linear.project_config import (
     ProjectConfig,
     ProjectConfigError,
 )
+from symphony_linear.sandbox import run_in_sandbox
 from symphony_linear.state import StateManager, TicketState, TicketStatus
 from symphony_linear.tracker import TrackerError, TransitionTarget
 from symphony_linear.webhook import WebhookServer
+from symphony_linear.workspace import WorkspaceError
 
 
 # ---------------------------------------------------------------------------
@@ -1769,7 +1774,9 @@ class TestNewTicketRehydrate:
         orchestrator._state.set_session(
             "ticket-1",
             SessionRecord(
-                session_id="ses-rehydrated", last_seen_comment_id="cmt-prior"
+                session_id="ses-rehydrated",
+                workspace_path="/tmp/ws/TEAM-1",
+                last_seen_comment_id="cmt-prior",
             ),
         )
 
@@ -1888,6 +1895,7 @@ class TestNewTicketRehydrate:
             SessionRecord(
                 session_id="ses-opencode",
                 agent="opencode",
+                workspace_path="/tmp/ws/TEAM-1",
                 last_seen_comment_id="cmt-prior",
             ),
         )
@@ -1928,6 +1936,63 @@ class TestNewTicketRehydrate:
         assert ticket_state.agent == "omp"
         assert orchestrator._state.get_session("ticket-1") is None
 
+    @pytest.mark.parametrize(
+        "recorded_workspace_path",
+        [None, "/tmp/ws/my-org-my-repo-42/repo"],
+    )
+    def test_rehydrate_discards_snapshot_from_other_workspace(
+        self,
+        orchestrator: Orchestrator,
+        linear: FakeLinearClient,
+        recorded_workspace_path: str | None,
+    ) -> None:
+        """A snapshot recorded against another checkout — including a
+        pre-upgrade snapshot that has no recorded path — is discarded and a
+        fresh session runs, because agent sessions are keyed by checkout path."""
+        from symphony_linear.state import SessionRecord
+
+        orchestrator._state.set_session(
+            "ticket-1",
+            SessionRecord(
+                session_id="ses-old",
+                workspace_path=recorded_workspace_path,
+                last_seen_comment_id="cmt-prior",
+            ),
+        )
+        linear.set_response(
+            "get_project",
+            Project(
+                id="proj-1",
+                name="Test",
+                links=[
+                    ProjectLink(label="Repo", url="https://github.com/org/repo.git")
+                ],
+            ),
+        )
+        linear.set_response("get_issue", _make_issue(description="Fix"))
+        with (
+            mock.patch(
+                "symphony_linear.orchestrator.clone_workspace",
+                return_value=("/tmp/ws/TEAM-1", False),
+            ),
+            mock.patch("symphony_linear.orchestrator.finalize_workspace"),
+            mock.patch(
+                "symphony_linear.orchestrator.load_project_config",
+                return_value=ProjectConfig(),
+            ),
+            mock.patch(
+                "symphony_linear.orchestrator.run_initial",
+                return_value=("ses-fresh", "Done.", None),
+            ) as mock_run_initial,
+        ):
+            orchestrator._new_ticket_pipeline(_make_issue())
+
+        mock_run_initial.assert_called_once()
+        assert orchestrator._state.get_session("ticket-1") is None
+        ticket_state = orchestrator._state.get("ticket-1")
+        assert ticket_state is not None
+        assert ticket_state.session_id == "ses-fresh"
+
     def test_rehydrate_transition_failure_does_not_crash(
         self, orchestrator: Orchestrator, linear: FakeLinearClient
     ) -> None:
@@ -1936,7 +2001,7 @@ class TestNewTicketRehydrate:
 
         orchestrator._state.set_session(
             "ticket-1",
-            SessionRecord(session_id="ses-rehydrated"),
+            SessionRecord(session_id="ses-rehydrated", workspace_path="/tmp/ws/TEAM-1"),
         )
         # Make transition_to_state fail.
         linear.set_response("transition_to_state", LinearError("nope"))
@@ -1986,7 +2051,7 @@ class TestNewTicketRehydrate:
 
         orchestrator._state.set_session(
             "ticket-1",
-            SessionRecord(session_id="ses-abc"),
+            SessionRecord(session_id="ses-abc", workspace_path="/tmp/ws/TEAM-1"),
         )
 
         linear.set_response(
@@ -2038,7 +2103,9 @@ class TestNewTicketRehydrate:
         orchestrator._state.set_session(
             "ticket-1",
             SessionRecord(
-                session_id="ses-rehydrated", last_seen_comment_id="cmt-prior"
+                session_id="ses-rehydrated",
+                workspace_path="/tmp/ws/TEAM-1",
+                last_seen_comment_id="cmt-prior",
             ),
         )
         # A human commented while the ticket was untriggered.
@@ -2113,7 +2180,9 @@ class TestNewTicketRehydrate:
         orchestrator._state.set_session(
             "ticket-1",
             SessionRecord(
-                session_id="ses-rehydrated", last_seen_comment_id="cmt-prior"
+                session_id="ses-rehydrated",
+                workspace_path="/tmp/ws/TEAM-1",
+                last_seen_comment_id="cmt-prior",
             ),
         )
         # No comments since last_seen (default response is []).
@@ -2183,7 +2252,9 @@ class TestNewTicketRehydrate:
         orchestrator._state.set_session(
             "ticket-1",
             SessionRecord(
-                session_id="ses-rehydrated", last_seen_comment_id="cmt-prior"
+                session_id="ses-rehydrated",
+                workspace_path="/tmp/ws/TEAM-1",
+                last_seen_comment_id="cmt-prior",
             ),
         )
 
@@ -5888,7 +5959,7 @@ class TestHidePaths:
             ticket_id="ticket-1",
             ticket_identifier="TEAM-1",
             repo_url="https://x",
-            workspace_path="/tmp/x",
+            workspace_path=str(orchestrator._workspace / "TEAM-1" / "repo"),
             branch="main",
             status=TicketStatus.needs_input,
             session_id="ses-abc",
@@ -5908,6 +5979,513 @@ class TestHidePaths:
             orchestrator._resume_pipeline(ts)
         _, kwargs = m_oc.call_args
         assert kwargs.get("hide_paths") == ["/fake/secret"]
+
+
+# ---------------------------------------------------------------------------
+# Workspace-root masking (config.yaml / state.json / sibling ticket dirs)
+# ---------------------------------------------------------------------------
+
+
+class TestWorkspaceRootMasking:
+    """Every sandbox launch hides the daemon workspace root except the current
+    ticket's own dir.  The root holds ``config.yaml`` (live API tokens),
+    ``state.json`` and every sibling ticket directory."""
+
+    def _make_orchestrator(
+        self,
+        tmp_path: Path,
+        state_mgr: StateManager,
+        linear: FakeLinearClient,
+        *,
+        qa: bool = False,
+    ) -> Orchestrator:
+        overrides: dict[str, Any] = {
+            "sandbox": {"hide_paths": ["/fake/secret"], "extra_rw_paths": []}
+        }
+        if qa:
+            overrides["linear"] = {"qa_state": "In Review"}
+        config = _make_config(tmp_path, **overrides)
+        return Orchestrator(
+            config=config,
+            state=state_mgr,
+            tracker=LinearTracker(linear=linear, config=config.linear),  # type: ignore[arg-type]
+            workspace=tmp_path / "ws",
+        )
+
+    @staticmethod
+    def _populate_workspace_root(root: Path) -> None:
+        root.mkdir()
+        (root / "TEAM-1").mkdir()
+        (root / "TEAM-2").mkdir()
+        (root / "config.yaml").write_text("api_key: super-secret\n")
+        (root / "state.json").write_text('{"secret": true}')
+        (root / "stray-file.txt").write_text("not a ticket dir")
+
+    def test_computed_list_masks_root_but_not_current_ticket(
+        self, tmp_path: Path, state_mgr: StateManager, linear: FakeLinearClient
+    ) -> None:
+        orch = self._make_orchestrator(tmp_path, state_mgr, linear)
+        root = orch._workspace
+        self._populate_workspace_root(root)
+
+        hide = orch._sandbox_hide_paths_for("TEAM-1")
+
+        # Configured hide paths are preserved first.
+        assert hide[0] == "/fake/secret"
+        # The current ticket dir stays visible...
+        assert str(root / "TEAM-1") not in hide
+        # ...everything else in the root is masked: other tickets, secrets,
+        # and unknown entries (no allowlisting by name).
+        assert str(root / "TEAM-2") in hide
+        assert str(root / "config.yaml") in hide
+        assert str(root / "state.json") in hide
+        assert str(root / "stray-file.txt") in hide
+
+    def test_list_is_recomputed_per_call(
+        self, tmp_path: Path, state_mgr: StateManager, linear: FakeLinearClient
+    ) -> None:
+        orch = self._make_orchestrator(tmp_path, state_mgr, linear)
+        root = orch._workspace
+        self._populate_workspace_root(root)
+        assert str(root / "TEAM-3") not in orch._sandbox_hide_paths_for("TEAM-1")
+
+        (root / "TEAM-3").mkdir()
+
+        assert str(root / "TEAM-3") in orch._sandbox_hide_paths_for("TEAM-1")
+
+    def test_exclusion_uses_canonical_ticket_dir(
+        self, tmp_path: Path, state_mgr: StateManager, linear: FakeLinearClient
+    ) -> None:
+        """The exclusion is the ``compute_ticket_dir`` path, so the sanitized
+        name matches even when the raw identifier is not a valid dir name."""
+        orch = self._make_orchestrator(tmp_path, state_mgr, linear)
+        root = orch._workspace
+        root.mkdir()
+        (root / "TEAM_1").mkdir()
+        (root / "TEAM-2").mkdir()
+
+        hide = orch._sandbox_hide_paths_for("TEAM/1")
+
+        assert str(root / "TEAM_1") not in hide
+        assert str(root / "TEAM-2") in hide
+
+    def test_root_symlink_to_current_ticket_is_not_masked(
+        self, tmp_path: Path, state_mgr: StateManager, linear: FakeLinearClient
+    ) -> None:
+        """A root-level symlink resolving to the current ticket dir must not be
+        hidden: ``run_in_sandbox`` resolves hide paths, so masking it would
+        tmpfs the ticket's own repo."""
+        orch = self._make_orchestrator(tmp_path, state_mgr, linear)
+        root = orch._workspace
+        root.mkdir()
+        (root / "TEAM-1").mkdir()
+        (root / "TEAM-2").mkdir()
+        os.symlink("TEAM-1", root / "alias")
+
+        hide = orch._sandbox_hide_paths_for("TEAM-1")
+
+        assert str(root / "alias") not in hide
+        assert str(root / "TEAM-1") not in hide
+        assert str(root / "TEAM-2") in hide
+
+    @pytest.mark.skipif(
+        os.geteuid() == 0, reason="root bypasses directory permission checks"
+    )
+    def test_unlistable_workspace_root_raises_workspace_error(
+        self, tmp_path: Path, state_mgr: StateManager, linear: FakeLinearClient
+    ) -> None:
+        """Fail closed: an unlistable root must raise rather than silently
+        dropping the workspace-root mask."""
+        orch = self._make_orchestrator(tmp_path, state_mgr, linear)
+        root = orch._workspace
+        root.mkdir()
+        root.chmod(0o300)  # write+execute, no read: iterdir raises PermissionError
+        try:
+            with pytest.raises(WorkspaceError):
+                orch._sandbox_hide_paths_for("TEAM-1")
+        finally:
+            root.chmod(0o700)
+
+    @pytest.mark.skipif(
+        os.geteuid() == 0, reason="root bypasses directory permission checks"
+    )
+    def test_unlistable_workspace_root_launches_no_sandbox(
+        self, tmp_path: Path, state_mgr: StateManager, linear: FakeLinearClient
+    ) -> None:
+        """When the root cannot be listed, the pipeline aborts before setup or
+        the agent turn, so no sandbox is launched without the mask."""
+        orch = self._make_orchestrator(tmp_path, state_mgr, linear)
+        root = orch._workspace
+        root.mkdir()
+        root.chmod(0o300)
+        linear.set_response(
+            "get_project",
+            Project(
+                id="proj-1",
+                name="Test",
+                links=[
+                    ProjectLink(label="Repo", url="https://github.com/org/repo.git")
+                ],
+            ),
+        )
+        linear.set_response("get_issue", _make_issue(description="Fix"))
+        try:
+            with (
+                mock.patch(
+                    "symphony_linear.orchestrator.clone_workspace",
+                    return_value=("/tmp/ws/TEAM-1", False),
+                ),
+                mock.patch(
+                    "symphony_linear.orchestrator.finalize_workspace",
+                ) as m_finalize,
+                mock.patch(
+                    "symphony_linear.orchestrator.load_project_config",
+                    return_value=ProjectConfig(),
+                ),
+                mock.patch(
+                    "symphony_linear.orchestrator.run_initial",
+                ) as m_oc,
+            ):
+                orch._new_ticket_pipeline(_make_issue())
+            # ensure_tmp_dir succeeded, so the abort came from the mask helper.
+            assert (root / "TEAM-1" / "tmp").is_dir()
+        finally:
+            root.chmod(0o700)
+        m_finalize.assert_not_called()
+        m_oc.assert_not_called()
+
+    def test_root_masked_for_finalize_workspace(
+        self, tmp_path: Path, state_mgr: StateManager, linear: FakeLinearClient
+    ) -> None:
+        """The .symphony/setup sandbox is masked too."""
+        orch = self._make_orchestrator(tmp_path, state_mgr, linear)
+        root = orch._workspace
+        root.mkdir()
+        (root / "TEAM-2").mkdir()
+        (root / "config.yaml").write_text("api_key: super-secret\n")
+        linear.set_response(
+            "get_project",
+            Project(
+                id="proj-1",
+                name="Test",
+                links=[
+                    ProjectLink(label="Repo", url="https://github.com/org/repo.git")
+                ],
+            ),
+        )
+        linear.set_response("get_issue", _make_issue(description="Fix"))
+        with (
+            mock.patch(
+                "symphony_linear.orchestrator.clone_workspace",
+                return_value=("/tmp/ws/TEAM-1", False),
+            ),
+            mock.patch(
+                "symphony_linear.orchestrator.finalize_workspace",
+            ) as m_finalize,
+            mock.patch(
+                "symphony_linear.orchestrator.load_project_config",
+                return_value=ProjectConfig(),
+            ),
+            mock.patch(
+                "symphony_linear.orchestrator.run_initial",
+                return_value=("ses", "msg", None),
+            ),
+        ):
+            orch._new_ticket_pipeline(_make_issue())
+        _, kwargs = m_finalize.call_args
+        hide = kwargs["sandbox_hide_paths"]
+        assert str(root / "TEAM-2") in hide
+        assert str(root / "config.yaml") in hide
+        assert str(root / "TEAM-1") not in hide
+
+    def test_root_masked_for_run_initial(
+        self, tmp_path: Path, state_mgr: StateManager, linear: FakeLinearClient
+    ) -> None:
+        orch = self._make_orchestrator(tmp_path, state_mgr, linear)
+        root = orch._workspace
+        root.mkdir()
+        (root / "TEAM-2").mkdir()
+        (root / "config.yaml").write_text("api_key: super-secret\n")
+        linear.set_response(
+            "get_project",
+            Project(
+                id="proj-1",
+                name="Test",
+                links=[
+                    ProjectLink(label="Repo", url="https://github.com/org/repo.git")
+                ],
+            ),
+        )
+        linear.set_response("get_issue", _make_issue(description="Fix"))
+        with (
+            mock.patch(
+                "symphony_linear.orchestrator.clone_workspace",
+                return_value=("/tmp/ws/TEAM-1", False),
+            ),
+            mock.patch(
+                "symphony_linear.orchestrator.finalize_workspace",
+            ),
+            mock.patch(
+                "symphony_linear.orchestrator.load_project_config",
+                return_value=ProjectConfig(),
+            ),
+            mock.patch(
+                "symphony_linear.orchestrator.run_initial",
+                return_value=("ses", "msg", None),
+            ) as m_oc,
+        ):
+            orch._new_ticket_pipeline(_make_issue())
+        _, kwargs = m_oc.call_args
+        hide = kwargs["hide_paths"]
+        assert str(root / "TEAM-2") in hide
+        assert str(root / "config.yaml") in hide
+        assert str(root / "TEAM-1") not in hide
+
+    def test_root_masked_for_run_resume(
+        self, tmp_path: Path, state_mgr: StateManager, linear: FakeLinearClient
+    ) -> None:
+        orch = self._make_orchestrator(tmp_path, state_mgr, linear)
+        root = orch._workspace
+        root.mkdir()
+        (root / "TEAM-1").mkdir()
+        (root / "TEAM-2").mkdir()
+        (root / "state.json").write_text('{"secret": true}')
+        ts = TicketState(
+            ticket_id="ticket-1",
+            ticket_identifier="TEAM-1",
+            repo_url="https://x",
+            workspace_path=str(root / "TEAM-1"),
+            branch="main",
+            status=TicketStatus.needs_input,
+            session_id="ses-abc",
+            last_seen_comment_id="cmt-seen-1",
+        )
+        orch._state.upsert(ts)
+        linear.set_response("list_comments_since", [_make_comment("c1", "Go")])
+        with (
+            mock.patch(
+                "symphony_linear.orchestrator.load_project_config",
+                return_value=ProjectConfig(),
+            ),
+            mock.patch(
+                "symphony_linear.orchestrator.run_resume", return_value=("Done!", None)
+            ) as m_oc,
+        ):
+            orch._resume_pipeline(ts)
+        _, kwargs = m_oc.call_args
+        hide = kwargs["hide_paths"]
+        assert str(root / "TEAM-2") in hide
+        assert str(root / "state.json") in hide
+        assert str(root / "TEAM-1") not in hide
+
+    def test_root_masked_for_start_serve(
+        self, tmp_path: Path, state_mgr: StateManager, linear: FakeLinearClient
+    ) -> None:
+        orch = self._make_orchestrator(tmp_path, state_mgr, linear, qa=True)
+        root = orch._workspace
+        root.mkdir()
+        (root / "TEAM-2").mkdir()
+        (root / "config.yaml").write_text("api_key: super-secret\n")
+        _add_ticket_state(orch, workspace_path=str(root / "TEAM-1" / "repo"))
+
+        issue = _make_qa_issue()
+        fake_proc = _make_fake_proc(returncode=None)
+
+        with mock.patch(
+            "symphony_linear.orchestrator.start_serve", return_value=fake_proc
+        ) as m_serve:
+            orch._reconcile_serve([issue], {issue.id: issue})
+
+        m_serve.assert_called_once()
+        _, kwargs = m_serve.call_args
+        hide = kwargs["hide_paths"]
+        assert str(root / "TEAM-2") in hide
+        assert str(root / "config.yaml") in hide
+        assert str(root / "TEAM-1") not in hide
+
+    def test_start_serve_excludes_checkout_when_identifier_changed(
+        self, tmp_path: Path, state_mgr: StateManager, linear: FakeLinearClient
+    ) -> None:
+        """An old-format state entry is not masked when the tracker now reports
+        a new-format identifier: the exclusion follows the mounted workspace
+        path, not today's identifier."""
+        orch = self._make_orchestrator(tmp_path, state_mgr, linear, qa=True)
+        root = orch._workspace
+        root.mkdir()
+        old_ticket_dir = root / "my-org-my-repo-42"
+        (old_ticket_dir / "repo").mkdir(parents=True)
+        (root / "other-ticket").mkdir()
+        (root / "config.yaml").write_text("api_key: super-secret\n")
+
+        # State entry persisted under the pre-change identifier and checkout.
+        _add_ticket_state(
+            orch,
+            ticket_id="ticket-1",
+            identifier="my-org-my-repo-42",
+            workspace_path=str(old_ticket_dir / "repo"),
+        )
+
+        # Trackers now report the new, hashed identifier for the same ticket.
+        issue = _make_qa_issue(identifier="my-org-my-repo-42-bcc89b7f")
+        fake_proc = _make_fake_proc(returncode=None)
+
+        with mock.patch(
+            "symphony_linear.orchestrator.start_serve", return_value=fake_proc
+        ) as m_serve:
+            orch._reconcile_serve([issue], {issue.id: issue})
+
+        m_serve.assert_called_once()
+        _, kwargs = m_serve.call_args
+        hide = kwargs["hide_paths"]
+        # The real checkout stays visible; everything else is masked.
+        assert str(old_ticket_dir) not in hide
+        assert str(root / "other-ticket") in hide
+        assert str(root / "config.yaml") in hide
+
+
+def _workspace_base_outside_tmp() -> Path:
+    """Return a writable directory that is not under ``/tmp``.
+
+    ``run_in_sandbox`` replaces ``/tmp`` with the ticket's private tmp dir, so
+    anything under the host ``/tmp`` is invisible inside the sandbox whether or
+    not it is masked.  A test workspace there cannot prove the mask works.
+    """
+    for base in (Path(__file__).resolve().parent.parent, Path.home()):
+        resolved = base.resolve()
+        text = str(resolved)
+        if text == "/tmp" or text.startswith("/tmp/"):
+            continue
+        if os.access(resolved, os.W_OK):
+            return resolved
+    return pytest.skip("no writable directory outside /tmp for sandbox masking test")
+
+
+@pytest.mark.integration
+class TestWorkspaceRootMaskingIntegration:
+    """Run real bwrap with the orchestrator-computed hide list.
+
+    A positive control (no workspace-root masking) first proves the secrets are
+    genuinely readable through the sandbox; the masked run then proves they are
+    gone while the current ticket's own repo/tmp/attachments/mounts survive.
+    """
+
+    def _run_probe(
+        self,
+        *,
+        root: Path,
+        ticket: Path,
+        repo: Path,
+        sibling: Path,
+        hide_paths: list[str],
+    ) -> str:
+        script = (
+            f'echo "CONFIG=[$(cat "{root}/config.yaml" 2>/dev/null)]"; '
+            f'echo "SIBLING=[$(cat "{sibling}/repo/secret.txt" 2>/dev/null)]"; '
+            f'echo "REPO=[$(cat "{repo}/repo-marker.txt" 2>/dev/null)]"; '
+            f'echo "TMP=[$(cat /tmp/tmp-marker.txt 2>/dev/null)]"; '
+            f'echo "ATT=[$(cat /tmp/symphony-attachments/att-marker.txt 2>/dev/null)]"; '
+            f'echo "MOUNTS=[$(cat "{ticket}/mounts/mount-marker.txt" 2>/dev/null)]"; '
+            f'echo "REPO_WRITE=$(touch "{repo}/wrote-inside.txt" 2>/dev/null '
+            f'&& echo ok || echo no)"'
+        )
+        proc = run_in_sandbox(
+            cmd=["bash", "-c", script],
+            workspace_path=str(repo),
+            tmp_path=str(ticket / "tmp"),
+            attachments_path=str(ticket / "attachments"),
+            hide_paths=hide_paths,
+            env={"HOME": str(Path.home())},
+            stdout=subprocess.PIPE,
+            stderr=subprocess.PIPE,
+        )
+        stdout, stderr = proc.communicate(timeout=60)
+        assert proc.returncode == 0, (
+            f"Sandbox failed with exit code {proc.returncode}\n"
+            f"stderr:\n{stderr.decode(errors='replace')}"
+        )
+        return stdout.decode(errors="replace")
+
+    def test_workspace_root_masked_in_real_sandbox(self, tmp_path: Path) -> None:
+        if shutil.which("bwrap") is None:
+            pytest.skip("bwrap not available")
+
+        # The workspace must live outside /tmp (see _workspace_base_outside_tmp).
+        with tempfile.TemporaryDirectory(
+            prefix=".symphony-mask-", dir=str(_workspace_base_outside_tmp())
+        ) as tmp:
+            root = Path(tmp) / "workspaces"
+            ticket = root / "TEAM-1"
+            repo = ticket / "repo"
+            sibling = root / "TEAM-2"
+            # Production layout: repo/, tmp/, attachments/ and mounts/ are
+            # siblings under the ticket dir.
+            for path in (
+                repo,
+                ticket / "tmp",
+                ticket / "attachments",
+                ticket / "mounts",
+                sibling / "repo",
+            ):
+                path.mkdir(parents=True)
+            (repo / "repo-marker.txt").write_text("repo-visible")
+            (ticket / "tmp" / "tmp-marker.txt").write_text("tmp-visible")
+            (ticket / "attachments" / "att-marker.txt").write_text("att-visible")
+            (ticket / "mounts" / "mount-marker.txt").write_text("mount-visible")
+            (sibling / "repo" / "secret.txt").write_text("sibling-secret")
+            (root / "config.yaml").write_text("api_key: super-secret\n")
+            (root / "state.json").write_text('{"secret": true}')
+            # A root-level symlink resolving to the current ticket dir: the
+            # masking must not resolve it into a tmpfs over TEAM-1 itself.
+            os.symlink("TEAM-1", root / "alias")
+
+            config = _make_config(
+                tmp_path, sandbox={"hide_paths": [], "extra_rw_paths": []}
+            )
+            state = StateManager(tmp_path / "state.json")
+            state.load()
+            orch = Orchestrator(
+                config=config,
+                state=state,
+                tracker=LinearTracker(  # type: ignore[arg-type]
+                    linear=FakeLinearClient(), config=config.linear
+                ),
+                workspace=root,
+            )
+
+            # Positive control: with no workspace-root mask the secrets ARE
+            # readable, so the exposed layout is real and the mask is what
+            # removes it.
+            control = self._run_probe(
+                root=root, ticket=ticket, repo=repo, sibling=sibling, hide_paths=[]
+            )
+            assert "CONFIG=[api_key: super-secret]" in control, control
+            assert "SIBLING=[sibling-secret]" in control, control
+            assert "REPO=[repo-visible]" in control, control
+            assert "TMP=[tmp-visible]" in control, control
+            assert "ATT=[att-visible]" in control, control
+            assert "MOUNTS=[mount-visible]" in control, control
+            assert "REPO_WRITE=ok" in control, control
+
+            masked = self._run_probe(
+                root=root,
+                ticket=ticket,
+                repo=repo,
+                sibling=sibling,
+                hide_paths=orch._sandbox_hide_paths_for("TEAM-1"),
+            )
+            # config.yaml and state.json read as empty (the file branch binds
+            # /dev/null); the sibling ticket dir is empty and no secret leaks.
+            assert "CONFIG=[]" in masked, masked
+            assert "SIBLING=[]" in masked, masked
+            assert "super-secret" not in masked, masked
+            assert "sibling-secret" not in masked, masked
+            # The current ticket's own dir is unaffected: repo (and repo write),
+            # tmp, attachments and mounts all stay reachable.
+            assert "REPO=[repo-visible]" in masked, masked
+            assert "TMP=[tmp-visible]" in masked, masked
+            assert "ATT=[att-visible]" in masked, masked
+            assert "MOUNTS=[mount-visible]" in masked, masked
+            assert "REPO_WRITE=ok" in masked, masked
 
 
 # ---------------------------------------------------------------------------
