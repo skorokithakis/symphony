@@ -185,6 +185,20 @@ shutting down, or the ticket is no longer triggered — see `_is_still_triggered
   from `run()` at startup. It warns rather than blocks on purpose: exposing
   the workspace has legitimate uses, such as running Symphony on Symphony
   where the agent needs a real `state.json`.
+- **Per-repo secrets are copied, not mounted.** Before each of the four
+  sandbox launches, `workspace.ensure_secrets_file` maps the repo URL to
+  `<secrets_dir>/<host>/<path>.env` (default `<workspace>/secrets`) and copies
+  it to `<ticket_dir>/secrets.env` (0600), or deletes a stale copy; the path
+  is passed as `SYMPHONY_SECRETS_FILE`. The values are never parsed or put
+  into the env. A file bind was rejected because editors save by rename and a
+  bind keeps the old inode. The repo URL comes from the tracker and is
+  untrusted, so the realpath containment check in `repo_secrets_path` is the
+  security boundary. The default source dir is covered by the workspace-root
+  masking; a custom `secrets_dir` is appended to the hide list by
+  `_sandbox_hide_paths_for`; if it is or contains the ticket dir, the launch
+  fails closed with `WorkspaceError`. `.` and `..` URL components are
+  rejected outright, because a `..` that stays inside `secrets_dir` would
+  still select another repo's file.
 - **The OpenCode session id is captured from the first NDJSON event** that
   includes `sessionID`; that value is the main session and any event whose
   top-level `sessionID` differs is subagent chatter. The final assistant

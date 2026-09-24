@@ -393,6 +393,11 @@ sandbox:
   #   ~/.config/npm: npm
   #   ~/.npm: ~/sandboxes/caches/.npm
 
+  # Optional. Directory of per-repo secrets files, one KEY=value file per
+  # repo at <secrets_dir>/<host>/<owner>/<name>.env. Defaults to
+  # <workspace>/secrets. See "Secrets" below.
+  # secrets_dir: ~/symphony-secrets
+
 # Seconds between poll cycles (default: 30, minimum: 1).
 poll_interval_seconds: 30
 
@@ -660,6 +665,34 @@ stop the agent asking the SSH agent to sign for it. Treat the sandbox as
 protection against an agent that blunders, not against one that is trying
 to get out.
 
+### Secrets
+
+Each repo can have one secrets file, in normal `.env` format (`KEY=value`
+lines). Symphony looks for it at:
+
+```
+<workspace>/secrets/<host>/<owner>/<name>.env
+```
+
+For example, the repo `git@github.com:acme/api.git` uses
+`<workspace>/secrets/github.com/acme/api.env`. The SSH and HTTPS forms of a
+URL find the same file, and GitLab subgroups become extra directories. Set
+`sandbox.secrets_dir` to keep the files somewhere other than
+`<workspace>/secrets`.
+
+Before each sandbox launch (setup, every agent turn, and QA serve), Symphony
+copies the file to `secrets.env` in the ticket's directory, outside the git
+checkout, and sets `SYMPHONY_SECRETS_FILE` to its path. Symphony does not
+load the values into the environment itself. Your scripts do that; see
+[`.symphony/setup`](#symphonysetup). If there is no file, the variable is
+not set. Changes take effect on the next launch, so you do not need to
+restart the daemon.
+
+The source directory is hidden from the sandbox, so one repo cannot see
+another repo's secrets. However, the agent can read its own repo's secrets
+file, and it can put what it reads into a ticket comment. Use development
+credentials only.
+
 ## Manual QA
 
 If you set `linear.qa_state` (or `github.qa_status`) and add an executable
@@ -693,10 +726,22 @@ clone, before the agent starts. Use it to install dependencies, prepare
 caches, or whatever else the project needs. Non-zero exit aborts the ticket
 with an error comment. The script has a five-minute timeout.
 
+If the repo has a [secrets file](#secrets), load it with:
+
+```sh
+[ -n "$SYMPHONY_SECRETS_FILE" ] && { set -a; . "$SYMPHONY_SECRETS_FILE"; set +a; }
+```
+
 ### `.symphony/serve`
 
 An executable script run inside the sandbox when the ticket enters the
 configured `qa_state`. See [Manual QA](#manual-qa) for the details.
+
+If the repo has a [secrets file](#secrets), load it with:
+
+```sh
+[ -n "$SYMPHONY_SECRETS_FILE" ] && { set -a; . "$SYMPHONY_SECRETS_FILE"; set +a; }
+```
 
 ### `.symphony/config.yaml`
 

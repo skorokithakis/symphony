@@ -20,6 +20,7 @@ from symphony_linear.pi_protocol import (
     _token_count as _token_count,
     _validate_final_turn,
 )
+from symphony_linear.sandbox import SECRETS_ENV_VAR
 
 logger = logging.getLogger(__name__)
 
@@ -41,6 +42,7 @@ def run_initial(
     extra_rw_paths: list[str] | None = None,
     attachments_path: str | None = None,
     dir_map: list[tuple[str, str]] | None = None,
+    secrets_file: str | None = None,
     tmp_path: str,
     files: list[str] | None = None,
     model: str | None = None,
@@ -79,6 +81,7 @@ def run_initial(
         extra_rw_paths=extra_rw_paths or [],
         attachments_path=attachments_path,
         dir_map=dir_map,
+        secrets_file=secrets_file,
         tmp_path=tmp_path,
     )
 
@@ -95,6 +98,7 @@ def run_resume(
     extra_rw_paths: list[str] | None = None,
     attachments_path: str | None = None,
     dir_map: list[tuple[str, str]] | None = None,
+    secrets_file: str | None = None,
     tmp_path: str,
     files: list[str] | None = None,
     model: str | None = None,
@@ -138,6 +142,7 @@ def run_resume(
         extra_rw_paths=extra_rw_paths or [],
         attachments_path=attachments_path,
         dir_map=dir_map,
+        secrets_file=secrets_file,
         tmp_path=tmp_path,
     )
     return final_message, context_tokens
@@ -154,8 +159,12 @@ def _execute(
     extra_rw_paths: list[str] | None = None,
     attachments_path: str | None = None,
     dir_map: list[tuple[str, str]] | None = None,
+    secrets_file: str | None = None,
 ) -> tuple[str, str, int | None]:
     """Run a pi command, then parse and validate its NDJSON event stream."""
+    env = {"HOME": str(Path.home())}
+    if secrets_file:
+        env[SECRETS_ENV_VAR] = secrets_file
     returncode, stdout_text, stderr_text, timeout_reason = agent_runner.run(
         cmd=cmd,
         workspace_path=workspace_path,
@@ -163,7 +172,7 @@ def _execute(
         timeout_seconds=timeout_seconds,
         idle_timeout_seconds=idle_timeout_seconds,
         on_subprocess=on_subprocess,
-        env={"HOME": str(Path.home())},
+        env=env,
         hide_paths=hide_paths,
         extra_rw_paths=extra_rw_paths or [],
         attachments_path=attachments_path,

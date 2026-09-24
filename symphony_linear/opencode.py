@@ -141,6 +141,7 @@ from pathlib import Path
 from typing import Callable
 
 from symphony_linear import agent_runner
+from symphony_linear.sandbox import SECRETS_ENV_VAR
 
 logger = logging.getLogger(__name__)
 
@@ -187,6 +188,7 @@ def run_initial(
     extra_rw_paths: list[str] | None = None,
     attachments_path: str | None = None,
     dir_map: list[tuple[str, str]] | None = None,
+    secrets_file: str | None = None,
     tmp_path: str,
     files: list[str] | None = None,
     model: str | None = None,
@@ -216,6 +218,9 @@ def run_initial(
             directory.  Passed through to the sandbox.
         dir_map: Pre-resolved ``(host_source, sandbox_dest)`` bind pairs from
             ``workspace.ensure_dir_map``.  Passed through to the sandbox.
+        secrets_file: Host path to the per-ticket secrets file installed by
+            ``workspace.ensure_secrets_file``, exported as
+            ``SYMPHONY_SECRETS_FILE``.  ``None`` leaves the variable unset.
         tmp_path: Host path to the per-ticket tmp directory, mounted at
             ``/tmp`` inside the sandbox.  Must exist on the host (bwrap
             ``--bind`` is fatal otherwise).
@@ -264,6 +269,7 @@ def run_initial(
         extra_rw_paths=extra_rw_paths or [],
         attachments_path=attachments_path,
         dir_map=dir_map,
+        secrets_file=secrets_file,
         tmp_path=tmp_path,
     )
 
@@ -280,6 +286,7 @@ def run_resume(
     extra_rw_paths: list[str] | None = None,
     attachments_path: str | None = None,
     dir_map: list[tuple[str, str]] | None = None,
+    secrets_file: str | None = None,
     tmp_path: str,
     files: list[str] | None = None,
     model: str | None = None,
@@ -311,6 +318,9 @@ def run_resume(
             directory.  Passed through to the sandbox.
         dir_map: Pre-resolved ``(host_source, sandbox_dest)`` bind pairs from
             ``workspace.ensure_dir_map``.  Passed through to the sandbox.
+        secrets_file: Host path to the per-ticket secrets file installed by
+            ``workspace.ensure_secrets_file``, exported as
+            ``SYMPHONY_SECRETS_FILE``.  ``None`` leaves the variable unset.
         tmp_path: Host path to the per-ticket tmp directory, mounted at
             ``/tmp`` inside the sandbox.  Must exist on the host (bwrap
             ``--bind`` is fatal otherwise).
@@ -367,6 +377,7 @@ def run_resume(
         extra_rw_paths=extra_rw_paths or [],
         attachments_path=attachments_path,
         dir_map=dir_map,
+        secrets_file=secrets_file,
         tmp_path=tmp_path,
     )
     return final_message, context_tokens
@@ -434,8 +445,15 @@ def _execute(
     extra_rw_paths: list[str] | None = None,
     attachments_path: str | None = None,
     dir_map: list[tuple[str, str]] | None = None,
+    secrets_file: str | None = None,
 ) -> tuple[str, str, int | None]:
     """Run an OpenCode command, then parse and validate its JSON event stream."""
+    env = {
+        "HOME": str(Path.home()),
+        "OPENCODE_PERMISSION": OPENCODE_PERMISSION,
+    }
+    if secrets_file:
+        env[SECRETS_ENV_VAR] = secrets_file
     returncode, stdout_text, stderr_text, timeout_reason = agent_runner.run(
         cmd=cmd,
         workspace_path=workspace_path,
@@ -443,10 +461,7 @@ def _execute(
         timeout_seconds=timeout_seconds,
         idle_timeout_seconds=idle_timeout_seconds,
         on_subprocess=on_subprocess,
-        env={
-            "HOME": str(Path.home()),
-            "OPENCODE_PERMISSION": OPENCODE_PERMISSION,
-        },
+        env=env,
         hide_paths=hide_paths,
         extra_rw_paths=extra_rw_paths or [],
         attachments_path=attachments_path,

@@ -333,6 +333,33 @@ class TestLoadConfig:
             "/opt/tools",
         ]
 
+    def test_default_secrets_dir(self, tmp_path: Path) -> None:
+        """secrets_dir defaults to None (meaning <workspace>/secrets)."""
+        cfg = {
+            "linear": {
+                "api_key": "test-key",
+            },
+        }
+        _write_yaml(tmp_path / "config.yaml", cfg)
+
+        config = load_config(tmp_path)
+        assert config.sandbox.secrets_dir is None
+
+    def test_custom_secrets_dir_with_tilde(self, tmp_path: Path) -> None:
+        """secrets_dir supports tilde expansion."""
+        cfg = {
+            "linear": {
+                "api_key": "key",
+            },
+            "sandbox": {
+                "secrets_dir": "~/repo-secrets",
+            },
+        }
+        _write_yaml(tmp_path / "config.yaml", cfg)
+
+        config = load_config(tmp_path)
+        assert config.sandbox.secrets_dir == str(Path.home() / "repo-secrets")
+
     def test_default_dir_map(self, tmp_path: Path) -> None:
         """dir_map defaults to an empty dict."""
         cfg = {

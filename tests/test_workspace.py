@@ -23,6 +23,7 @@ from symphony_linear.workspace import (
     CloneFailed,
     DirMapError,
     PathContainmentError,
+    SecretsError,
     ServeScriptMissing,
     SetupFailed,
     WorkspaceError,
@@ -33,6 +34,7 @@ from symphony_linear.workspace import (
     _redact_url,
     _REPO_DIR,
     _run_git as _workspace_run_git,
+    _run_setup_script,
     _sanitize_identifier,
     _TMP_DIR,
     clone_workspace,
@@ -42,11 +44,14 @@ from symphony_linear.workspace import (
     dirty_summary,
     ensure_attachments_dir,
     ensure_dir_map,
+    ensure_secrets_file,
     ensure_tmp_dir,
     finalize_workspace,
     prepare,
     remove,
+    repo_secrets_path,
     resolve_dir_map,
+    resolve_secrets_dir,
     start_serve,
 )
 
@@ -431,6 +436,315 @@ class TestEnsureDirMap:
 
 
 # ---------------------------------------------------------------------------
+# Unit: per-repo secrets mapping and copying
+# ---------------------------------------------------------------------------
+
+
+class TestRepoSecretsPath:
+    """Every remote form of one repo maps to ``<secrets>/<host>/<path>.env``."""
+
+    def test_scp_like_ssh(self, tmp_path: Path) -> None:
+        result = repo_secrets_path(
+            "git@github.com:org/repo.git", str(tmp_path / "secrets")
+        )
+        assert result == str(tmp_path / "secrets" / "github.com" / "org" / "repo.env")
+
+    def test_ssh_scheme_matches_scp_like(self, tmp_path: Path) -> None:
+        secrets = str(tmp_path / "secrets")
+        assert repo_secrets_path(
+            "ssh://git@github.com/org/repo.git", secrets
+        ) == repo_secrets_path("git@github.com:org/repo.git", secrets)
+
+    def test_https_matches_scp_like(self, tmp_path: Path) -> None:
+        secrets = str(tmp_path / "secrets")
+        assert repo_secrets_path(
+            "https://github.com/org/repo.git", secrets
+        ) == repo_secrets_path("git@github.com:org/repo.git", secrets)
+
+    def test_https_with_credentials_matches(self, tmp_path: Path) -> None:
+        secrets = str(tmp_path / "secrets")
+        assert repo_secrets_path(
+            "https://user:token@github.com/org/repo.git", secrets
+        ) == repo_secrets_path("git@github.com:org/repo.git", secrets)
+
+    def test_trailing_git_is_optional(self, tmp_path: Path) -> None:
+        secrets = str(tmp_path / "secrets")
+        assert repo_secrets_path(
+            "https://github.com/org/repo", secrets
+        ) == repo_secrets_path("https://github.com/org/repo.git", secrets)
+
+    def test_gitlab_subgroups_become_nested_dirs(self, tmp_path: Path) -> None:
+        result = repo_secrets_path(
+            "git@gitlab.com:group/sub/repo.git", str(tmp_path / "secrets")
+        )
+        assert result == str(
+            tmp_path / "secrets" / "gitlab.com" / "group" / "sub" / "repo.env"
+        )
+
+    def test_ssh_scheme_subgroups_match(self, tmp_path: Path) -> None:
+        secrets = str(tmp_path / "secrets")
+        assert repo_secrets_path(
+            "ssh://git@gitlab.com/group/sub/repo.git", secrets
+        ) == repo_secrets_path("git@gitlab.com:group/sub/repo.git", secrets)
+
+    def test_local_path_has_no_secrets_path(self, tmp_path: Path) -> None:
+        assert repo_secrets_path(str(tmp_path / "local-repo"), str(tmp_path)) is None
+
+    def test_dotdot_in_scp_path_refused(self, tmp_path: Path) -> None:
+        with pytest.raises(SecretsError):
+            repo_secrets_path(
+                "git@github.com:../../etc/passwd", str(tmp_path / "secrets")
+            )
+
+    def test_dotdot_in_https_path_refused(self, tmp_path: Path) -> None:
+        with pytest.raises(SecretsError):
+            repo_secrets_path(
+                "https://github.com/../../../etc/passwd", str(tmp_path / "secrets")
+            )
+
+    def test_dotdot_host_refused(self, tmp_path: Path) -> None:
+        with pytest.raises(SecretsError):
+            repo_secrets_path("git@..:repo.git", str(tmp_path / "secrets"))
+
+    def test_leading_slash_path_stays_contained(self, tmp_path: Path) -> None:
+        """An absolute-looking URL path is not taken as an absolute host path."""
+        result = repo_secrets_path(
+            "ssh://git@host/etc/passwd", str(tmp_path / "secrets")
+        )
+        assert result == str(tmp_path / "secrets" / "host" / "etc" / "passwd.env")
+
+    def test_dotdot_component_inside_secrets_dir_refused(self, tmp_path: Path) -> None:
+        """``github.com/../gitlab.com/...`` cancels the host component and lands
+        inside secrets_dir, selecting a different repo's file; containment
+        alone would accept it, so the component must be rejected outright."""
+        secrets = tmp_path / "secrets"
+        with pytest.raises(SecretsError):
+            repo_secrets_path(
+                "git@github.com:../gitlab.com/team/repo.git", str(secrets)
+            )
+        # Sanity: the mapping it would have produced stays under secrets_dir.
+        escaped = os.path.realpath(secrets / "gitlab.com" / "team" / "repo.env")
+        assert escaped.startswith(os.path.realpath(secrets) + os.sep)
+
+    def test_single_dot_component_refused(self, tmp_path: Path) -> None:
+        with pytest.raises(SecretsError):
+            repo_secrets_path(
+                "git@github.com:org/./repo.git", str(tmp_path / "secrets")
+            )
+
+    def test_dotdot_component_inside_secrets_dir_refused_https(
+        self, tmp_path: Path
+    ) -> None:
+        with pytest.raises(SecretsError):
+            repo_secrets_path(
+                "https://github.com/../gitlab.com/team/repo.git",
+                str(tmp_path / "secrets"),
+            )
+
+    def test_error_message_redacts_credentials(self, tmp_path: Path) -> None:
+        """A token in an HTTPS URL must not reach the error comment."""
+        with pytest.raises(SecretsError) as excinfo:
+            repo_secrets_path(
+                "https://user:sekret-token@github.com/../gitlab.com/repo.git",
+                str(tmp_path / "secrets"),
+            )
+        assert "sekret-token" not in str(excinfo.value)
+        assert "github.com" in str(excinfo.value)
+
+
+class TestResolveSecretsDir:
+    """None (or an empty string) means ``<workspace_root>/secrets``."""
+
+    def test_none_means_workspace_secrets(self, tmp_path: Path) -> None:
+        assert resolve_secrets_dir(None, str(tmp_path)) == str(tmp_path / "secrets")
+
+    def test_empty_string_means_default(self, tmp_path: Path) -> None:
+        assert resolve_secrets_dir("", str(tmp_path)) == str(tmp_path / "secrets")
+
+    def test_explicit_dir_used_verbatim(self, tmp_path: Path) -> None:
+        assert (
+            resolve_secrets_dir("/custom/secrets", str(tmp_path)) == "/custom/secrets"
+        )
+
+
+class TestEnsureSecretsFile:
+    """Copies the source into the ticket dir, or removes a stale copy."""
+
+    def test_existing_source_copied_with_0600(self, tmp_path: Path) -> None:
+        secrets_dir = tmp_path / "secrets"
+        source = secrets_dir / "github.com" / "org" / "repo.env"
+        source.parent.mkdir(parents=True)
+        source.write_text("TOKEN=abc\n")
+
+        workspace_root = tmp_path / "ws"
+        result = ensure_secrets_file(
+            "https://github.com/org/repo.git",
+            "TEAM-1",
+            str(workspace_root),
+            str(secrets_dir),
+        )
+
+        expected = workspace_root / "TEAM-1" / "secrets.env"
+        assert result == str(expected)
+        assert expected.read_text() == "TOKEN=abc\n"
+        assert stat.S_IMODE(expected.stat().st_mode) == 0o600
+
+    def test_default_secrets_dir_used_when_none(self, tmp_path: Path) -> None:
+        workspace_root = tmp_path / "ws"
+        source = workspace_root / "secrets" / "github.com" / "org" / "repo.env"
+        source.parent.mkdir(parents=True)
+        source.write_text("A=1\n")
+
+        result = ensure_secrets_file(
+            "git@github.com:org/repo.git", "TEAM-1", str(workspace_root), None
+        )
+
+        assert result == str(workspace_root / "TEAM-1" / "secrets.env")
+        assert (workspace_root / "TEAM-1" / "secrets.env").is_file()
+
+    def test_stale_copy_removed_when_source_missing(self, tmp_path: Path) -> None:
+        workspace_root = tmp_path / "ws"
+        stale = workspace_root / "TEAM-1" / "secrets.env"
+        stale.parent.mkdir(parents=True)
+        stale.write_text("OLD=1\n")
+
+        result = ensure_secrets_file(
+            "https://github.com/org/repo.git",
+            "TEAM-1",
+            str(workspace_root),
+            str(tmp_path / "secrets"),
+        )
+
+        assert result is None
+        assert not stale.exists()
+
+    def test_missing_source_and_no_stale_is_noop(self, tmp_path: Path) -> None:
+        workspace_root = tmp_path / "ws"
+        result = ensure_secrets_file(
+            "https://github.com/org/repo.git",
+            "TEAM-1",
+            str(workspace_root),
+            str(tmp_path / "secrets"),
+        )
+        assert result is None
+        assert not (workspace_root / "TEAM-1").exists()
+
+    def test_local_repo_path_has_no_secrets(self, tmp_path: Path) -> None:
+        workspace_root = tmp_path / "ws"
+        stale = workspace_root / "TEAM-1" / "secrets.env"
+        stale.parent.mkdir(parents=True)
+        stale.write_text("OLD=1\n")
+
+        result = ensure_secrets_file(
+            str(tmp_path / "local-repo"), "TEAM-1", str(workspace_root), None
+        )
+        assert result is None
+        assert not stale.exists()
+
+    def test_edited_source_takes_effect_on_next_call(self, tmp_path: Path) -> None:
+        secrets_dir = tmp_path / "secrets"
+        source = secrets_dir / "github.com" / "org" / "repo.env"
+        source.parent.mkdir(parents=True)
+        source.write_text("A=1\n")
+        workspace_root = tmp_path / "ws"
+        target = workspace_root / "TEAM-1" / "secrets.env"
+
+        ensure_secrets_file(
+            "https://github.com/org/repo.git",
+            "TEAM-1",
+            str(workspace_root),
+            str(secrets_dir),
+        )
+        assert target.read_text() == "A=1\n"
+
+        source.write_text("A=2\n")
+        ensure_secrets_file(
+            "https://github.com/org/repo.git",
+            "TEAM-1",
+            str(workspace_root),
+            str(secrets_dir),
+        )
+        assert target.read_text() == "A=2\n"
+
+
+class TestSecretsEnvForSetupAndServe:
+    """The setup and serve launch points export SYMPHONY_SECRETS_FILE."""
+
+    def _make_script(self, workspace: Path, name: str) -> None:
+        script = workspace / ".symphony" / name
+        script.parent.mkdir(parents=True)
+        script.write_text("#!/bin/bash\n")
+        script.chmod(0o755)
+
+    def test_setup_exports_secrets_file(self, tmp_path: Path) -> None:
+        workspace = tmp_path / "ws"
+        self._make_script(workspace, "setup")
+        fake_proc = mock.MagicMock()
+        fake_proc.returncode = 0
+        fake_proc.communicate.return_value = (b"", b"")
+
+        with mock.patch(
+            "symphony_linear.workspace.run_in_sandbox", return_value=fake_proc
+        ) as m:
+            _run_setup_script(
+                str(workspace),
+                hide_paths=[],
+                secrets_file="/ws/TEAM-1/secrets.env",
+                tmp_path=str(tmp_path / "tmp"),
+            )
+
+        env = m.call_args.kwargs["env"]
+        assert env["SYMPHONY_SECRETS_FILE"] == "/ws/TEAM-1/secrets.env"
+
+    def test_setup_omits_secrets_file_when_none(self, tmp_path: Path) -> None:
+        workspace = tmp_path / "ws"
+        self._make_script(workspace, "setup")
+        fake_proc = mock.MagicMock()
+        fake_proc.returncode = 0
+        fake_proc.communicate.return_value = (b"", b"")
+
+        with mock.patch(
+            "symphony_linear.workspace.run_in_sandbox", return_value=fake_proc
+        ) as m:
+            _run_setup_script(
+                str(workspace), hide_paths=[], tmp_path=str(tmp_path / "tmp")
+            )
+
+        assert "SYMPHONY_SECRETS_FILE" not in m.call_args.kwargs["env"]
+
+    def test_serve_exports_secrets_file(self, tmp_path: Path) -> None:
+        workspace = tmp_path / "ws"
+        self._make_script(workspace, "serve")
+        fake_proc = mock.MagicMock()
+
+        with mock.patch(
+            "symphony_linear.workspace.run_in_sandbox", return_value=fake_proc
+        ) as m:
+            result = start_serve(
+                str(workspace),
+                hide_paths=[],
+                secrets_file="/ws/TEAM-1/secrets.env",
+                tmp_path=str(tmp_path / "tmp"),
+            )
+
+        assert result is fake_proc
+        env = m.call_args.kwargs["env"]
+        assert env["SYMPHONY_SECRETS_FILE"] == "/ws/TEAM-1/secrets.env"
+
+    def test_serve_omits_secrets_file_when_none(self, tmp_path: Path) -> None:
+        workspace = tmp_path / "ws"
+        self._make_script(workspace, "serve")
+        fake_proc = mock.MagicMock()
+
+        with mock.patch(
+            "symphony_linear.workspace.run_in_sandbox", return_value=fake_proc
+        ) as m:
+            start_serve(str(workspace), hide_paths=[], tmp_path=str(tmp_path / "tmp"))
+
+        assert "SYMPHONY_SECRETS_FILE" not in m.call_args.kwargs["env"]
+
+
+# ---------------------------------------------------------------------------
 # Unit: typed exceptions
 # ---------------------------------------------------------------------------
 
@@ -449,6 +763,9 @@ class TestExceptions:
 
     def test_path_containment_error_is_workspace_error(self) -> None:
         assert issubclass(PathContainmentError, WorkspaceError)
+
+    def test_secrets_error_is_workspace_error(self) -> None:
+        assert issubclass(SecretsError, WorkspaceError)
 
     def test_clone_failed_message(self) -> None:
         exc = CloneFailed("clone error")

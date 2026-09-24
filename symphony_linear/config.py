@@ -174,6 +174,14 @@ class _SandboxConfig(BaseModel):
             "directory; absolute values are shared host directories."
         ),
     )
+    secrets_dir: str | None = Field(
+        None,
+        description=(
+            "Directory holding per-repo .env secrets files, laid out as "
+            "<host>/<owner>/<repo>.env. None means <workspace>/secrets. "
+            "Supports ~ and $VAR expansion."
+        ),
+    )
 
     @field_validator("dir_map", mode="before")
     @classmethod

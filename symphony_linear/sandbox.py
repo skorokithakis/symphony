@@ -17,6 +17,12 @@ from typing import Any
 
 from symphony_linear.sandbox_path import resolve_sandbox_path
 
+# Environment variable through which the daemon tells the sandboxed process
+# where its per-ticket secrets file (``<ticket_dir>/secrets.env``) lives.  The
+# value is a host path; the whole filesystem is bound read-only at the same
+# location, so the same path resolves inside the sandbox.
+SECRETS_ENV_VAR = "SYMPHONY_SECRETS_FILE"
+
 
 def _expand(path: str) -> str:
     """Expand ``~`` and resolve symlinks in *path*."""

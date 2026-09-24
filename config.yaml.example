@@ -144,6 +144,11 @@ sandbox:
   #   ~/.config/npm: npm
   #   ~/.npm: ~/sandboxes/caches/.npm
 
+  # Optional. Directory of per-repo secrets files, one KEY=value file per
+  # repo at <secrets_dir>/<host>/<owner>/<name>.env. Defaults to
+  # <workspace>/secrets. See "Secrets" below.
+  # secrets_dir: ~/symphony-secrets
+
 
 # ---------------------------------------------------------------------------
 # Optional webhook server (Linear only, no GitHub support).

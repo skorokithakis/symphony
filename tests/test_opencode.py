@@ -1390,6 +1390,75 @@ class TestOpenCodePermissionEnv:
 
 
 # ---------------------------------------------------------------------------
+# Unit: per-repo secrets file is exported to the sandbox env
+# ---------------------------------------------------------------------------
+
+
+class TestSecretsFileEnv:
+    """A secrets_file is exported as SYMPHONY_SECRETS_FILE; None leaves it unset."""
+
+    @staticmethod
+    def _make_fake_popen() -> _FakePopen:
+        events = [
+            {"type": "step_start", "sessionID": "ses_test", "part": {}},
+            {"type": "text", "sessionID": "ses_test", "part": {"text": "ok"}},
+            {"type": "step_finish", "sessionID": "ses_test", "part": {}},
+        ]
+        stdout = "\n".join(json.dumps(e) for e in events).encode()
+        return _FakePopen(stdout=stdout, exit_code=0)
+
+    def test_run_initial_exports_secrets_file(self) -> None:
+        with patch(
+            "symphony_linear.agent_runner.run_in_sandbox",
+            return_value=self._make_fake_popen(),
+        ) as mock_sandbox:
+            run_initial(
+                workspace_path="/ws",
+                tmp_path="/ws/tmp",
+                prompt="hello",
+                timeout_seconds=60,
+                idle_timeout_seconds=60,
+                on_subprocess=lambda p: None,
+                secrets_file="/ws/TEAM-1/secrets.env",
+            )
+        env = mock_sandbox.call_args.kwargs["env"]
+        assert env["SYMPHONY_SECRETS_FILE"] == "/ws/TEAM-1/secrets.env"
+
+    def test_run_initial_omits_secrets_file_when_none(self) -> None:
+        with patch(
+            "symphony_linear.agent_runner.run_in_sandbox",
+            return_value=self._make_fake_popen(),
+        ) as mock_sandbox:
+            run_initial(
+                workspace_path="/ws",
+                tmp_path="/ws/tmp",
+                prompt="hello",
+                timeout_seconds=60,
+                idle_timeout_seconds=60,
+                on_subprocess=lambda p: None,
+            )
+        assert "SYMPHONY_SECRETS_FILE" not in mock_sandbox.call_args.kwargs["env"]
+
+    def test_run_resume_exports_secrets_file(self) -> None:
+        with patch(
+            "symphony_linear.agent_runner.run_in_sandbox",
+            return_value=self._make_fake_popen(),
+        ) as mock_sandbox:
+            run_resume(
+                workspace_path="/ws",
+                tmp_path="/ws/tmp",
+                session_id="ses_x",
+                message="continue",
+                timeout_seconds=60,
+                idle_timeout_seconds=60,
+                on_subprocess=lambda p: None,
+                secrets_file="/ws/TEAM-1/secrets.env",
+            )
+        env = mock_sandbox.call_args.kwargs["env"]
+        assert env["SYMPHONY_SECRETS_FILE"] == "/ws/TEAM-1/secrets.env"
+
+
+# ---------------------------------------------------------------------------
 # Helpers
 # ---------------------------------------------------------------------------
 

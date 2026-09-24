@@ -16,7 +16,7 @@ from pathlib import Path
 from typing import Callable
 from urllib.parse import urlsplit, urlunsplit
 
-from symphony_linear.sandbox import run_in_sandbox
+from symphony_linear.sandbox import SECRETS_ENV_VAR, run_in_sandbox
 
 logger = logging.getLogger(__name__)
 
@@ -31,6 +31,19 @@ _VALID_CHARS_RE = re.compile(r"[^A-Za-z0-9._-]")
 # carry credentials) from a local path or scp-style remote when ``urlsplit``
 # cannot parse the string.
 _URL_SCHEME_RE = re.compile(r"^[A-Za-z][A-Za-z0-9+.\-]*://")
+
+# scp-like SSH remote (``user@host:path``); these carry no scheme, so
+# ``urlsplit`` cannot decompose them.
+_SCP_LIKE_RE = re.compile(r"^[^@/]+@(?P<host>[^:/]+):(?P<path>.+)$")
+
+# Per-ticket secrets copy (relative to the ticket dir) and the default
+# directory (relative to the workspace root) that holds the per-repo sources.
+_SECRETS_FILE = "secrets.env"
+_SECRETS_DIR = "secrets"
+
+# Schemes we can extract a repository host from.  Anything else (a local
+# path, ``file://``, a bare host) cannot be keyed into the secrets tree.
+_REMOTE_SCHEMES = frozenset({"ssh", "https", "http", "git"})
 
 # Default timeout for the setup script (5 minutes).
 SETUP_TIMEOUT_SECONDS = 300
@@ -77,6 +90,11 @@ class DirMapError(WorkspaceError):
 
 class ServeScriptMissing(WorkspaceError):
     """The ``.symphony/serve`` script is absent or not executable."""
+
+
+class SecretsError(WorkspaceError):
+    """A repo URL could not be mapped to a secrets file, or the mapped path
+    escapes the configured secrets directory (security invariant)."""
 
 
 # ---------------------------------------------------------------------------
@@ -309,6 +327,144 @@ def ensure_dir_map(
     return pairs
 
 
+def resolve_secrets_dir(secrets_dir: str | None, workspace_root: str) -> str:
+    """Return the effective secrets directory for *workspace_root*.
+
+    ``None`` (or an empty string) means the default ``<workspace_root>/secrets``;
+    any other value is used verbatim (already ``~`` / ``$VAR`` expanded by the
+    config loader).
+    """
+    return secrets_dir or os.path.join(workspace_root, _SECRETS_DIR)
+
+
+def _split_remote_url(repo_url: str) -> tuple[str, str] | None:
+    """Return ``(host, path)`` for a remote *repo_url*, or ``None``.
+
+    Recognises scp-like remotes (``git@host:owner/name.git``) and schemed
+    remotes (``ssh://``, ``https://``, ...).  Local paths and URLs without a
+    host return ``None``: they cannot be keyed into a host-based secrets tree.
+    The username, port and any credentials are deliberately discarded so every
+    remote form of one repository maps to the same file.
+    """
+    scp_match = _SCP_LIKE_RE.match(repo_url)
+    if scp_match is not None:
+        # Lowercase to match urlsplit's .hostname, so both forms agree.
+        return scp_match.group("host").lower(), scp_match.group("path")
+    try:
+        parsed = urlsplit(repo_url)
+    except ValueError:
+        return None
+    if parsed.scheme not in _REMOTE_SCHEMES or not parsed.hostname:
+        return None
+    return parsed.hostname, parsed.path
+
+
+def _has_dot_segment(value: str) -> bool:
+    """Whether *value* contains a ``.`` or ``..`` path component."""
+    return any(part in (".", "..") for part in value.split("/"))
+
+
+def repo_secrets_path(repo_url: str, secrets_dir: str) -> str | None:
+    """Map *repo_url* to its secrets file under *secrets_dir*.
+
+    The result is ``<secrets_dir>/<host>/<path>.env`` where ``<path>`` is the
+    URL path with a trailing ``.git`` stripped.  Every remote form of the same
+    repository maps to one path::
+
+        git@github.com:org/repo.git      -> <secrets_dir>/github.com/org/repo.env
+        ssh://git@github.com/org/repo    -> <secrets_dir>/github.com/org/repo.env
+        https://github.com/org/repo.git  -> <secrets_dir>/github.com/org/repo.env
+
+    GitLab subgroups become nested directories
+    (``<host>/group/sub/name.env``).  Returns ``None`` when *repo_url* has no
+    remote host (e.g. a local path).
+
+    Raises:
+        SecretsError: The host or path contains a ``.`` / ``..`` component, or
+            the computed path is not contained within *secrets_dir* after
+            symlink resolution.
+    """
+    split = _split_remote_url(repo_url)
+    if split is None:
+        return None
+    host, url_path = split
+    # A '.' or '..' component can cancel the host component and keep the result
+    # inside secrets_dir while selecting another repo's file (e.g.
+    # ``git@github.com:../gitlab.com/team/repo.git``), which the containment
+    # check below would happily accept.  Reject the components outright.
+    if _has_dot_segment(host) or _has_dot_segment(url_path):
+        raise SecretsError(
+            f"Secrets path for repo {_redact_url(repo_url)!r} contains a '.' or "
+            f"'..' path component, which is not allowed"
+        )
+    relative = url_path.strip("/")
+    if relative.endswith(".git"):
+        relative = relative[: -len(".git")]
+    relative = relative.strip("/")
+    if not relative:
+        return None
+    result = os.path.join(secrets_dir, host, relative + ".env")
+    try:
+        _check_containment(result, secrets_dir)
+    except PathContainmentError as exc:
+        raise SecretsError(
+            f"Secrets path for repo {_redact_url(repo_url)!r} escapes secrets "
+            f"directory {secrets_dir!r}: {exc}"
+        ) from exc
+    return result
+
+
+def ensure_secrets_file(
+    repo_url: str,
+    ticket_identifier: str,
+    workspace_root: str,
+    secrets_dir: str | None,
+) -> str | None:
+    """Sync the repo's secrets file into the ticket dir.
+
+    Before every sandbox launch the daemon copies *repo_url*'s secrets file
+    (mapped by :func:`repo_secrets_path`) to ``<ticket_dir>/secrets.env`` with
+    mode ``0600``.  When the source does not exist, any stale copy is removed
+    so that adding, editing or removing a secrets file takes effect on the next
+    launch without a restart.  The file is copied, never bind-mounted: editors
+    replace files by rename, and a bind would keep the old inode.
+
+    Returns the target path when a secrets file was installed, otherwise
+    ``None`` (callers then leave :data:`SECRETS_ENV_VAR` unset).
+
+    Raises:
+        SecretsError: The mapped path escapes *secrets_dir*, or the copy or
+            stale-file removal failed.
+    """
+    resolved_dir = resolve_secrets_dir(secrets_dir, workspace_root)
+    source = repo_secrets_path(repo_url, resolved_dir)
+    target = os.path.join(
+        compute_ticket_dir(ticket_identifier, workspace_root), _SECRETS_FILE
+    )
+    _check_containment(target, workspace_root)
+
+    if source is not None and os.path.isfile(source):
+        try:
+            os.makedirs(os.path.dirname(target), mode=0o700, exist_ok=True)
+            shutil.copyfile(source, target)
+            os.chmod(target, 0o600)
+        except OSError as exc:
+            raise SecretsError(
+                f"Failed to install secrets file {source!r} at {target!r}: {exc}"
+            ) from exc
+        return target
+
+    try:
+        os.remove(target)
+    except FileNotFoundError:
+        pass
+    except OSError as exc:
+        raise SecretsError(
+            f"Failed to remove stale secrets file {target!r}: {exc}"
+        ) from exc
+    return None
+
+
 def _check_containment(workspace_path: str, workspace_root: str) -> str:
     """Verify *workspace_path* resides within *workspace_root* after symlink
     resolution.
@@ -384,6 +540,7 @@ def _run_setup_script(
     on_subprocess: Callable[[subprocess.Popen[bytes]], None] | None = None,
     extra_rw_paths: list[str] | None = None,
     dir_map: list[tuple[str, str]] | None = None,
+    secrets_file: str | None = None,
     *,
     tmp_path: str,
 ) -> None:
@@ -398,6 +555,9 @@ def _run_setup_script(
             sandbox.
         dir_map: Pre-resolved ``(host_source, sandbox_dest)`` bind pairs from
             :func:`ensure_dir_map`; both sides must exist on the host.
+        secrets_file: Host path to the per-ticket secrets file installed by
+            :func:`ensure_secrets_file`, exported as :data:`SECRETS_ENV_VAR`.
+            ``None`` leaves the variable unset.
         tmp_path: Host path to the per-ticket tmp directory, mounted at
             ``/tmp`` inside the sandbox.  Must exist on the host (bwrap
             ``--bind`` is fatal otherwise).
@@ -412,14 +572,16 @@ def _run_setup_script(
 
     logger.info("Running .symphony/setup for workspace %s", workspace_path)
 
+    env = {"HOME": os.environ.get("HOME", str(Path.home()))}
+    if secrets_file:
+        env[SECRETS_ENV_VAR] = secrets_file
+
     proc = run_in_sandbox(
         cmd=["./.symphony/setup"],
         workspace_path=workspace_path,
         tmp_path=tmp_path,
         hide_paths=hide_paths,
-        env={
-            "HOME": os.environ.get("HOME", str(Path.home())),
-        },
+        env=env,
         stdout=subprocess.PIPE,
         stderr=subprocess.PIPE,
         extra_rw_paths=extra_rw_paths or [],
@@ -470,6 +632,7 @@ def start_serve(
     hide_paths: list[str],
     extra_rw_paths: list[str] | None = None,
     dir_map: list[tuple[str, str]] | None = None,
+    secrets_file: str | None = None,
     *,
     tmp_path: str,
 ) -> subprocess.Popen[bytes]:
@@ -487,6 +650,9 @@ def start_serve(
             sandbox.
         dir_map: Pre-resolved ``(host_source, sandbox_dest)`` bind pairs from
             :func:`ensure_dir_map`; both sides must exist on the host.
+        secrets_file: Host path to the per-ticket secrets file installed by
+            :func:`ensure_secrets_file`, exported as :data:`SECRETS_ENV_VAR`.
+            ``None`` leaves the variable unset.
         tmp_path: Host path to the per-ticket tmp directory, mounted at
             ``/tmp`` inside the sandbox.  Must exist on the host (bwrap
             ``--bind`` is fatal otherwise).
@@ -508,14 +674,16 @@ def start_serve(
 
     logger.info("Launching .symphony/serve for workspace %s", workspace_path)
 
+    env = {"HOME": os.environ.get("HOME", str(Path.home()))}
+    if secrets_file:
+        env[SECRETS_ENV_VAR] = secrets_file
+
     return run_in_sandbox(
         cmd=["./.symphony/serve"],
         workspace_path=workspace_path,
         tmp_path=tmp_path,
         hide_paths=hide_paths,
-        env={
-            "HOME": os.environ.get("HOME", str(Path.home())),
-        },
+        env=env,
         stdout=subprocess.PIPE,
         stderr=subprocess.PIPE,
         extra_rw_paths=extra_rw_paths or [],
@@ -771,6 +939,7 @@ def finalize_workspace(
     on_subprocess: Callable[[subprocess.Popen[bytes]], None] | None = None,
     sandbox_extra_rw_paths: list[str] | None = None,
     sandbox_dir_map: list[tuple[str, str]] | None = None,
+    sandbox_secrets_file: str | None = None,
     auto_branch: bool = True,
     *,
     tmp_path: str,
@@ -801,6 +970,9 @@ def finalize_workspace(
             the sandbox when running the setup script.
         sandbox_dir_map: Pre-resolved ``(host_source, sandbox_dest)`` bind
             pairs from :func:`ensure_dir_map` for the setup script's sandbox.
+        sandbox_secrets_file: Host path to the per-ticket secrets file from
+            :func:`ensure_secrets_file`, exported to the setup script's
+            sandbox as :data:`SECRETS_ENV_VAR`.  ``None`` leaves it unset.
         auto_branch: If true (default), switch to a per-ticket branch after
             clone/fetch. If false, skip the branch switch entirely and leave
             the workspace on the cloned default branch.
@@ -833,6 +1005,7 @@ def finalize_workspace(
         on_subprocess=on_subprocess,
         extra_rw_paths=sandbox_extra_rw_paths,
         dir_map=sandbox_dir_map,
+        secrets_file=sandbox_secrets_file,
         tmp_path=tmp_path,
     )
 
@@ -846,6 +1019,7 @@ def prepare(
     on_subprocess: Callable[[subprocess.Popen[bytes]], None] | None = None,
     sandbox_extra_rw_paths: list[str] | None = None,
     sandbox_dir_map: list[tuple[str, str]] | None = None,
+    sandbox_secrets_file: str | None = None,
     auto_branch: bool = True,
 ) -> str:
     """Prepare a workspace for *ticket_identifier*.
@@ -883,6 +1057,7 @@ def prepare(
         on_subprocess=on_subprocess,
         sandbox_extra_rw_paths=sandbox_extra_rw_paths,
         sandbox_dir_map=sandbox_dir_map,
+        sandbox_secrets_file=sandbox_secrets_file,
         auto_branch=auto_branch,
         tmp_path=tmp_path,
     )

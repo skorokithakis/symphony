@@ -46,9 +46,11 @@ from symphony_linear.workspace import (
     dirty_summary,
     ensure_attachments_dir,
     ensure_dir_map,
+    ensure_secrets_file,
     ensure_tmp_dir,
     finalize_workspace,
     remove,
+    resolve_secrets_dir,
     start_serve,
 )
 
@@ -1054,6 +1056,12 @@ class Orchestrator:
             dir_map = ensure_dir_map(
                 self._config.sandbox.dir_map, winner.identifier, str(self._workspace)
             )
+            secrets_file = ensure_secrets_file(
+                ts.repo_url,
+                winner.identifier,
+                str(self._workspace),
+                self._config.sandbox.secrets_dir,
+            )
             proc = start_serve(
                 workspace_path=workspace_path,
                 hide_paths=self._sandbox_hide_paths_for(
@@ -1061,6 +1069,7 @@ class Orchestrator:
                 ),
                 extra_rw_paths=self._config.sandbox.extra_rw_paths,
                 dir_map=dir_map,
+                secrets_file=secrets_file,
                 tmp_path=tmp_path,
             )
         except (ServeScriptMissing, WorkspaceError, FileNotFoundError) as exc:
@@ -1362,7 +1371,10 @@ class Orchestrator:
 
         Fail closed: if the workspace root cannot be listed, no safe hide list
         can be produced, so :class:`WorkspaceError` is raised and the caller
-        aborts the sandbox launch instead of silently dropping the mask.
+        aborts the sandbox launch instead of silently dropping the mask.  A
+        custom ``secrets_dir`` that is (or contains) the mounted ticket dir
+        raises for the same reason: it cannot be masked without wiping the
+        ticket's checkout.
         """
         hide_paths = list(self._config.sandbox.hide_paths)
         if workspace_path:
@@ -1384,6 +1396,32 @@ class Orchestrator:
             if mounted == entry_real or mounted.startswith(entry_real + os.sep):
                 continue
             hide_paths.append(str(entry))
+        # A custom secrets_dir may live outside the workspace root, where the
+        # loop above cannot reach it, letting the agent read every repo's
+        # secrets.  The default <workspace>/secrets is already masked by that
+        # loop, so only an explicitly configured dir is added here.  When it is
+        # (or contains) the mounted ticket dir, it cannot be masked without
+        # tmpfs-ing the ticket's own checkout (run_in_sandbox resolves hide
+        # paths), which would break the launch while leaving the secrets
+        # readable — fail closed instead of silently skipping the mask.
+        custom_secrets_dir = self._config.sandbox.secrets_dir
+        if custom_secrets_dir:
+            secrets_real = os.path.realpath(custom_secrets_dir)
+            # ``realpath('/')`` is '/', so appending a separator naively would
+            # produce '//' and never match; keep the root case safe.
+            prefix = (
+                secrets_real if secrets_real.endswith(os.sep) else secrets_real + os.sep
+            )
+            if mounted == secrets_real or mounted.startswith(prefix):
+                raise WorkspaceError(
+                    f"sandbox.secrets_dir {custom_secrets_dir!r} is (or contains) "
+                    f"the ticket directory {mounted!r}; it cannot be masked without "
+                    f"hiding the ticket's own checkout. Move the secrets directory "
+                    f"outside the ticket dir."
+                )
+            hide_paths.append(
+                resolve_secrets_dir(custom_secrets_dir, str(self._workspace))
+            )
         return hide_paths
 
     # ==================================================================
@@ -1541,6 +1579,12 @@ class Orchestrator:
             dir_map = ensure_dir_map(
                 self._config.sandbox.dir_map, issue.identifier, str(self._workspace)
             )
+            secrets_file = ensure_secrets_file(
+                repo_url,
+                issue.identifier,
+                str(self._workspace),
+                self._config.sandbox.secrets_dir,
+            )
             finalize_workspace(
                 workspace_path=workspace_path,
                 ticket_identifier=issue.identifier,
@@ -1551,6 +1595,7 @@ class Orchestrator:
                 ],
                 sandbox_extra_rw_paths=self._config.sandbox.extra_rw_paths,
                 sandbox_dir_map=dir_map,
+                sandbox_secrets_file=secrets_file,
                 auto_branch=effective_auto_branch,
                 tmp_path=tmp_path,
             )
@@ -1691,6 +1736,23 @@ class Orchestrator:
             str(self._workspace),
         )
         try:
+            secrets_file = ensure_secrets_file(
+                repo_url,
+                ticket_state.ticket_identifier,
+                str(self._workspace),
+                self._config.sandbox.secrets_dir,
+            )
+        except (WorkspaceError, FileNotFoundError) as exc:
+            logger.error("Secrets preparation failed for %s: %s", tid, exc)
+            self._transition_failed_to_needs_input(tid)
+            err_comment = self._post_comment_safe(
+                tid,
+                f"**Symphony error**: Workspace preparation failed:\n```\n{exc}\n```",
+                return_comment=True,
+            )
+            self._save_setup_error(tid, issue, str(exc), err_comment)
+            return
+        try:
             result = process_attachments(
                 description or "",
                 tracker=self._tracker,
@@ -1780,6 +1842,7 @@ class Orchestrator:
                 extra_rw_paths=self._config.sandbox.extra_rw_paths,
                 attachments_path=host_attachments_dir,
                 dir_map=dir_map,
+                secrets_file=secrets_file,
                 tmp_path=tmp_path,
                 files=files,
                 model=model,
@@ -1990,6 +2053,29 @@ class Orchestrator:
             str(self._workspace),
         )
         try:
+            secrets_file = ensure_secrets_file(
+                ticket_state.repo_url,
+                ticket_state.ticket_identifier,
+                str(self._workspace),
+                self._config.sandbox.secrets_dir,
+            )
+        except (WorkspaceError, FileNotFoundError) as exc:
+            logger.error("Secrets preparation failed for %s: %s", tid, exc)
+            self._transition_failed_to_needs_input(tid)
+            err_comment = self._post_comment_safe(
+                tid,
+                f"**Symphony error**: Workspace preparation failed:\n```\n{exc}\n```",
+                return_comment=True,
+            )
+            with self._state_lock:
+                ticket_state.status = TicketStatus.failed
+                ticket_state.updated_at = _iso_now()
+                if err_comment is not None:
+                    ticket_state.last_seen_comment_id = err_comment.id
+                self._state.upsert(ticket_state)
+                self._state.save()
+            return
+        try:
             result = process_attachments(
                 message,
                 tracker=self._tracker,
@@ -2119,6 +2205,7 @@ class Orchestrator:
                 extra_rw_paths=self._config.sandbox.extra_rw_paths,
                 attachments_path=host_attachments_dir,
                 dir_map=dir_map,
+                secrets_file=secrets_file,
                 tmp_path=tmp_path,
                 files=files_attach,
                 model=model,

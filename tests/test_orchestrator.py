@@ -48,7 +48,7 @@ from symphony_linear.sandbox import run_in_sandbox
 from symphony_linear.state import StateManager, TicketState, TicketStatus
 from symphony_linear.tracker import TrackerError, TransitionTarget
 from symphony_linear.webhook import WebhookServer
-from symphony_linear.workspace import WorkspaceError
+from symphony_linear.workspace import SecretsError, WorkspaceError
 
 
 # ---------------------------------------------------------------------------
@@ -5999,10 +5999,15 @@ class TestWorkspaceRootMasking:
         linear: FakeLinearClient,
         *,
         qa: bool = False,
+        secrets_dir: str | None = None,
     ) -> Orchestrator:
-        overrides: dict[str, Any] = {
-            "sandbox": {"hide_paths": ["/fake/secret"], "extra_rw_paths": []}
+        sandbox: dict[str, Any] = {
+            "hide_paths": ["/fake/secret"],
+            "extra_rw_paths": [],
         }
+        if secrets_dir is not None:
+            sandbox["secrets_dir"] = secrets_dir
+        overrides: dict[str, Any] = {"sandbox": sandbox}
         if qa:
             overrides["linear"] = {"qa_state": "In Review"}
         config = _make_config(tmp_path, **overrides)
@@ -6088,6 +6093,65 @@ class TestWorkspaceRootMasking:
         assert str(root / "alias") not in hide
         assert str(root / "TEAM-1") not in hide
         assert str(root / "TEAM-2") in hide
+
+    def test_custom_secrets_dir_outside_workspace_is_hidden(
+        self, tmp_path: Path, state_mgr: StateManager, linear: FakeLinearClient
+    ) -> None:
+        """A secrets_dir outside the workspace root is masked explicitly; the
+        root loop alone would leave it readable by the agent."""
+        secrets = tmp_path / "custom-secrets"
+        secrets.mkdir()
+        orch = self._make_orchestrator(
+            tmp_path, state_mgr, linear, secrets_dir=str(secrets)
+        )
+        self._populate_workspace_root(orch._workspace)
+
+        hide = orch._sandbox_hide_paths_for("TEAM-1")
+
+        assert str(secrets) in hide
+        assert hide[0] == "/fake/secret"
+
+    def test_default_secrets_dir_adds_nothing_extra(
+        self, tmp_path: Path, state_mgr: StateManager, linear: FakeLinearClient
+    ) -> None:
+        """With no custom secrets_dir, <workspace>/secrets is masked once by
+        the root loop and not appended a second time."""
+        orch = self._make_orchestrator(tmp_path, state_mgr, linear)
+        root = orch._workspace
+        self._populate_workspace_root(root)
+        (root / "secrets").mkdir()
+
+        hide = orch._sandbox_hide_paths_for("TEAM-1")
+
+        assert hide.count(str(root / "secrets")) == 1
+
+    def test_secrets_dir_ancestor_of_ticket_dir_fails_closed(
+        self, tmp_path: Path, state_mgr: StateManager, linear: FakeLinearClient
+    ) -> None:
+        """A secrets_dir containing the mounted ticket dir cannot be masked
+        without wiping the ticket's own checkout.  Silently skipping the mask
+        would expose every repo's secrets, so the launch must fail closed."""
+        orch = self._make_orchestrator(
+            tmp_path, state_mgr, linear, secrets_dir=str(tmp_path / "ws")
+        )
+        root = orch._workspace
+        self._populate_workspace_root(root)
+
+        with pytest.raises(WorkspaceError):
+            orch._sandbox_hide_paths_for("TEAM-1")
+
+    def test_secrets_dir_equal_to_ticket_dir_fails_closed(
+        self, tmp_path: Path, state_mgr: StateManager, linear: FakeLinearClient
+    ) -> None:
+        """The secrets_dir may resolve to the mounted ticket dir exactly."""
+        root = tmp_path / "ws"
+        orch = self._make_orchestrator(
+            tmp_path, state_mgr, linear, secrets_dir=str(root / "TEAM-1")
+        )
+        self._populate_workspace_root(root)
+
+        with pytest.raises(WorkspaceError):
+            orch._sandbox_hide_paths_for("TEAM-1")
 
     @pytest.mark.skipif(
         os.geteuid() == 0, reason="root bypasses directory permission checks"
@@ -6767,6 +6831,275 @@ class TestDirMapPlumbing:
         _, kwargs = m_serve.call_args
         assert kwargs.get("dir_map") == self.PAIRS
         assert m_ensure.call_args.args[0] == orch._config.sandbox.dir_map
+
+
+# ---------------------------------------------------------------------------
+# Per-repo secrets file (mirrors DirMapPlumbing: reaches every launch point)
+# ---------------------------------------------------------------------------
+
+
+class TestSecretsPlumbing:
+    """sandbox.secrets_dir drives workspace.ensure_secrets_file, and the path
+    it installs reaches setup, serve, the initial turn, and resume turns."""
+
+    SECRETS = "/ws/TEAM-1/secrets.env"
+
+    def _make_orchestrator(
+        self,
+        tmp_path: Path,
+        state_mgr: StateManager,
+        linear: FakeLinearClient,
+        *,
+        qa: bool = False,
+    ) -> Orchestrator:
+        overrides: dict[str, Any] = {
+            "sandbox": {"secrets_dir": "/host/secrets"},
+        }
+        if qa:
+            overrides["linear"] = {"qa_state": "In Review"}
+        config = _make_config(tmp_path, **overrides)
+        return Orchestrator(
+            config=config,
+            state=state_mgr,
+            tracker=LinearTracker(linear=linear, config=config.linear),  # type: ignore[arg-type]
+            workspace=tmp_path / "ws",
+        )
+
+    def _set_repo_link(self, linear: FakeLinearClient) -> None:
+        linear.set_response(
+            "get_project",
+            Project(
+                id="proj-1",
+                name="Test",
+                links=[
+                    ProjectLink(label="Repo", url="https://github.com/org/repo.git")
+                ],
+            ),
+        )
+
+    def test_secrets_file_passed_to_finalize(
+        self, tmp_path: Path, state_mgr: StateManager, linear: FakeLinearClient
+    ) -> None:
+        """finalize_workspace receives the secrets file for the setup script."""
+        orch = self._make_orchestrator(tmp_path, state_mgr, linear)
+        self._set_repo_link(linear)
+        linear.set_response("get_issue", _make_issue(description="Fix"))
+        with (
+            mock.patch(
+                "symphony_linear.orchestrator.clone_workspace",
+                return_value=("/tmp/ws/TEAM-1", False),
+            ),
+            mock.patch(
+                "symphony_linear.orchestrator.ensure_secrets_file",
+                return_value=self.SECRETS,
+            ) as m_secrets,
+            mock.patch("symphony_linear.orchestrator.finalize_workspace") as m_finalize,
+            mock.patch(
+                "symphony_linear.orchestrator.load_project_config",
+                return_value=ProjectConfig(),
+            ),
+            mock.patch(
+                "symphony_linear.orchestrator.run_initial",
+                return_value=("ses", "msg", None),
+            ),
+        ):
+            orch._new_ticket_pipeline(_make_issue())
+        _, kwargs = m_finalize.call_args
+        assert kwargs.get("sandbox_secrets_file") == self.SECRETS
+        assert m_secrets.call_args.args[3] == "/host/secrets"
+
+    def test_secrets_file_passed_to_run_initial(
+        self, tmp_path: Path, state_mgr: StateManager, linear: FakeLinearClient
+    ) -> None:
+        self._set_repo_link(linear)
+        linear.set_response("get_issue", _make_issue(description="Fix"))
+        orch = self._make_orchestrator(tmp_path, state_mgr, linear)
+        with (
+            mock.patch(
+                "symphony_linear.orchestrator.clone_workspace",
+                return_value=("/tmp/ws/TEAM-1", False),
+            ),
+            mock.patch(
+                "symphony_linear.orchestrator.ensure_secrets_file",
+                return_value=self.SECRETS,
+            ),
+            mock.patch("symphony_linear.orchestrator.finalize_workspace"),
+            mock.patch(
+                "symphony_linear.orchestrator.load_project_config",
+                return_value=ProjectConfig(),
+            ),
+            mock.patch(
+                "symphony_linear.orchestrator.run_initial",
+                return_value=("ses", "msg", None),
+            ) as m_oc,
+        ):
+            orch._new_ticket_pipeline(_make_issue())
+        _, kwargs = m_oc.call_args
+        assert kwargs.get("secrets_file") == self.SECRETS
+
+    def test_secrets_file_passed_to_run_resume(
+        self, tmp_path: Path, state_mgr: StateManager, linear: FakeLinearClient
+    ) -> None:
+        orch = self._make_orchestrator(tmp_path, state_mgr, linear)
+        ts = TicketState(
+            ticket_id="ticket-1",
+            ticket_identifier="TEAM-1",
+            repo_url="https://github.com/org/repo.git",
+            workspace_path="/tmp/x",
+            branch="main",
+            status=TicketStatus.needs_input,
+            session_id="ses-abc",
+            last_seen_comment_id="cmt-seen-1",
+        )
+        orch._state.upsert(ts)
+        linear.set_response("list_comments_since", [_make_comment("c1", "Go")])
+        with (
+            mock.patch(
+                "symphony_linear.orchestrator.load_project_config",
+                return_value=ProjectConfig(),
+            ),
+            mock.patch(
+                "symphony_linear.orchestrator.ensure_secrets_file",
+                return_value=self.SECRETS,
+            ) as m_secrets,
+            mock.patch(
+                "symphony_linear.orchestrator.run_resume", return_value=("Done!", None)
+            ) as m_oc,
+        ):
+            orch._resume_pipeline(ts)
+        _, kwargs = m_oc.call_args
+        assert kwargs.get("secrets_file") == self.SECRETS
+        assert m_secrets.call_args.args[3] == "/host/secrets"
+
+    def test_secrets_file_passed_to_start_serve(
+        self, tmp_path: Path, state_mgr: StateManager, linear: FakeLinearClient
+    ) -> None:
+        orch = self._make_orchestrator(tmp_path, state_mgr, linear, qa=True)
+        _add_ticket_state(orch)
+
+        issue = _make_qa_issue()
+        fake_proc = _make_fake_proc(returncode=None)
+
+        with (
+            mock.patch(
+                "symphony_linear.orchestrator.ensure_secrets_file",
+                return_value=self.SECRETS,
+            ) as m_secrets,
+            mock.patch(
+                "symphony_linear.orchestrator.start_serve",
+                return_value=fake_proc,
+            ) as m_serve,
+        ):
+            orch._reconcile_serve([issue], {issue.id: issue})
+
+        m_serve.assert_called_once()
+        _, kwargs = m_serve.call_args
+        assert kwargs.get("secrets_file") == self.SECRETS
+        assert m_secrets.call_args.args[3] == "/host/secrets"
+
+    def test_secrets_error_on_initial_turn_reports_failure(
+        self, tmp_path: Path, state_mgr: StateManager, linear: FakeLinearClient
+    ) -> None:
+        """A SecretsError installing the initial-turn secrets file is reported
+        like any other workspace-prep failure, not merely logged by
+        _task_wrapper."""
+        orch = self._make_orchestrator(tmp_path, state_mgr, linear)
+        self._set_repo_link(linear)
+        linear.set_response("get_issue", _make_issue(description="Fix"))
+        with (
+            mock.patch(
+                "symphony_linear.orchestrator.clone_workspace",
+                return_value=("/tmp/ws/TEAM-1", False),
+            ),
+            mock.patch(
+                "symphony_linear.orchestrator.ensure_secrets_file",
+                side_effect=[self.SECRETS, SecretsError("traversal refused")],
+            ),
+            mock.patch("symphony_linear.orchestrator.finalize_workspace"),
+            mock.patch(
+                "symphony_linear.orchestrator.load_project_config",
+                return_value=ProjectConfig(),
+            ),
+            mock.patch(
+                "symphony_linear.orchestrator.run_initial",
+                return_value=("ses", "msg", None),
+            ) as m_oc,
+        ):
+            orch._new_ticket_pipeline(_make_issue())
+
+        m_oc.assert_not_called()
+        assert ("ticket-1", "Needs Input") in linear.calls.get(
+            "transition_to_state", []
+        )
+        bodies = [c[1] for c in linear.calls.get("post_comment", [])]
+        assert any("traversal refused" in b for b in bodies)
+        ts = orch._state.get("ticket-1")
+        assert ts is not None
+        assert ts.status == TicketStatus.failed
+        assert ts.setup_error is not None
+
+    def test_secrets_error_on_resume_reports_failure(
+        self, tmp_path: Path, state_mgr: StateManager, linear: FakeLinearClient
+    ) -> None:
+        """A SecretsError installing the resume secrets file marks the ticket
+        failed and posts an error comment instead of leaking through
+        _task_wrapper."""
+        orch = self._make_orchestrator(tmp_path, state_mgr, linear)
+        ts = TicketState(
+            ticket_id="ticket-1",
+            ticket_identifier="TEAM-1",
+            repo_url="https://github.com/org/repo.git",
+            workspace_path="/tmp/x",
+            branch="main",
+            status=TicketStatus.needs_input,
+            session_id="ses-abc",
+            last_seen_comment_id="cmt-seen-1",
+        )
+        orch._state.upsert(ts)
+        linear.set_response("list_comments_since", [_make_comment("c1", "Go")])
+        with (
+            mock.patch(
+                "symphony_linear.orchestrator.ensure_secrets_file",
+                side_effect=SecretsError("traversal refused"),
+            ),
+            mock.patch(
+                "symphony_linear.orchestrator.run_resume", return_value=("Done!", None)
+            ) as m_oc,
+        ):
+            orch._resume_pipeline(ts)
+
+        m_oc.assert_not_called()
+        assert ("ticket-1", "Needs Input") in linear.calls.get(
+            "transition_to_state", []
+        )
+        bodies = [c[1] for c in linear.calls.get("post_comment", [])]
+        assert any("traversal refused" in b for b in bodies)
+        saved = orch._state.get("ticket-1")
+        assert saved is not None
+        assert saved.status == TicketStatus.failed
+
+    def test_secrets_error_on_qa_serve_reports_failure(
+        self, tmp_path: Path, state_mgr: StateManager, linear: FakeLinearClient
+    ) -> None:
+        """The QA serve path already catches WorkspaceError, so a SecretsError
+        there is reported rather than escaping the reconciliation loop."""
+        orch = self._make_orchestrator(tmp_path, state_mgr, linear, qa=True)
+        _add_ticket_state(orch)
+
+        issue = _make_qa_issue()
+        with (
+            mock.patch(
+                "symphony_linear.orchestrator.ensure_secrets_file",
+                side_effect=SecretsError("traversal refused"),
+            ),
+            mock.patch("symphony_linear.orchestrator.start_serve") as m_serve,
+        ):
+            orch._reconcile_serve([issue], {issue.id: issue})
+
+        m_serve.assert_not_called()
+        assert (issue.id, "Needs Input") in linear.calls.get("transition_to_state", [])
+        bodies = [c[1] for c in linear.calls.get("post_comment", [])]
+        assert any("traversal refused" in b for b in bodies)
 
 
 # ---------------------------------------------------------------------------

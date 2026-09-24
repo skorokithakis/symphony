@@ -238,6 +238,40 @@ class TestCommandConstruction:
         assert kwargs["attachments_path"] == "/workspace/attachments"
         assert kwargs["dir_map"] == [("/host/mount", "/sandbox/mount")]
 
+    def test_secrets_file_exported_to_env(self) -> None:
+        with patch(
+            "symphony_linear.omp.agent_runner.run",
+            return_value=(0, _fixture_text(), "", None),
+        ) as runner:
+            run_initial(
+                workspace_path="/workspace",
+                tmp_path="/workspace/tmp",
+                prompt="hi",
+                timeout_seconds=60,
+                idle_timeout_seconds=30,
+                on_subprocess=lambda process: None,
+                secrets_file="/workspace/TEAM-1/secrets.env",
+            )
+
+        env = runner.call_args.kwargs["env"]
+        assert env["SYMPHONY_SECRETS_FILE"] == "/workspace/TEAM-1/secrets.env"
+
+    def test_no_secrets_file_leaves_env_unset(self) -> None:
+        with patch(
+            "symphony_linear.omp.agent_runner.run",
+            return_value=(0, _fixture_text(), "", None),
+        ) as runner:
+            run_initial(
+                workspace_path="/workspace",
+                tmp_path="/workspace/tmp",
+                prompt="hi",
+                timeout_seconds=60,
+                idle_timeout_seconds=30,
+                on_subprocess=lambda process: None,
+            )
+
+        assert "SYMPHONY_SECRETS_FILE" not in runner.call_args.kwargs["env"]
+
     def test_resume_command_prefixes_even_an_already_prefixed_newline(self) -> None:
         with patch(
             "symphony_linear.omp.agent_runner.run",
