@@ -371,7 +371,19 @@ shutting down, or the ticket is no longer triggered — see `_is_still_triggered
   gets a tracker comment with the rc and a stdout/stderr tail, and the ticket
   is transitioned back to `needs_input_state` to avoid a respawn loop — except
   clean exits within 10s, which are silent (the script is assumed to have
-  daemonized a child).
+  daemonized a child). A winner with **no state entry and no session snapshot**
+  is a ticket that never worked, so `_reconcile_serve` schedules a background
+  setup task (`_qa_setup_pipeline`) that runs the shared `_prepare_workspace`
+  helper — clone, project config, branch, `.symphony/setup` — instead of
+  refusing it; the ticket ids of in-flight setup tasks live in the in-memory
+  `_qa_setup_tasks` set (guarded by `_task_lock`), and `_reconcile_serve`
+  returns early for a winner in that set so the task is never cancelled and no
+  comment is posted. The task parks the entry at `needs_input` with no session
+  and a comment baseline and posts the workspace metadata comment, but leaves
+  the tracker in QA, so the next tick starts the serve. A no-state winner that
+  *does* have a session snapshot keeps the refusal below (`_bail_qa_no_workspace`):
+  re-cloning it would serve base-branch code, since the agent's commits lived
+  only in the deleted local clone (gnosis zqgxcm).
 - **Model override via `Model: <value>` labels, two tiers.** Resolved per
   turn from the freshly fetched issue by `model_for_issue` in `tracker.py`:
   the issue's own labels first, then `issue.project.labels` (a `None`

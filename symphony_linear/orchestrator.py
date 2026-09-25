@@ -23,6 +23,7 @@ from symphony_linear.linear import (
     Issue,
 )
 from symphony_linear.project_config import (
+    ProjectConfig,
     ProjectConfigError,
     load_project_config,
 )
@@ -169,6 +170,24 @@ def _format_serve_died_comment(rc: int | None, stdout: str, stderr: str) -> str:
 
 
 # ---------------------------------------------------------------------------
+# Workspace preparation container
+# ---------------------------------------------------------------------------
+
+
+@dataclass
+class _PreparedWorkspace:
+    """Artifacts produced by :meth:`Orchestrator._prepare_workspace`."""
+
+    repo_url: str
+    workspace_path: str
+    ticket_state: TicketState
+    project_config: ProjectConfig
+    tmp_path: str
+    dir_map: list[tuple[str, str]]
+    secrets_file: str | None
+
+
+# ---------------------------------------------------------------------------
 # Orchestrator
 # ---------------------------------------------------------------------------
 
@@ -198,6 +217,12 @@ class Orchestrator:
         # Active task guard.
         self._active_tasks: dict[str, Future[None]] = {}
         self._task_lock = threading.Lock()
+
+        # Ticket ids whose QA workspace-setup task is in flight (guarded by
+        # _task_lock).  _reconcile_serve returns early for a winner in this set
+        # so the setup task is never cancelled and no bail comment is posted;
+        # the task removes itself in a finally.
+        self._qa_setup_tasks: set[str] = set()
 
         # Per-turn input markers (guarded by _task_lock).  Key present means
         # "this turn's input is fixed"; the value is the id of the newest
@@ -992,9 +1017,29 @@ class Orchestrator:
         if active_id == winner_id:
             return  # already serving the winner
 
+        # A QA setup task is preparing this winner's workspace.  Wait for it
+        # to finish: do not bail (there is no workspace yet, but one is being
+        # created) and do not cancel the in-flight task.
+        with self._task_lock:
+            setup_in_flight = winner_id in self._qa_setup_tasks
+        if setup_in_flight:
+            logger.info(
+                "QA workspace setup for %s is in flight — waiting",
+                winner.identifier,
+            )
+            return
+
         ts = self._state.get(winner_id)
         if ts is None:
-            self._bail_qa_no_workspace(winner_id, "has no state entry")
+            if self._state.get_session(winner_id) is None:
+                # Never worked: prepare the workspace (clone + setup) in the
+                # background, then start the serve on a later tick.
+                self._start_qa_setup(winner_id, winner)
+            else:
+                # A session snapshot means the workspace held commits that
+                # only exist locally (see gnosis zqgxcm: re-cloning would serve
+                # base-branch code), so keep today's refusal.
+                self._bail_qa_no_workspace(winner_id, "has no state entry")
             return
 
         workspace_path = ts.workspace_path
@@ -1108,6 +1153,77 @@ class Orchestrator:
             name=f"serve-watchdog-{winner.identifier}",
         )
         t.start()
+
+    def _start_qa_setup(self, winner_id: str, winner: Issue) -> None:
+        """Schedule workspace preparation for a never-worked QA winner.
+
+        The in-flight check, the submit, and the ``_qa_setup_tasks`` insert all
+        happen under one ``_task_lock`` acquisition.  The id is added only when
+        a task was actually submitted, and before the lock is released, so the
+        task's own ``finally`` can never discard before the insert (a leak) and
+        a no-op submit can never leave the id behind — either would make the
+        serve wait forever.
+        """
+        with self._task_lock:
+            if not self._submit_task_locked(winner_id, self._qa_setup_pipeline, winner):
+                logger.info(
+                    "Not scheduling QA workspace setup for %s: a task is in flight",
+                    winner.identifier,
+                )
+                return
+            self._qa_setup_tasks.add(winner_id)
+        logger.info("Scheduling QA workspace setup for %s", winner.identifier)
+
+    def _qa_setup_pipeline(self, issue: Issue) -> None:
+        """Prepare a QA winner's workspace without running an agent turn.
+
+        Runs the shared prep helper (clone, project config, ``.symphony/setup``),
+        then parks the ticket in ``needs_input`` with no session and a comment
+        baseline, and posts the normal workspace metadata comment.  The tracker
+        ticket is deliberately left in QA: the next tick's serve reconciliation
+        finds the workspace and starts the serve.  No agent turn runs.
+        """
+        tid = issue.id
+        logger.info("QA setup pipeline starting for %s (%s)", tid, issue.identifier)
+        try:
+            prepared = self._prepare_workspace(issue)
+            if prepared is None:
+                return
+
+            # Baseline before the metadata comment, so it becomes the anchor:
+            # the comment is the bot's own and must not look like new input.
+            baseline = self._baseline_comment_id(tid)
+            with self._state_lock:
+                live_state = self._state.get(tid)
+                if live_state is None or self._is_cancelled(tid):
+                    # Step-3 cleanup (or a human moving the ticket) removed the
+                    # entry / cancelled the ticket while we were fetching the
+                    # baseline.  Writing here would resurrect a cleaned-up
+                    # ticket and its deleted workspace, so drop the work.
+                    logger.info(
+                        "QA setup for %s was cancelled or cleaned up during "
+                        "baseline fetch — discarding",
+                        tid,
+                    )
+                    return
+                live_state.status = TicketStatus.needs_input
+                live_state.session_id = None
+                live_state.agent = None
+                live_state.last_seen_comment_id = baseline
+                live_state.updated_at = _iso_now()
+                self._state.save()
+
+            if self._is_cancelled(tid):
+                return
+            self._post_comment_safe(
+                tid,
+                _build_metadata_comment(prepared.workspace_path),
+                kind="workspace",
+            )
+            logger.info("QA setup pipeline complete for %s", tid)
+        finally:
+            with self._task_lock:
+                self._qa_setup_tasks.discard(tid)
 
     def _bail_qa_no_workspace(self, ticket_id: str, log_reason: str) -> None:
         """Transition QA ticket to needs_input and post a comment when workspace is missing.
@@ -1271,11 +1387,22 @@ class Orchestrator:
 
     def _schedule_task(self, ticket_id: str, target: Any, *args: Any) -> None:
         with self._task_lock:
-            existing = self._active_tasks.get(ticket_id)
-            if existing is not None and not existing.done():
-                return
-            future = self._executor.submit(self._task_wrapper, ticket_id, target, *args)
-            self._active_tasks[ticket_id] = future
+            self._submit_task_locked(ticket_id, target, *args)
+
+    def _submit_task_locked(self, ticket_id: str, target: Any, *args: Any) -> bool:
+        """Submit *target* unless a task for *ticket_id* is already in flight.
+
+        Caller must hold ``_task_lock``.  Returns whether a new task was
+        submitted, so a caller that must record bookkeeping atomically with the
+        submit (e.g. :meth:`_start_qa_setup`) can do so before releasing the
+        lock.
+        """
+        existing = self._active_tasks.get(ticket_id)
+        if existing is not None and not existing.done():
+            return False
+        future = self._executor.submit(self._task_wrapper, ticket_id, target, *args)
+        self._active_tasks[ticket_id] = future
+        return True
 
     def _task_wrapper(self, ticket_id: str, target: Any, *args: Any) -> None:
         try:
@@ -1425,34 +1552,22 @@ class Orchestrator:
         return hide_paths
 
     # ==================================================================
-    # New-ticket pipeline
+    # Workspace preparation (shared by initial turns and QA setup)
     # ==================================================================
 
-    def _new_ticket_pipeline(
-        self,
-        issue: Issue,
-        extra_context: str | None = None,
-        *,
-        recovering: bool = False,
-    ) -> None:
-        """Run a full initial turn for *issue*.
+    def _prepare_workspace(
+        self, issue: Issue, *, recovering: bool = False
+    ) -> _PreparedWorkspace | None:
+        """Clone and configure *issue*'s workspace, returning its artifacts.
 
-        *extra_context* is optional pre-formatted text (e.g. pending human
-        comments that triggered a rerun) appended to the initial prompt.
-        *recovering* marks a re-run of an interrupted first turn: the
-        ``interrupted_turns`` streak is carried over instead of starting
-        fresh.
+        Shared by :meth:`_new_ticket_pipeline` and :meth:`_qa_setup_pipeline`:
+        resolves the repo, writes the bootstrapping state entry, clones, loads
+        the project config, computes the branch, and runs ``.symphony/setup``.
+        Every failure path follows the established ordering — transition the
+        tracker to Needs Input first, then post the error comment, then persist
+        ``setup_error`` — and returns ``None``; callers simply return.
         """
         tid = issue.id
-        logger.info("New ticket pipeline starting for %s (%s)", tid, issue.identifier)
-        if self._is_cancelled(tid):
-            return
-
-        # Model override for the primary agent, resolved from the freshly
-        # fetched issue: a ``Model:`` label on the issue itself, else one on
-        # its project as a project-wide default.  Nothing is persisted:
-        # changing or removing either label takes effect on the next turn.
-        model = model_for_issue(issue, self._config.models)
 
         # --- Resolve repository URL ---
         try:
@@ -1466,10 +1581,10 @@ class Orchestrator:
                 return_comment=True,
             )
             self._save_setup_error(tid, issue, "no_repo", err_comment)
-            return
+            return None
 
         if self._is_cancelled(tid):
-            return
+            return None
 
         # --- Save bootstrapping state EARLY (B2) ---
         # Branch is computed after loading project config; use "" as placeholder.
@@ -1502,7 +1617,7 @@ class Orchestrator:
             self._state.save()
 
         if self._is_cancelled(tid):
-            return
+            return None
 
         # --- Clone workspace ---
         try:
@@ -1520,11 +1635,11 @@ class Orchestrator:
                 return_comment=True,
             )
             self._save_setup_error(tid, issue, str(exc), err_comment)
-            return
+            return None
 
         # B2: check cancellation after clone returns.
         if self._is_cancelled(tid):
-            return
+            return None
 
         # Notify the user when the workspace had to be nuked and re-cloned.
         if recovered:
@@ -1551,7 +1666,7 @@ class Orchestrator:
                 return_comment=True,
             )
             self._save_setup_error(tid, issue, "project_config_invalid", err_comment)
-            return
+            return None
 
         # Compute effective auto_branch from project config, falling back to global.
         effective_auto_branch = (
@@ -1608,11 +1723,63 @@ class Orchestrator:
                 return_comment=True,
             )
             self._save_setup_error(tid, issue, str(exc), err_comment)
-            return
+            return None
 
         # B2: check cancellation after finalize returns.
         if self._is_cancelled(tid):
+            return None
+
+        return _PreparedWorkspace(
+            repo_url=repo_url,
+            workspace_path=workspace_path,
+            ticket_state=ticket_state,
+            project_config=project_config,
+            tmp_path=tmp_path,
+            dir_map=dir_map,
+            secrets_file=secrets_file,
+        )
+
+    # ==================================================================
+    # New-ticket pipeline
+    # ==================================================================
+
+    def _new_ticket_pipeline(
+        self,
+        issue: Issue,
+        extra_context: str | None = None,
+        *,
+        recovering: bool = False,
+    ) -> None:
+        """Run a full initial turn for *issue*.
+
+        *extra_context* is optional pre-formatted text (e.g. pending human
+        comments that triggered a rerun) appended to the initial prompt.
+        *recovering* marks a re-run of an interrupted first turn: the
+        ``interrupted_turns`` streak is carried over instead of starting
+        fresh.
+        """
+        tid = issue.id
+        logger.info("New ticket pipeline starting for %s (%s)", tid, issue.identifier)
+        if self._is_cancelled(tid):
             return
+
+        # Model override for the primary agent, resolved from the freshly
+        # fetched issue: a ``Model:`` label on the issue itself, else one on
+        # its project as a project-wide default.  Nothing is persisted:
+        # changing or removing either label takes effect on the next turn.
+        model = model_for_issue(issue, self._config.models)
+
+        prepared = self._prepare_workspace(issue, recovering=recovering)
+        if prepared is None:
+            return
+
+        repo_url = prepared.repo_url
+        workspace_path = prepared.workspace_path
+        ticket_state = prepared.ticket_state
+        project_config = prepared.project_config
+        tmp_path = prepared.tmp_path
+        dir_map = prepared.dir_map
+        secrets_file = prepared.secrets_file
 
         # --- Transition Linear to In Progress ---
         try:

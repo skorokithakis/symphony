@@ -45,7 +45,12 @@ from symphony_linear.project_config import (
     ProjectConfigError,
 )
 from symphony_linear.sandbox import run_in_sandbox
-from symphony_linear.state import StateManager, TicketState, TicketStatus
+from symphony_linear.state import (
+    SessionRecord,
+    StateManager,
+    TicketState,
+    TicketStatus,
+)
 from symphony_linear.tracker import TrackerError, TransitionTarget
 from symphony_linear.webhook import WebhookServer
 from symphony_linear.workspace import SecretsError, WorkspaceError
@@ -7845,13 +7850,14 @@ class TestReconcileServe:
         assert len(ticket_comments) == 1
         assert "QA serve failed to start" in ticket_comments[0][1]
 
-    def test_winner_has_no_state_entry_transitions_then_posts_comment(
+    def test_winner_with_snapshot_no_state_entry_transitions_then_posts_comment(
         self,
         tmp_path: Path,
         state_mgr: StateManager,
         linear: FakeLinearClient,
     ) -> None:
-        """QA winner with no state entry → transitioned to needs_input, then comment posted."""
+        """QA winner with a session snapshot but no state entry → bail (a lost
+        local clone cannot be re-cloned safely, so no workspace setup runs)."""
         config = _make_qa_config(tmp_path)
         orch = Orchestrator(
             config=config,
@@ -7859,13 +7865,22 @@ class TestReconcileServe:
             tracker=LinearTracker(linear=linear, config=config.linear),
             workspace=tmp_path / "ws",
         )  # type: ignore[arg-type]
-        # Deliberately do NOT call _add_ticket_state — state entry is missing.
+        # Deliberately do NOT call _add_ticket_state — state entry is missing —
+        # but a durable session snapshot exists.
+        orch._state.set_session(
+            "ticket-1",
+            SessionRecord(session_id="ses-abc", workspace_path="/tmp/ws/TEAM-1"),
+        )
 
         issue = _make_qa_issue()
-        with mock.patch("symphony_linear.orchestrator.start_serve") as m_serve:
+        with (
+            mock.patch("symphony_linear.orchestrator.start_serve") as m_serve,
+            mock.patch.object(orch, "_schedule_task") as m_schedule,
+        ):
             orch._reconcile_serve([issue], {issue.id: issue})
 
         m_serve.assert_not_called()
+        m_schedule.assert_not_called()
         assert orch._active_serve is None
         transition_calls = linear.calls.get("transition_to_state", [])
         assert any(
@@ -7937,7 +7952,11 @@ class TestReconcileServe:
             tracker=LinearTracker(linear=linear, config=config.linear),
             workspace=tmp_path / "ws",
         )  # type: ignore[arg-type]
-        # No state entry → hits the _bail_qa_no_workspace path.
+        # No state entry but a session snapshot → hits the _bail_qa_no_workspace path.
+        orch._state.set_session(
+            "ticket-1",
+            SessionRecord(session_id="ses-abc", workspace_path="/tmp/ws/TEAM-1"),
+        )
         linear.set_response("transition_to_state", LinearError("test transition error"))
 
         issue = _make_qa_issue()
@@ -8549,6 +8568,277 @@ class TestFix4Drainer:
                 orch._reconcile_serve([issue], {issue.id: issue})
 
         assert drainer_started.is_set(), "_start_drainers was not called"
+
+
+class TestQaWorkspaceSetup:
+    """QA winners with no state entry and no session snapshot get bootstrapped."""
+
+    def _make_orch(
+        self, tmp_path: Path, state_mgr: StateManager, linear: FakeLinearClient
+    ) -> Orchestrator:
+        config = _make_qa_config(tmp_path)
+        return Orchestrator(
+            config=config,
+            state=state_mgr,
+            tracker=LinearTracker(linear=linear, config=config.linear),
+            workspace=tmp_path / "ws",
+        )  # type: ignore[arg-type]
+
+    def _set_repo_link(self, linear: FakeLinearClient) -> None:
+        linear.set_response(
+            "get_project",
+            Project(
+                id="proj-1",
+                name="Test",
+                links=[
+                    ProjectLink(label="Repo", url="https://github.com/org/repo.git")
+                ],
+            ),
+        )
+
+    def test_winner_no_state_no_snapshot_schedules_setup(
+        self,
+        tmp_path: Path,
+        state_mgr: StateManager,
+        linear: FakeLinearClient,
+    ) -> None:
+        """No state entry and no snapshot → schedule the QA setup task, no bail."""
+        orch = self._make_orch(tmp_path, state_mgr, linear)
+        issue = _make_qa_issue()
+
+        with (
+            mock.patch("symphony_linear.orchestrator.start_serve") as m_serve,
+            mock.patch.object(
+                orch, "_submit_task_locked", return_value=True
+            ) as m_submit,
+        ):
+            orch._reconcile_serve([issue], {issue.id: issue})
+
+        m_serve.assert_not_called()
+        m_submit.assert_called_once_with("ticket-1", orch._qa_setup_pipeline, issue)
+        assert "ticket-1" in orch._qa_setup_tasks
+        # No bail: no transition, no "Can't start QA" comment.
+        assert linear.calls.get("transition_to_state", []) == []
+        assert not any(
+            tid == "ticket-1" for tid, _ in linear.calls.get("post_comment", [])
+        )
+
+    def test_in_flight_task_leaves_no_setup_id(
+        self,
+        tmp_path: Path,
+        state_mgr: StateManager,
+        linear: FakeLinearClient,
+    ) -> None:
+        """An in-flight task blocks the submit, so no id is left in the set."""
+        orch = self._make_orch(tmp_path, state_mgr, linear)
+        not_done: mock.MagicMock = mock.MagicMock()
+        not_done.done.return_value = False
+        with orch._task_lock:
+            orch._active_tasks["ticket-1"] = not_done  # type: ignore[assignment]
+
+        issue = _make_qa_issue()
+        with (
+            mock.patch("symphony_linear.orchestrator.start_serve") as m_serve,
+            mock.patch.object(orch, "_qa_setup_pipeline") as m_pipeline,
+        ):
+            orch._reconcile_serve([issue], {issue.id: issue})
+
+        m_serve.assert_not_called()
+        m_pipeline.assert_not_called()
+        assert "ticket-1" not in orch._qa_setup_tasks
+        assert orch._active_tasks["ticket-1"] is not_done
+        assert linear.calls.get("transition_to_state", []) == []
+        assert not any(
+            tid == "ticket-1" for tid, _ in linear.calls.get("post_comment", [])
+        )
+
+    def test_setup_in_flight_returns_without_cancel_or_bail(
+        self,
+        tmp_path: Path,
+        state_mgr: StateManager,
+        linear: FakeLinearClient,
+    ) -> None:
+        """A winner whose setup task is in flight is left completely untouched."""
+        orch = self._make_orch(tmp_path, state_mgr, linear)
+        with orch._task_lock:
+            orch._qa_setup_tasks.add("ticket-1")
+        not_done: mock.MagicMock = mock.MagicMock()
+        not_done.done.return_value = False
+        with orch._task_lock:
+            orch._active_tasks["ticket-1"] = not_done  # type: ignore[assignment]
+
+        issue = _make_qa_issue()
+        with (
+            mock.patch("symphony_linear.orchestrator.start_serve") as m_serve,
+            mock.patch.object(orch, "_cancel_ticket") as m_cancel,
+        ):
+            orch._reconcile_serve([issue], {issue.id: issue})
+
+        m_serve.assert_not_called()
+        m_cancel.assert_not_called()
+        assert linear.calls.get("transition_to_state", []) == []
+        assert not any(
+            tid == "ticket-1" for tid, _ in linear.calls.get("post_comment", [])
+        )
+        assert orch._active_tasks["ticket-1"] is not_done
+
+    def test_setup_prepares_workspace_then_serve_starts_on_later_tick(
+        self,
+        tmp_path: Path,
+        state_mgr: StateManager,
+        linear: FakeLinearClient,
+    ) -> None:
+        """Setup run directly: state parked in needs_input, tracker untouched,
+        then the next reconcile tick starts the serve."""
+        orch = self._make_orch(tmp_path, state_mgr, linear)
+        self._set_repo_link(linear)
+        linear.set_response(
+            "list_comments_since", [_make_comment("cmt-1", "earlier note")]
+        )
+        issue = _make_qa_issue()
+
+        with (
+            mock.patch("symphony_linear.orchestrator.clone_workspace") as m_clone,
+            mock.patch("symphony_linear.orchestrator.finalize_workspace"),
+            mock.patch(
+                "symphony_linear.orchestrator.load_project_config"
+            ) as m_load_config,
+            mock.patch("symphony_linear.orchestrator.run_initial") as m_run_initial,
+        ):
+            m_clone.return_value = ("/tmp/workspaces/TEAM-1", False)
+            m_load_config.return_value = ProjectConfig()
+            orch._qa_setup_pipeline(issue)
+
+        # No agent turn runs.
+        m_run_initial.assert_not_called()
+        # The tracker stays in QA: no transitions at all.
+        assert linear.calls.get("transition_to_state", []) == []
+
+        ts = orch._state.get("ticket-1")
+        assert ts is not None
+        assert ts.status == TicketStatus.needs_input
+        assert ts.session_id is None
+        assert ts.agent is None
+        assert ts.workspace_path == "/tmp/workspaces/TEAM-1"
+        assert ts.last_seen_comment_id == "cmt-1"
+        assert "ticket-1" not in orch._qa_setup_tasks
+
+        post_calls = linear.calls.get("post_comment", [])
+        assert any(
+            "workspace" in body and "/tmp/workspaces/TEAM-1" in body
+            for _, body in post_calls
+        ), f"Expected a workspace metadata comment, got {post_calls}"
+
+        # A later tick sees the workspace and starts the serve.
+        fake_proc = _make_fake_proc(returncode=None)
+        with mock.patch(
+            "symphony_linear.orchestrator.start_serve", return_value=fake_proc
+        ) as m_serve:
+            orch._reconcile_serve([issue], {issue.id: issue})
+
+        m_serve.assert_called_once()
+        assert orch._active_serve is not None
+        assert orch._active_serve.ticket_id == "ticket-1"
+
+    def test_setup_failure_transitions_to_needs_input_with_error(
+        self,
+        tmp_path: Path,
+        state_mgr: StateManager,
+        linear: FakeLinearClient,
+    ) -> None:
+        """A setup failure follows the existing failure path and clears the guard."""
+        orch = self._make_orch(tmp_path, state_mgr, linear)
+        self._set_repo_link(linear)
+        issue = _make_qa_issue()
+
+        with mock.patch(
+            "symphony_linear.orchestrator.clone_workspace",
+            side_effect=WorkspaceError("clone boom"),
+        ):
+            orch._qa_setup_pipeline(issue)
+
+        assert "ticket-1" not in orch._qa_setup_tasks
+        transition_calls = linear.calls.get("transition_to_state", [])
+        assert ("ticket-1", "Needs Input") in transition_calls
+        post_calls = linear.calls.get("post_comment", [])
+        assert any("Workspace clone failed" in body for _, body in post_calls)
+
+        ts = orch._state.get("ticket-1")
+        assert ts is not None
+        assert ts.status == TicketStatus.failed
+        assert ts.setup_error is not None
+
+    def test_cancelled_during_baseline_does_not_resurrect(
+        self,
+        tmp_path: Path,
+        state_mgr: StateManager,
+        linear: FakeLinearClient,
+    ) -> None:
+        """A cancellation/cleanup during the baseline fetch discards the write."""
+        orch = self._make_orch(tmp_path, state_mgr, linear)
+        self._set_repo_link(linear)
+        issue = _make_qa_issue()
+
+        def cancel_during_baseline(tid: str) -> str:
+            orch._cancel_ticket(tid)
+            orch._state.remove(tid)
+            return "cmt-1"
+
+        with (
+            mock.patch("symphony_linear.orchestrator.clone_workspace") as m_clone,
+            mock.patch("symphony_linear.orchestrator.finalize_workspace"),
+            mock.patch(
+                "symphony_linear.orchestrator.load_project_config"
+            ) as m_load_config,
+            mock.patch.object(
+                orch, "_baseline_comment_id", side_effect=cancel_during_baseline
+            ),
+        ):
+            m_clone.return_value = ("/tmp/workspaces/TEAM-1", False)
+            m_load_config.return_value = ProjectConfig()
+            orch._qa_setup_pipeline(issue)
+
+        # The entry was not resurrected and no workspace comment was posted.
+        assert orch._state.get("ticket-1") is None
+        assert "ticket-1" not in orch._qa_setup_tasks
+        assert not any(
+            tid == "ticket-1" for tid, _ in linear.calls.get("post_comment", [])
+        )
+
+    def test_reconcile_serve_bootstraps_never_worked_winner_end_to_end(
+        self,
+        tmp_path: Path,
+        state_mgr: StateManager,
+        linear: FakeLinearClient,
+    ) -> None:
+        """Full path through _reconcile_serve + the scheduled task: workspace
+        prepped, state parked, no agent turn, tracker left in QA, guard cleared."""
+        orch = self._make_orch(tmp_path, state_mgr, linear)
+        self._set_repo_link(linear)
+        issue = _make_qa_issue()
+
+        with (
+            mock.patch("symphony_linear.orchestrator.clone_workspace") as m_clone,
+            mock.patch("symphony_linear.orchestrator.finalize_workspace"),
+            mock.patch(
+                "symphony_linear.orchestrator.load_project_config"
+            ) as m_load_config,
+            mock.patch("symphony_linear.orchestrator.run_initial") as m_run_initial,
+            mock.patch.object(orch, "_submit_task_locked", return_value=True),
+        ):
+            m_clone.return_value = ("/tmp/workspaces/TEAM-1", False)
+            m_load_config.return_value = ProjectConfig()
+            orch._reconcile_serve([issue], {issue.id: issue})
+            # _reconcile_serve released _task_lock; run the scheduled task.
+            orch._task_wrapper("ticket-1", orch._qa_setup_pipeline, issue)
+
+        m_run_initial.assert_not_called()
+        ts = orch._state.get("ticket-1")
+        assert ts is not None
+        assert ts.status == TicketStatus.needs_input
+        assert ts.session_id is None
+        assert "ticket-1" not in orch._qa_setup_tasks
+        assert linear.calls.get("transition_to_state", []) == []
 
 
 # ---------------------------------------------------------------------------
