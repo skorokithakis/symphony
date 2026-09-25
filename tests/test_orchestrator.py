@@ -138,7 +138,17 @@ class FakeLinearClient:
         self, issue_id: str, comment_id: str | None
     ) -> list[Comment]:
         self._record("list_comments_since", (issue_id, comment_id))
-        return self._responses.get("list_comments_since", [])
+        comments = self._responses.get("list_comments_since", [])
+        if comment_id is None:
+            return comments
+        for index, comment in enumerate(comments):
+            if comment.id == comment_id:
+                # Anchor-aware like the real tracker: only comments after the
+                # anchor are "new".
+                return comments[index + 1 :]
+        # Unknown anchor (e.g. a seeded cursor that predates this fixture's
+        # timeline): treat every configured comment as newer.
+        return comments
 
     def post_comment(self, issue_id: str, body: str) -> Comment:
         self._record("post_comment", (issue_id, body))
@@ -4432,8 +4442,143 @@ class TestTick:
         updated = orch._state.get("ticket-1")
         assert updated is not None
         assert updated.status == TicketStatus.needs_input
-        assert updated.last_seen_comment_id == "cmt-seen-1"
-        assert linear.calls.get("post_comment", []) == []
+        # The notice becomes the new anchor: earlier comments are not replayed.
+        assert updated.last_seen_comment_id == "cmt-ticket-1-2"
+        posted = [
+            body
+            for ticket_id, body in linear.calls.get("post_comment", [])
+            if ticket_id == "ticket-1"
+        ]
+        assert len(posted) == 1
+        assert (
+            "The daemon restarted during a turn, and this ticket is now in QA"
+            in posted[0]
+        )
+        assert "*Symphony · qa*" in posted[0]
+
+    def test_stale_working_qa_ticket_next_tick_does_not_resume(
+        self,
+        tmp_path: Path,
+        state_mgr: StateManager,
+        linear: FakeLinearClient,
+    ) -> None:
+        """A repaired stale QA ticket stays parked: the repair notice anchors
+        last_seen, so no earlier comment re-enters the work."""
+        config = _make_config(tmp_path, linear={"qa_state": "In Review"})
+        orch = Orchestrator(
+            config=config,
+            state=state_mgr,
+            tracker=LinearTracker(linear=linear, config=config.linear),
+            workspace=tmp_path / "ws",
+        )  # type: ignore[arg-type]
+
+        ts = TicketState(
+            ticket_id="ticket-1",
+            ticket_identifier="TEAM-1",
+            repo_url="https://x",
+            workspace_path="/tmp/ws/TEAM-1",
+            branch="main",
+            status=TicketStatus.working,
+            session_id="ses-abc",
+            last_seen_comment_id="cmt-seen-1",
+        )
+        orch._state.upsert(ts)
+
+        qa_issue = _make_issue(id="ticket-1", state="In Review", labels=["Agent"])
+        linear.set_response("list_triggered_issues", [qa_issue])
+        # Timeline: an earlier human comment, then the repair notice.  The fake
+        # is anchor-aware, so only the notice anchor yields "nothing new" — a
+        # stale anchor ("cmt-seen-1") still surfaces the earlier human comment.
+        linear.set_response(
+            "list_comments_since",
+            [
+                _make_comment("cmt-human-1", "Started this work"),
+                _make_comment(
+                    "cmt-ticket-1-2",
+                    "stopped\n\n*Symphony · qa*",
+                    user_id="usr-bot",
+                ),
+            ],
+        )
+
+        with (
+            mock.patch.object(orch, "_reconcile_serve"),
+            mock.patch(
+                "symphony_linear.orchestrator.load_project_config",
+                return_value=ProjectConfig(),
+            ),
+            mock.patch("symphony_linear.orchestrator.run_resume") as m_run_resume,
+        ):
+            # First tick repairs the stale working entry and posts the notice.
+            orch._tick()
+
+            # The notice anchor means nothing is new on the following tick.
+            orch._tick()
+            time.sleep(0.2)
+
+        m_run_resume.assert_not_called()
+        assert ("ticket-1", "In Progress") not in linear.calls.get(
+            "transition_to_state", []
+        )
+        updated = orch._state.get("ticket-1")
+        assert updated is not None
+        assert updated.status == TicketStatus.needs_input
+        assert updated.last_seen_comment_id == "cmt-ticket-1-2"
+
+    def test_stale_working_qa_ticket_human_reply_resumes(
+        self,
+        tmp_path: Path,
+        state_mgr: StateManager,
+        linear: FakeLinearClient,
+    ) -> None:
+        """After the repair notice, a new human comment resumes the ticket."""
+        config = _make_config(tmp_path, linear={"qa_state": "In Review"})
+        orch = Orchestrator(
+            config=config,
+            state=state_mgr,
+            tracker=LinearTracker(linear=linear, config=config.linear),
+            workspace=tmp_path / "ws",
+        )  # type: ignore[arg-type]
+
+        ts = TicketState(
+            ticket_id="ticket-1",
+            ticket_identifier="TEAM-1",
+            repo_url="https://x",
+            workspace_path="/tmp/ws/TEAM-1",
+            branch="main",
+            status=TicketStatus.working,
+            session_id="ses-abc",
+            last_seen_comment_id="cmt-seen-1",
+        )
+        orch._state.upsert(ts)
+
+        qa_issue = _make_issue(id="ticket-1", state="In Review", labels=["Agent"])
+        linear.set_response("list_triggered_issues", [qa_issue])
+
+        with (
+            mock.patch.object(orch, "_reconcile_serve"),
+            mock.patch(
+                "symphony_linear.orchestrator.load_project_config",
+                return_value=ProjectConfig(),
+            ),
+            mock.patch(
+                "symphony_linear.orchestrator.run_resume", return_value=("Done!", None)
+            ) as m_run_resume,
+        ):
+            # First tick repairs the stale working entry and posts the notice.
+            orch._tick()
+
+            # A human replies after the notice.
+            linear.set_response(
+                "list_comments_since", [_make_comment("cmt-human-2", "Continue")]
+            )
+            orch._tick()
+            time.sleep(0.2)
+
+        m_run_resume.assert_called_once()
+        assert ("ticket-1", "In Progress") in linear.calls.get(
+            "transition_to_state", []
+        )
 
     def test_failed_with_session_in_qa_state_resume_scheduled(
         self,
@@ -8896,7 +9041,8 @@ class TestCorrection3:
         updated = orch._state.get("ticket-1")
         assert updated is not None
         assert updated.status == TicketStatus.needs_input
-        assert updated.last_seen_comment_id == "cmt-seen-1"
+        # The QA notice becomes the new anchor: earlier comments are not new.
+        assert updated.last_seen_comment_id == "cmt-ticket-1-2"
         assert linear.calls.get("transition_to_state", []) == []
 
         m_comment.assert_called_once_with(
@@ -8905,6 +9051,7 @@ class TestCorrection3:
                 "**Symphony**: The running turn was stopped because this ticket "
                 "entered QA. A reply on this ticket will continue the work."
             ),
+            return_comment=True,
             kind="qa",
         )
         posted = [
@@ -8914,6 +9061,179 @@ class TestCorrection3:
         ]
         assert len(posted) == 1
         assert "*Symphony · qa*" in posted[0]
+
+    def test_qa_cancel_then_next_tick_does_not_resume(
+        self,
+        tmp_path: Path,
+        state_mgr: StateManager,
+        linear: FakeLinearClient,
+    ) -> None:
+        """After a QA cancel, the notice anchors last_seen, so the next tick
+        finds nothing new: the ticket stays parked and the serve keeps running."""
+        config = _make_qa_config(tmp_path)
+        orch = Orchestrator(
+            config=config,
+            state=state_mgr,
+            tracker=LinearTracker(linear=linear, config=config.linear),
+            workspace=tmp_path / "ws",
+        )  # type: ignore[arg-type]
+        _add_ticket_state(orch, status=TicketStatus.working)
+
+        agent_proc = subprocess.Popen(["sleep", "60"])
+        with orch._subprocess_lock:
+            orch._subprocesses["ticket-1"] = agent_proc
+        not_done_future: mock.MagicMock = mock.MagicMock()
+        not_done_future.done.return_value = False
+        with orch._task_lock:
+            orch._active_tasks["ticket-1"] = not_done_future  # type: ignore[assignment]
+
+        issue = _make_qa_issue()
+        # Timeline: an earlier human comment, then the QA notice.  The fake is
+        # anchor-aware: only the notice anchor yields "nothing new"; a stale
+        # anchor still surfaces the earlier human comment.
+        linear.set_response(
+            "list_comments_since",
+            [
+                _make_comment("cmt-human-1", "Started this work"),
+                _make_comment(
+                    "cmt-ticket-1-2",
+                    "stopped\n\n*Symphony · qa*",
+                    user_id="usr-bot",
+                ),
+            ],
+        )
+        with (
+            mock.patch(
+                "symphony_linear.orchestrator.start_serve",
+                return_value=_make_fake_proc(returncode=None),
+            ),
+            mock.patch(
+                "symphony_linear.orchestrator.load_project_config",
+                return_value=ProjectConfig(),
+            ),
+            mock.patch("symphony_linear.orchestrator.run_resume") as m_run_resume,
+        ):
+            orch._reconcile_serve([issue], {issue.id: issue})
+
+            # The cancelled turn's task wrapper would clear these on completion;
+            # without that the in-flight dedup would mask the bug.
+            with orch._task_lock:
+                orch._active_tasks.pop("ticket-1", None)
+            with orch._subprocess_lock:
+                orch._cancelled.discard("ticket-1")
+
+            # The notice anchor means nothing is new on the following tick.
+            linear.set_response("list_triggered_issues", [issue])
+            orch._tick()
+            time.sleep(0.2)
+
+        m_run_resume.assert_not_called()
+        assert ("ticket-1", "In Progress") not in linear.calls.get(
+            "transition_to_state", []
+        )
+        updated = orch._state.get("ticket-1")
+        assert updated is not None
+        assert updated.status == TicketStatus.needs_input
+        assert updated.last_seen_comment_id == "cmt-ticket-1-2"
+        assert orch._active_serve is not None
+        assert orch._active_serve.ticket_id == "ticket-1"
+
+    def test_qa_cancel_then_human_reply_resumes(
+        self,
+        tmp_path: Path,
+        state_mgr: StateManager,
+        linear: FakeLinearClient,
+    ) -> None:
+        """After a QA cancel, a human comment posted after the notice resumes."""
+        config = _make_qa_config(tmp_path)
+        orch = Orchestrator(
+            config=config,
+            state=state_mgr,
+            tracker=LinearTracker(linear=linear, config=config.linear),
+            workspace=tmp_path / "ws",
+        )  # type: ignore[arg-type]
+        _add_ticket_state(orch, status=TicketStatus.working)
+
+        agent_proc = subprocess.Popen(["sleep", "60"])
+        with orch._subprocess_lock:
+            orch._subprocesses["ticket-1"] = agent_proc
+        not_done_future: mock.MagicMock = mock.MagicMock()
+        not_done_future.done.return_value = False
+        with orch._task_lock:
+            orch._active_tasks["ticket-1"] = not_done_future  # type: ignore[assignment]
+
+        issue = _make_qa_issue()
+        with (
+            mock.patch(
+                "symphony_linear.orchestrator.start_serve",
+                return_value=_make_fake_proc(returncode=None),
+            ),
+            mock.patch(
+                "symphony_linear.orchestrator.load_project_config",
+                return_value=ProjectConfig(),
+            ),
+            mock.patch(
+                "symphony_linear.orchestrator.run_resume", return_value=("Done!", None)
+            ) as m_run_resume,
+        ):
+            orch._reconcile_serve([issue], {issue.id: issue})
+
+            with orch._task_lock:
+                orch._active_tasks.pop("ticket-1", None)
+            with orch._subprocess_lock:
+                orch._cancelled.discard("ticket-1")
+
+            # A human comment posted after the notice.
+            linear.set_response(
+                "list_comments_since", [_make_comment("cmt-human-2", "Continue")]
+            )
+            linear.set_response("list_triggered_issues", [issue])
+            orch._tick()
+            time.sleep(0.2)
+
+        m_run_resume.assert_called_once()
+        assert ("ticket-1", "In Progress") in linear.calls.get(
+            "transition_to_state", []
+        )
+
+    def test_qa_cancel_notice_post_failure_baselines_last_seen(
+        self,
+        tmp_path: Path,
+        state_mgr: StateManager,
+        linear: FakeLinearClient,
+    ) -> None:
+        """If the QA notice cannot be posted, fall back to the newest comment id."""
+        config = _make_qa_config(tmp_path)
+        orch = Orchestrator(
+            config=config,
+            state=state_mgr,
+            tracker=LinearTracker(linear=linear, config=config.linear),
+            workspace=tmp_path / "ws",
+        )  # type: ignore[arg-type]
+        _add_ticket_state(orch, status=TicketStatus.working)
+
+        agent_proc = subprocess.Popen(["sleep", "60"])
+        with orch._subprocess_lock:
+            orch._subprocesses["ticket-1"] = agent_proc
+        not_done_future: mock.MagicMock = mock.MagicMock()
+        not_done_future.done.return_value = False
+        with orch._task_lock:
+            orch._active_tasks["ticket-1"] = not_done_future  # type: ignore[assignment]
+
+        issue = _make_qa_issue()
+        linear.set_response("post_comment", TrackerError("post failed"))
+        linear.set_response("list_comments_since", [_make_comment("cmt-latest", "hi")])
+
+        with mock.patch(
+            "symphony_linear.orchestrator.start_serve",
+            return_value=_make_fake_proc(returncode=None),
+        ):
+            orch._reconcile_serve([issue], {issue.id: issue})
+
+        updated = orch._state.get("ticket-1")
+        assert updated is not None
+        assert updated.status == TicketStatus.needs_input
+        assert updated.last_seen_comment_id == "cmt-latest"
 
     def test_no_inflight_task_serve_starts_normally(
         self,

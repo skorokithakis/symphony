@@ -75,6 +75,14 @@ _RESTART_NOTICE_BODY = (
     "**Symphony**: Restarted before setup completed. "
     "Picking this ticket up again on the next poll."
 )
+# Posted when a stale `working` entry is found on a ticket that is already in
+# QA after a daemon restart.  The comment id becomes the new
+# ``last_seen_comment_id`` anchor, so earlier comments are not replayed.
+_QA_RESTART_NOTICE_BODY = (
+    "**Symphony**: The daemon restarted during a turn, and this ticket is now "
+    "in QA, so I stopped. I will not re-read earlier comments. Reply with "
+    "anything I should know to continue the work."
+)
 # Posted (once) when a human comment lands while a turn is genuinely
 # running.  The em dash and apostrophes are deliberate; keep verbatim.
 _IGNORED_COMMENT_BODY = (
@@ -847,6 +855,28 @@ class Orchestrator:
                                 self._state.save()
                                 repaired = True
                         if repaired:
+                            comment = self._post_comment_safe(
+                                tid,
+                                _QA_RESTART_NOTICE_BODY,
+                                return_comment=True,
+                                kind="qa",
+                            )
+                            with self._state_lock:
+                                # Advance last_seen past the notice so the
+                                # comments that preceded the restart are not
+                                # re-seen as new and replayed, which would
+                                # re-enter the work and kill the serve again.
+                                # Re-check the entry: step-3 cleanup removes
+                                # entries without holding _state_lock.
+                                live_entry = self._state.get(tid)
+                                if live_entry is not None:
+                                    if comment is not None:
+                                        live_entry.last_seen_comment_id = comment.id
+                                    else:
+                                        baseline = self._baseline_comment_id(tid)
+                                        if baseline is not None:
+                                            live_entry.last_seen_comment_id = baseline
+                                    self._state.save()
                             logger.info(
                                 "Repaired stale working QA ticket %s to needs_input",
                                 tid,
@@ -1081,14 +1111,32 @@ class Orchestrator:
                     self._state.save()
                     made_resumable = True
             if made_resumable:
-                self._post_comment_safe(
+                comment = self._post_comment_safe(
                     winner_id,
                     (
                         "**Symphony**: The running turn was stopped because this ticket "
                         "entered QA. A reply on this ticket will continue the work."
                     ),
+                    return_comment=True,
                     kind="qa",
                 )
+                with self._state_lock:
+                    # Advance last_seen past the notice so the comments that fed
+                    # the cancelled turn are not re-seen as new and replayed on
+                    # the next tick (which would re-enter the work and kill the
+                    # serve again).  Re-check the entry: step-3 cleanup removes
+                    # entries without holding _state_lock, and get() returns the
+                    # live entry, so never upsert here or a cleaned-up ticket
+                    # would be resurrected.
+                    live_entry = self._state.get(winner_id)
+                    if live_entry is not None:
+                        if comment is not None:
+                            live_entry.last_seen_comment_id = comment.id
+                        else:
+                            baseline = self._baseline_comment_id(winner_id)
+                            if baseline is not None:
+                                live_entry.last_seen_comment_id = baseline
+                        self._state.save()
 
         logger.info(
             "Starting QA serve for %s (workspace=%s)", winner.identifier, workspace_path

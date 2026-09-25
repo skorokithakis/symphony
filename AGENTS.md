@@ -93,11 +93,15 @@ shutting down, or the ticket is no longer triggered — see `_is_still_triggered
   in-flight turn and, for a `working` or `bootstrapping` state entry, parks the
   daemon status at `TicketStatus.needs_input` with one `qa`-kind
   reply-to-continue comment while deliberately leaving the tracker ticket in
-  QA. Tick step 4 repairs a stale `working` + in-QA entry to
-  `TicketStatus.needs_input` instead of skipping it. The repair starts no
-  turn, so the normal comment-gated resume pipeline runs on the following tick
-  when a session id is available; without one, the existing fresh-start branch
-  handles the reply.
+  QA. That notice becomes the new `last_seen_comment_id`, so the comments that
+  fed the cancelled turn are not replayed on the following tick. Tick step 4
+  repairs a stale `working` + in-QA entry to `TicketStatus.needs_input` instead
+  of skipping it, posting a `qa`-kind restart notice and anchoring
+  `last_seen_comment_id` to it the same way. The repair starts no turn, so the
+  normal comment-gated resume pipeline runs on the following tick when a
+  session id is available; without one, the existing fresh-start branch handles
+  the reply. Either way only a human comment posted after the notice resumes
+  work, so the serve survives across ticks until then.
 - **The bot's own comments are filtered out** via a visible Markdown footer
   of the form `*Symphony · {kind}*` appended at the tracker-adapter layer
   from a `kind` string supplied by the caller (e.g. `"workspace"`, `"final"`,
@@ -336,8 +340,10 @@ shutting down, or the ticket is no longer triggered — see `_is_still_triggered
   without an end-of-turn `last_seen_comment_id` write (`AgentCancelled` or an
   `_is_cancelled` early return), a warned comment remains pending. In the QA
   case, `_reconcile_serve` parks the cancelled `working`/`bootstrapping` entry
-  at `TicketStatus.needs_input` without touching `last_seen_comment_id`, so
-  the next turn on a human reply consumes the pending comments. An untriggered
+  at `TicketStatus.needs_input` and advances `last_seen_comment_id` to its
+  reply-to-continue notice, so the comments that fed the cancelled turn
+  (including any warned mid-turn comment) are deliberately dropped rather than
+  consumed by the next turn; only a later human comment resumes. An untriggered
   ticket is left alone; preserving restart recovery is worth more than
   suppressing that late read.
 - **No auto-retry on failure.** A failed ticket goes to `TicketStatus.failed`
@@ -363,8 +369,10 @@ shutting down, or the ticket is no longer triggered — see `_is_still_triggered
   `needs_input_state`. When a winner has an in-flight agent turn,
   `_reconcile_serve` cancels it before starting the serve. For a `working` or
   `bootstrapping` state entry, the cancellation parks the internal status at
-  `TicketStatus.needs_input` and posts one `qa`-kind comment telling the human
-  to reply to continue; it deliberately leaves the tracker ticket in QA.
+  `TicketStatus.needs_input`, posts one `qa`-kind comment telling the human to
+  reply to continue, and advances `last_seen_comment_id` to that comment (or to
+  the newest comment id if the post fails) so earlier comments are not
+  replayed; it deliberately leaves the tracker ticket in QA.
   Nothing about the serve is persisted to `state.json`; on daemon restart the
   reconciliation loop sees the ticket still in `qa_state` and relaunches the
   serve naturally. A serve that dies (within or after the 10s watchdog window)
