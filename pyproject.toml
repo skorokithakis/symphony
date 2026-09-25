@@ -21,7 +21,7 @@ Source = "https://github.com/skorokithakis/symphony"
 [project.scripts]
 symphony-linear = "symphony_linear.cli:main"
 
-[project.optional-dependencies]
+[dependency-groups]
 dev = [
     "pytest>=7.0",
 ]
