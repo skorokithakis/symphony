@@ -1849,10 +1849,17 @@ class TestNewTicketRehydrate:
             for tid, state in transition_calls
         )
 
-        # Restore comment was posted.
+        # Exactly one comment was posted: the standalone "Restored" comment
+        # carrying the workspace path and session id.  No placeholder metadata
+        # comment (which would never be edited) is posted on restore.
         post_calls = linear.calls.get("post_comment", [])
-        assert any("Workspace restored" in body for _, body in post_calls)
-        assert any("*Symphony · workspace*" in body for _, body in post_calls)
+        assert len(post_calls) == 1
+        restored_body = post_calls[0][1]
+        assert "**Restored**" in restored_body
+        assert "/tmp/ws/TEAM-1" in restored_body
+        assert "ses-rehydrated" in restored_body
+        assert "session: _pending_" not in restored_body
+        assert "*Symphony · workspace*" in restored_body
 
         # Session mapping is NOT deleted on use (durable).
         assert orchestrator._state.get_session("ticket-1") is not None
@@ -1952,6 +1959,13 @@ class TestNewTicketRehydrate:
         assert ticket_state.agent == "omp"
         assert orchestrator._state.get_session("ticket-1") is None
 
+        # A discarded snapshot keeps the fresh-ticket behaviour: the
+        # placeholder metadata comment is posted (and edited after the turn),
+        # never a "Restored" comment.
+        post_calls = linear.calls.get("post_comment", [])
+        assert any("session: _pending_" in body for _, body in post_calls)
+        assert not any("**Restored**" in body for _, body in post_calls)
+
     @pytest.mark.parametrize(
         "recorded_workspace_path",
         [None, "/tmp/ws/my-org-my-repo-42/repo"],
@@ -2008,6 +2022,13 @@ class TestNewTicketRehydrate:
         ticket_state = orchestrator._state.get("ticket-1")
         assert ticket_state is not None
         assert ticket_state.session_id == "ses-fresh"
+
+        # A discarded snapshot keeps the fresh-ticket behaviour: the
+        # placeholder metadata comment is posted (and edited after the turn),
+        # never a "Restored" comment.
+        post_calls = linear.calls.get("post_comment", [])
+        assert any("session: _pending_" in body for _, body in post_calls)
+        assert not any("**Restored**" in body for _, body in post_calls)
 
     def test_rehydrate_transition_failure_does_not_crash(
         self, orchestrator: Orchestrator, linear: FakeLinearClient
@@ -2100,13 +2121,16 @@ class TestNewTicketRehydrate:
         ):
             orchestrator._new_ticket_pipeline(_make_issue())
 
-        # Verify the restore comment has the workspace kind footer.
+        # Verify exactly one "Restored" comment is posted, with the workspace
+        # kind footer, the path and the session id, and no placeholder.
         post_calls = linear.calls.get("post_comment", [])
-        restore_comments = [
-            body for _, body in post_calls if "Workspace restored" in body
-        ]
-        assert len(restore_comments) == 1
-        assert "*Symphony · workspace*" in restore_comments[0]
+        assert len(post_calls) == 1
+        body = post_calls[0][1]
+        assert "**Restored**" in body
+        assert "/tmp/ws/TEAM-1" in body
+        assert "ses-abc" in body
+        assert "session: _pending_" not in body
+        assert "*Symphony · workspace*" in body
 
     def test_rehydrate_with_pending_comment_posts_resuming_message_and_skips_transition(
         self, orchestrator: Orchestrator, linear: FakeLinearClient
@@ -2176,16 +2200,16 @@ class TestNewTicketRehydrate:
             for tid, state in transition_calls
         )
 
-        # The "resuming" message was posted, the "next comment" message was not.
+        # One "Restored" comment was posted with the "resuming" tail and the
+        # path/session; no placeholder metadata comment is posted.
         post_calls = linear.calls.get("post_comment", [])
-        assert any(
-            "Workspace restored — resuming previous session with your comment." in body
-            for _, body in post_calls
-        )
-        assert not any(
-            "previous session will resume on your next comment" in body
-            for _, body in post_calls
-        )
+        assert len(post_calls) == 1
+        body = post_calls[0][1]
+        assert "**Restored**" in body
+        assert "/tmp/ws/TEAM-1" in body
+        assert "ses-rehydrated" in body
+        assert "Resuming the previous session with your comment." in body
+        assert "session: _pending_" not in body
 
     def test_rehydrate_without_pending_comment_keeps_current_behavior(
         self, orchestrator: Orchestrator, linear: FakeLinearClient
@@ -2246,17 +2270,16 @@ class TestNewTicketRehydrate:
             for tid, state in transition_calls
         )
 
-        # The "next comment" message was posted, the "resuming" message was not.
+        # The "next comment" tail was posted, the "resuming" tail was not, and
+        # no placeholder metadata comment is posted.
         post_calls = linear.calls.get("post_comment", [])
-        assert any(
-            "Workspace restored — previous session will resume on your next comment."
-            in body
-            for _, body in post_calls
-        )
-        assert not any(
-            "resuming previous session with your comment" in body
-            for _, body in post_calls
-        )
+        assert len(post_calls) == 1
+        body = post_calls[0][1]
+        assert "**Restored**" in body
+        assert "/tmp/ws/TEAM-1" in body
+        assert "ses-rehydrated" in body
+        assert "The previous session will resume on your next comment." in body
+        assert "session: _pending_" not in body
 
     def test_rehydrate_pending_check_error_keeps_current_behavior(
         self, orchestrator: Orchestrator, linear: FakeLinearClient
@@ -2322,17 +2345,16 @@ class TestNewTicketRehydrate:
             for tid, state in transition_calls
         )
 
-        # The "next comment" message was posted, the "resuming" message was not.
+        # The "next comment" tail was posted, the "resuming" tail was not, and
+        # no placeholder metadata comment is posted.
         post_calls = linear.calls.get("post_comment", [])
-        assert any(
-            "Workspace restored — previous session will resume on your next comment."
-            in body
-            for _, body in post_calls
-        )
-        assert not any(
-            "resuming previous session with your comment" in body
-            for _, body in post_calls
-        )
+        assert len(post_calls) == 1
+        body = post_calls[0][1]
+        assert "**Restored**" in body
+        assert "/tmp/ws/TEAM-1" in body
+        assert "ses-rehydrated" in body
+        assert "The previous session will resume on your next comment." in body
+        assert "session: _pending_" not in body
 
 
 # ---------------------------------------------------------------------------

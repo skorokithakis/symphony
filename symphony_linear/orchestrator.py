@@ -108,6 +108,22 @@ def _build_metadata_comment_final(workspace_path: str, session_id: str) -> str:
     return f"**Symphony**\n- workspace: `{workspace_path}`\n- session: `{session_id}`"
 
 
+def _build_restored_comment(
+    workspace_path: str, session_id: str, *, pending: bool
+) -> str:
+    tail = (
+        "Resuming the previous session with your comment."
+        if pending
+        else "The previous session will resume on your next comment."
+    )
+    return (
+        f"**Restored**\n"
+        f"- workspace: `{workspace_path}`\n"
+        f"- session: `{session_id}`\n\n"
+        f"{tail}"
+    )
+
+
 def _build_initial_prompt(title: str, description: str | None) -> str:
     desc = description.strip() if description else "(no description)"
     return (
@@ -1842,22 +1858,13 @@ class Orchestrator:
         if self._is_cancelled(tid):
             return
 
-        # --- Post metadata comment ---
-        meta_comment: Comment | None = None
-        meta_body = _build_metadata_comment(workspace_path)
-        try:
-            meta_comment = self._tracker.post_comment(tid, meta_body, "workspace")
-            ticket_state.metadata_comment_id = meta_comment.id
-            with self._state_lock:
-                self._state.upsert(ticket_state)
-                self._state.save()
-        except Exception:
-            logger.exception("Failed to post metadata comment for %s", tid)
-
-        if self._is_cancelled(tid):
-            return
-
         # --- Rehydrate from session snapshot (if any) ---
+        # This runs *before* the metadata comment is posted.  A restore returns
+        # without ever taking a turn, so posting the placeholder ("session:
+        # _pending_") first would leave it stranded — nothing would edit it at
+        # the end of a turn.  A restore instead posts one standalone
+        # "Restored" comment carrying the workspace path and session id.
+        #
         # A snapshot is only resumable when it was created by the configured
         # agent against the checkout we are about to mount: session ids are
         # keyed by both.  Any mismatch is treated like a stale agent session
@@ -1900,35 +1907,45 @@ class Orchestrator:
             # _resume_pipeline picks up the pending comment (state stays
             # needs_input, so step 4 schedules it) and transitions the tracker
             # to in_progress itself.  _pending_human_comments swallows tracker
-            # failures, so an error falls through to the needs_input path below.
-            if (
+            # failures, so an error falls through to the needs_input path.
+            pending = (
                 self._pending_human_comments(tid, session_record.last_seen_comment_id)
                 is not None
-            ):
-                self._post_comment_safe(
-                    tid,
-                    "Workspace restored — resuming previous session with your comment.",
-                    kind="workspace",
-                )
-                logger.info("New ticket pipeline rehydrated for %s", tid)
-                return
-
-            # Transition the tracker to needs_input.
-            try:
-                self._tracker.transition_to(tid, TransitionTarget.needs_input)
-            except Exception:
-                logger.exception(
-                    "Failed to transition %s to '%s' during rehydrate",
-                    tid,
-                    TransitionTarget.needs_input.value,
-                )
+            )
+            if not pending:
+                # Transition the tracker to needs_input.
+                try:
+                    self._tracker.transition_to(tid, TransitionTarget.needs_input)
+                except Exception:
+                    logger.exception(
+                        "Failed to transition %s to '%s' during rehydrate",
+                        tid,
+                        TransitionTarget.needs_input.value,
+                    )
 
             self._post_comment_safe(
                 tid,
-                "Workspace restored — previous session will resume on your next comment.",
+                _build_restored_comment(
+                    workspace_path, session_record.session_id, pending=pending
+                ),
                 kind="workspace",
             )
             logger.info("New ticket pipeline rehydrated for %s", tid)
+            return
+
+        # --- Post metadata comment ---
+        meta_comment: Comment | None = None
+        meta_body = _build_metadata_comment(workspace_path)
+        try:
+            meta_comment = self._tracker.post_comment(tid, meta_body, "workspace")
+            ticket_state.metadata_comment_id = meta_comment.id
+            with self._state_lock:
+                self._state.upsert(ticket_state)
+                self._state.save()
+        except Exception:
+            logger.exception("Failed to post metadata comment for %s", tid)
+
+        if self._is_cancelled(tid):
             return
 
         # --- Fetch description + build prompt ---
