@@ -17,6 +17,7 @@ from typing import Any, Callable, TypeVar
 from symphony_linear import omp, opencode, pi
 from symphony_linear.agent_runner import AgentCancelled, AgentError, AgentTimeout
 from symphony_linear.attachments import process_attachments
+from symphony_linear.checkout import CheckoutWatcher, validate_checkout
 from symphony_linear.config import AppConfig
 from symphony_linear.linear import (
     Comment,
@@ -276,6 +277,11 @@ class Orchestrator:
         self._wake = threading.Event()
         self._tick_lock = threading.Lock()
 
+        # Git checkout watcher, set on run() entry (or injected by tests).
+        # None means "not initialised yet".  When disabled, the daemon is not
+        # running from a git checkout and auto-restart is off.
+        self._checkout_watcher: CheckoutWatcher | None = None
+
     # ==================================================================
     # Public API
     # ==================================================================
@@ -296,13 +302,21 @@ class Orchestrator:
         """
         self._webhook_server = server
 
-    def run(self) -> None:
+    def run(self) -> bool:
+        """Run the poll loop until shutdown or a checkout-triggered restart.
+
+        Returns True when the daemon should be re-executed into a new
+        revision of its own checkout, False on an ordinary shutdown.  The
+        re-exec itself lives in ``cli.main`` so this method stays testable.
+        """
         self._install_signal_handlers()
         logger.info(
             "symphony-lite daemon starting (poll interval=%ds)",
             self._config.poll_interval_seconds,
         )
         self._warn_if_dir_map_exposes_config()
+        if self._checkout_watcher is None:
+            self._checkout_watcher = CheckoutWatcher()
         self._recover_state()
         if self._webhook_server is not None:
             self._webhook_server.start()
@@ -313,6 +327,7 @@ class Orchestrator:
             )
         else:
             logger.info("Webhook disabled; relying on polling only")
+        restart_requested = False
         try:
             while not self._shutdown.is_set():
                 self._wake.clear()
@@ -322,6 +337,13 @@ class Orchestrator:
                 # exiting.
                 if self._shutdown.is_set():
                     break
+                if self._checkout_restart_due():
+                    restart_requested = True
+                    break
+                if self._shutdown.is_set():
+                    # A signal landed while the checkout was being checked or
+                    # validated; honour it instead of running another tick.
+                    break
                 try:
                     self._tick()
                 except Exception:
@@ -329,6 +351,47 @@ class Orchestrator:
                 self._wake.wait(timeout=self._config.poll_interval_seconds)
         finally:
             self._shutdown_handler()
+        # A signal that landed during cleanup still means "exit", not
+        # "restart": only report a restart if no shutdown was requested.
+        return restart_requested and not self._shutdown.is_set()
+
+    def _checkout_restart_due(self) -> bool:
+        """Return True when the checkout moved and a restart is safe.
+
+        Called once per loop iteration, *before* ``_tick``.  Only ``_tick``
+        schedules work, so an empty ``_active_tasks`` here means nothing can
+        start between this check and the shutdown handler.  A failed
+        validation advances the baseline to the new HEAD so it is not retried
+        every tick; the next HEAD move triggers another attempt.
+        """
+        watcher = self._checkout_watcher
+        if watcher is None or watcher.disabled:
+            return False
+        new_head = watcher.read_head()
+        if new_head is None or new_head == watcher.head:
+            return False
+        with self._task_lock:
+            if self._active_tasks:
+                return False
+        if not validate_checkout(self._workspace):
+            watcher.head = new_head
+            return False
+        if self._shutdown.is_set():
+            # A signal landed while validating; exit rather than re-exec.
+            return False
+        # Validation can take up to a minute, so HEAD may have moved again.
+        # Leave the baseline untouched so the next tick validates the newer
+        # HEAD instead of restarting into a revision we did not validate.
+        if watcher.read_head() != new_head:
+            return False
+        old_head = watcher.head or ""
+        watcher.head = new_head
+        logger.info(
+            "Checkout changed (%s -> %s); restarting",
+            old_head[:12],
+            new_head[:12],
+        )
+        return True
 
     # ==================================================================
     # Startup recovery

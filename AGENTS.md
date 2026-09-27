@@ -296,6 +296,29 @@ shutting down, or the ticket is no longer triggered — see `_is_still_triggered
   `status = working`), and the recovery re-run only fires for tickets that are
   still in the tick's trigger list and not cleanup-refused, so untriggered
   tickets and dirty-workspace refusals are left alone.
+- **Auto-restart on checkout change is detection only.** `CheckoutWatcher`
+  (in `checkout.py`) stores the package checkout's `HEAD` at `run()` startup
+  and, each loop iteration *before* `_tick`, re-reads it. A change counts only
+  when `_active_tasks` is empty under `_task_lock` — only `_tick` schedules
+  tasks, so nothing can start between the check and the shutdown handler — and
+  the new checkout must pass `python -m symphony_linear --validate-config
+  --workspace <ws>` (`validate_checkout`, 60s timeout), and its `HEAD` is
+  re-read after validation so a move during the minute-long subprocess defers
+  to the next tick. On success `run()`
+  breaks the loop with `True`, so `_shutdown_handler` runs normally (webhook
+  stop, subprocess/serve kill, state save), after which `run()` reports a
+  restart only if no signal set `_shutdown` during cleanup, and `cli.main`
+  then re-execs the original command line with `os.execv`, keeping the same
+  PID. On validation
+  failure the baseline advances to the new `HEAD` so it is not retried every
+  tick, and the old code keeps running until the next move. If the package
+  directory is not a checkout, git is unavailable, or
+  `symphony_linear/__init__.py` is not tracked (`git ls-files --error-unmatch`)
+  — e.g. a wheel installed into the repo's own `.venv` — the watcher is
+  `disabled`, logs once at INFO, and `read_head` is never called again. A
+  running QA serve never blocks a restart; it is relaunched after. Uncommitted
+  edits do not move `HEAD`, so they never trigger it, and `execv` lives in
+  `cli.py` (not the orchestrator) to keep the latter testable.
 - **Mid-turn comments are explicitly discarded, not queued.** A human
   comment posted while a turn is genuinely running (a task is in flight in
   `_active_tasks`) is never consumed by that turn, so tick step 4 posts one

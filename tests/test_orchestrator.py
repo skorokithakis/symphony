@@ -18,6 +18,7 @@ from unittest import mock
 import pytest
 
 from symphony_linear.attachments import AttachmentResult
+from symphony_linear.checkout import CheckoutWatcher
 from symphony_linear.config import AppConfig
 from symphony_linear.linear import (
     Comment,
@@ -184,9 +185,39 @@ class FakeLinearClient:
         self._responses[method] = value
 
 
+class _FakeCheckoutWatcher(CheckoutWatcher):
+    """Test double for `CheckoutWatcher` with a settable current HEAD."""
+
+    def __init__(
+        self, baseline: str | None, current: str | None, *, disabled: bool = False
+    ) -> None:
+        # Deliberately skip CheckoutWatcher.__init__: it shells out to git.
+        self.head = baseline
+        self.current = current
+        self.disabled = disabled
+        self.read_calls = 0
+
+    def read_head(self) -> str | None:
+        self.read_calls += 1
+        return self.current
+
+
 # ---------------------------------------------------------------------------
 # Fixtures
 # ---------------------------------------------------------------------------
+
+
+@pytest.fixture(autouse=True)
+def _disable_real_checkout_watcher(monkeypatch: pytest.MonkeyPatch) -> None:
+    """Keep ``run()`` in this module from shelling out to git.
+
+    Tests of the watcher itself inject their own double; the real git path is
+    covered only by ``tests/test_checkout.py``.
+    """
+    monkeypatch.setattr(
+        "symphony_linear.orchestrator.CheckoutWatcher",
+        lambda *args, **kwargs: _FakeCheckoutWatcher(None, None, disabled=True),
+    )
 
 
 @pytest.fixture
@@ -9894,6 +9925,231 @@ class TestTickLock:
             assert len(fetch_calls) == 2, (
                 f"Expected 2 fetch calls, got {len(fetch_calls)}"
             )
+
+
+# ---------------------------------------------------------------------------
+# Checkout-change auto-restart
+# ---------------------------------------------------------------------------
+
+
+class TestCheckoutRestart:
+    def test_unchanged_head_does_not_restart(self, orchestrator: Orchestrator) -> None:
+        orchestrator._checkout_watcher = _FakeCheckoutWatcher("aaa", "aaa")
+
+        with mock.patch(
+            "symphony_linear.orchestrator.validate_checkout"
+        ) as mock_validate:
+            assert orchestrator._checkout_restart_due() is False
+
+        mock_validate.assert_not_called()
+
+    def test_changed_while_task_in_flight_waits_until_idle(
+        self, orchestrator: Orchestrator
+    ) -> None:
+        watcher = _FakeCheckoutWatcher("aaa", "bbb")
+        orchestrator._checkout_watcher = watcher
+        with orchestrator._task_lock:
+            orchestrator._active_tasks["ticket-1"] = Future()
+
+        with mock.patch(
+            "symphony_linear.orchestrator.validate_checkout"
+        ) as mock_validate:
+            assert orchestrator._checkout_restart_due() is False
+        # In flight: no validation, baseline untouched, so the change is still
+        # pending once the task finishes.
+        mock_validate.assert_not_called()
+        assert watcher.head == "aaa"
+
+        with orchestrator._task_lock:
+            orchestrator._active_tasks.clear()
+        with mock.patch(
+            "symphony_linear.orchestrator.validate_checkout", return_value=True
+        ):
+            assert orchestrator._checkout_restart_due() is True
+        assert watcher.head == "bbb"
+
+    def test_changed_idle_and_valid_requests_restart(
+        self, orchestrator: Orchestrator, caplog: pytest.LogCaptureFixture
+    ) -> None:
+        watcher = _FakeCheckoutWatcher("aaaaaaaaaaaa", "bbbbbbbbbbbb")
+        orchestrator._checkout_watcher = watcher
+
+        with mock.patch(
+            "symphony_linear.orchestrator.validate_checkout", return_value=True
+        ) as mock_validate:
+            with caplog.at_level(logging.INFO, logger="symphony_linear.orchestrator"):
+                assert orchestrator._checkout_restart_due() is True
+
+        mock_validate.assert_called_once_with(orchestrator._workspace)
+        assert watcher.head == "bbbbbbbbbbbb"
+        assert "Checkout changed (aaaaaaaaaaaa -> bbbbbbbbbbbb); restarting" in (
+            caplog.text
+        )
+
+    def test_head_moved_again_during_validation_does_not_restart(
+        self, orchestrator: Orchestrator
+    ) -> None:
+        """A newer HEAD than the validated one defers the restart to next tick."""
+        watcher = _FakeCheckoutWatcher("aaa", "bbb")
+        orchestrator._checkout_watcher = watcher
+
+        with (
+            mock.patch.object(watcher, "read_head", side_effect=["bbb", "ccc"]),
+            mock.patch(
+                "symphony_linear.orchestrator.validate_checkout", return_value=True
+            ) as mock_validate,
+        ):
+            assert orchestrator._checkout_restart_due() is False
+
+        mock_validate.assert_called_once_with(orchestrator._workspace)
+        # Baseline is untouched, so the next tick validates the newer HEAD.
+        assert watcher.head == "aaa"
+
+    def test_validation_failure_advances_baseline_without_retry(
+        self, orchestrator: Orchestrator
+    ) -> None:
+        watcher = _FakeCheckoutWatcher("aaa", "bbb")
+        orchestrator._checkout_watcher = watcher
+
+        with mock.patch(
+            "symphony_linear.orchestrator.validate_checkout", return_value=False
+        ) as mock_validate:
+            assert orchestrator._checkout_restart_due() is False
+            # Baseline advanced, so the same HEAD is not validated again.
+            assert orchestrator._checkout_restart_due() is False
+
+        assert mock_validate.call_count == 1
+        assert watcher.head == "bbb"
+
+    def test_later_move_after_failed_validation_retries(
+        self, orchestrator: Orchestrator
+    ) -> None:
+        watcher = _FakeCheckoutWatcher("aaa", "bbb")
+        orchestrator._checkout_watcher = watcher
+
+        with mock.patch(
+            "symphony_linear.orchestrator.validate_checkout", return_value=False
+        ):
+            assert orchestrator._checkout_restart_due() is False
+
+        watcher.current = "ccc"
+        with mock.patch(
+            "symphony_linear.orchestrator.validate_checkout", return_value=True
+        ) as mock_validate:
+            assert orchestrator._checkout_restart_due() is True
+        mock_validate.assert_called_once_with(orchestrator._workspace)
+
+    def test_disabled_watcher_never_reads_or_validates(
+        self, orchestrator: Orchestrator
+    ) -> None:
+        watcher = _FakeCheckoutWatcher("aaa", "bbb", disabled=True)
+        orchestrator._checkout_watcher = watcher
+
+        with mock.patch(
+            "symphony_linear.orchestrator.validate_checkout"
+        ) as mock_validate:
+            assert orchestrator._checkout_restart_due() is False
+
+        assert watcher.read_calls == 0
+        mock_validate.assert_not_called()
+
+    def test_run_restarts_and_runs_shutdown_handler(
+        self, orchestrator: Orchestrator, linear: FakeLinearClient
+    ) -> None:
+        linear.set_response("list_triggered_issues", [])
+        orchestrator._config.poll_interval_seconds = 30
+        orchestrator._checkout_watcher = _FakeCheckoutWatcher("aaa", "bbb")
+        orchestrator._install_signal_handlers = lambda: None  # type: ignore[method-assign]
+
+        ticks: list[int] = []
+        orchestrator._tick = lambda: ticks.append(1)  # type: ignore[method-assign]
+
+        shutdown_called = threading.Event()
+        original_shutdown = orchestrator._shutdown_handler
+
+        def spy_shutdown() -> None:
+            shutdown_called.set()
+            original_shutdown()
+
+        orchestrator._shutdown_handler = spy_shutdown  # type: ignore[method-assign]
+
+        with mock.patch(
+            "symphony_linear.orchestrator.validate_checkout", return_value=True
+        ):
+            result = orchestrator.run()
+
+        assert result is True
+        assert shutdown_called.is_set()
+        assert ticks == []
+
+    def test_run_returns_false_on_plain_shutdown(
+        self, orchestrator: Orchestrator
+    ) -> None:
+        orchestrator._install_signal_handlers = lambda: None  # type: ignore[method-assign]
+        orchestrator._checkout_watcher = _FakeCheckoutWatcher("aaa", "bbb")
+        orchestrator._shutdown.set()
+
+        assert orchestrator.run() is False
+
+    def test_run_does_not_restart_when_signal_lands_during_validation(
+        self, orchestrator: Orchestrator, linear: FakeLinearClient
+    ) -> None:
+        linear.set_response("list_triggered_issues", [])
+        orchestrator._checkout_watcher = _FakeCheckoutWatcher("aaa", "bbb")
+        orchestrator._install_signal_handlers = lambda: None  # type: ignore[method-assign]
+
+        def signal_during_validation(_workspace: object) -> bool:
+            orchestrator._shutdown.set()
+            return True
+
+        with mock.patch(
+            "symphony_linear.orchestrator.validate_checkout",
+            side_effect=signal_during_validation,
+        ):
+            assert orchestrator.run() is False
+
+    def test_run_does_not_restart_when_signal_lands_during_cleanup(
+        self, orchestrator: Orchestrator, linear: FakeLinearClient
+    ) -> None:
+        """A signal during _shutdown_handler turns a restart into a plain exit."""
+        import signal
+
+        linear.set_response("list_triggered_issues", [])
+        orchestrator._config.poll_interval_seconds = 30
+        orchestrator._checkout_watcher = _FakeCheckoutWatcher("aaa", "bbb")
+        orchestrator._install_signal_handlers = lambda: None  # type: ignore[method-assign]
+        orchestrator._tick = lambda: None  # type: ignore[method-assign]
+
+        original_shutdown = orchestrator._shutdown_handler
+
+        def signal_during_cleanup() -> None:
+            orchestrator._signal_handler(signal.SIGTERM, None)
+            original_shutdown()
+
+        orchestrator._shutdown_handler = signal_during_cleanup  # type: ignore[method-assign]
+
+        with mock.patch(
+            "symphony_linear.orchestrator.validate_checkout", return_value=True
+        ):
+            assert orchestrator.run() is False
+
+    def test_signal_handler_still_exits_loop(self, orchestrator: Orchestrator) -> None:
+        import signal
+
+        orchestrator._config.poll_interval_seconds = 30
+        orchestrator._checkout_watcher = _FakeCheckoutWatcher("aaa", "aaa")
+        orchestrator._install_signal_handlers = lambda: None  # type: ignore[method-assign]
+
+        ran = threading.Event()
+
+        def tick() -> None:
+            ran.set()
+            orchestrator._signal_handler(signal.SIGTERM, None)
+
+        orchestrator._tick = tick  # type: ignore[method-assign]
+
+        assert orchestrator.run() is False
+        assert ran.is_set()
 
 
 # ---------------------------------------------------------------------------

@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import argparse
+import os
 import shutil
 import sys
 
@@ -111,7 +112,24 @@ def main(argv: list[str] | None = None) -> None:
             on_wake=orchestrator.wake,
         )
         orchestrator.set_webhook_server(webhook_server)
-    orchestrator.run()
+    # `is True` (not truthiness) so a mocked orchestrator in tests cannot
+    # accidentally trigger a re-exec.
+    if orchestrator.run() is True:
+        _reexec()
+
+
+def _reexec() -> None:
+    """Replace this process with the original command line.
+
+    The orchestrator asks for a restart when its git checkout moved, but the
+    re-exec lives here so the orchestrator stays testable.  ``os.execv`` keeps
+    the same PID (and open descriptors), so a supervisor such as systemd sees
+    one process that never exited and needs no configuration change.
+    """
+    argv = list(sys.orig_argv)
+    if not argv:
+        argv = [sys.executable, "-m", "symphony_linear", *sys.argv[1:]]
+    os.execv(sys.executable, argv)
 
 
 def _create_tracker(config: AppConfig) -> Tracker:

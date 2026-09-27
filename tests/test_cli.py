@@ -2,13 +2,14 @@
 
 from __future__ import annotations
 
+import sys
 from pathlib import Path
 from shutil import which as shutil_which
 from unittest import mock
 
 import pytest
 
-from symphony_linear.cli import main
+from symphony_linear.cli import _reexec, main
 
 
 # ---------------------------------------------------------------------------
@@ -283,3 +284,66 @@ linear:
         assert "PATH" in stderr
         assert str(sandbox_bin) in stderr
         assert "SYMPHONY_SANDBOX_PATH" in stderr
+
+
+# ---------------------------------------------------------------------------
+# Checkout-change auto-restart re-exec
+# ---------------------------------------------------------------------------
+
+
+class TestCheckoutRestartReexec:
+    def test_restart_reexecs_original_command_line(self, tmp_path: Path) -> None:
+        _write_config(tmp_path, _CONFIG_WITHOUT_WEBHOOK)
+        orig_argv = ["/py", "/bin/symphony-linear", "--workspace", "x"]
+
+        with (
+            mock.patch("symphony_linear.cli.load_state") as mock_load_state,
+            mock.patch("symphony_linear.cli._create_tracker") as mock_create_tracker,
+            mock.patch("symphony_linear.cli.Orchestrator") as mock_orch_class,
+            mock.patch("symphony_linear.cli.os.execv") as mock_execv,
+            mock.patch("symphony_linear.cli.sys.orig_argv", orig_argv),
+        ):
+            mock_load_state.return_value = mock.MagicMock()
+            mock_create_tracker.return_value = mock.MagicMock()
+            mock_orch = mock.MagicMock()
+            mock_orch.run.return_value = True
+            mock_orch_class.return_value = mock_orch
+
+            main(["--workspace", str(tmp_path)])
+
+        mock_execv.assert_called_once_with(sys.executable, orig_argv)
+
+    def test_no_restart_does_not_execv(self, tmp_path: Path) -> None:
+        _write_config(tmp_path, _CONFIG_WITHOUT_WEBHOOK)
+
+        with (
+            mock.patch("symphony_linear.cli.load_state") as mock_load_state,
+            mock.patch("symphony_linear.cli._create_tracker") as mock_create_tracker,
+            mock.patch("symphony_linear.cli.Orchestrator") as mock_orch_class,
+            mock.patch("symphony_linear.cli.os.execv") as mock_execv,
+        ):
+            mock_load_state.return_value = mock.MagicMock()
+            mock_create_tracker.return_value = mock.MagicMock()
+            mock_orch = mock.MagicMock()
+            mock_orch.run.return_value = False
+            mock_orch_class.return_value = mock_orch
+
+            main(["--workspace", str(tmp_path)])
+
+        mock_execv.assert_not_called()
+
+    def test_reexec_falls_back_to_sys_argv(self) -> None:
+        with (
+            mock.patch("symphony_linear.cli.sys.orig_argv", []),
+            mock.patch(
+                "symphony_linear.cli.sys.argv",
+                ["/bin/symphony-linear", "--workspace", "/ws"],
+            ),
+            mock.patch("symphony_linear.cli.os.execv") as mock_execv,
+        ):
+            _reexec()
+
+        mock_execv.assert_called_once_with(
+            sys.executable,
+            [sys.executable, "-m", "symphony_linear", "--workspace", "/ws"],
+        )
