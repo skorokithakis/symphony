@@ -91,6 +91,10 @@ _IGNORED_COMMENT_BODY = (
     "and I'll pick it up."
 )
 
+# Delays between retries of a pipeline state transition.  Three attempts
+# total: the first immediately, then one after each delay.
+_TRANSITION_RETRY_DELAYS: tuple[float, ...] = (2.0, 5.0)
+
 # ---------------------------------------------------------------------------
 # Helpers
 # ---------------------------------------------------------------------------
@@ -1847,7 +1851,7 @@ class Orchestrator:
 
         # --- Transition Linear to In Progress ---
         try:
-            self._tracker.transition_to(tid, TransitionTarget.in_progress)
+            self._transition_with_retry(tid, TransitionTarget.in_progress)
         except Exception:
             logger.exception(
                 "Failed to transition %s to '%s'",
@@ -2172,7 +2176,7 @@ class Orchestrator:
         # --- Transition to Needs Input ---
         transition_ok = True
         try:
-            self._tracker.transition_to(tid, TransitionTarget.needs_input)
+            self._transition_with_retry(tid, TransitionTarget.needs_input)
         except Exception:
             logger.exception(
                 "Failed to transition %s to '%s'",
@@ -2180,6 +2184,18 @@ class Orchestrator:
                 TransitionTarget.needs_input.value,
             )
             transition_ok = False
+
+        if not transition_ok and self._is_cancelled(tid):
+            # Cancelled while the transition was retrying (e.g. a human moved
+            # the ticket to QA and the serve reconcile cancelled the turn):
+            # that path has already recorded the intended state, so leave it
+            # alone rather than overwrite it with a failed/reverted status.
+            logger.info(
+                "Ticket %s cancelled during '%s' transition — leaving state unchanged",
+                tid,
+                TransitionTarget.needs_input.value,
+            )
+            return
 
         with self._state_lock:
             ticket_state.status = (
@@ -2377,7 +2393,7 @@ class Orchestrator:
             return
 
         try:
-            self._tracker.transition_to(tid, TransitionTarget.in_progress)
+            self._transition_with_retry(tid, TransitionTarget.in_progress)
         except Exception:
             logger.exception(
                 "Failed to transition %s to '%s'",
@@ -2508,7 +2524,7 @@ class Orchestrator:
 
         transition_ok = True
         try:
-            self._tracker.transition_to(tid, TransitionTarget.needs_input)
+            self._transition_with_retry(tid, TransitionTarget.needs_input)
         except Exception:
             logger.exception(
                 "Failed to transition %s to '%s'",
@@ -2516,6 +2532,18 @@ class Orchestrator:
                 TransitionTarget.needs_input.value,
             )
             transition_ok = False
+
+        if not transition_ok and self._is_cancelled(tid):
+            # Cancelled while the transition was retrying (e.g. a human moved
+            # the ticket to QA and the serve reconcile cancelled the turn):
+            # that path has already recorded the intended state, so leave it
+            # alone rather than overwrite it with a failed/reverted status.
+            logger.info(
+                "Ticket %s cancelled during '%s' transition — leaving state unchanged",
+                tid,
+                TransitionTarget.needs_input.value,
+            )
+            return
 
         with self._state_lock:
             ticket_state.status = (
@@ -2587,6 +2615,56 @@ class Orchestrator:
             self._state.upsert(ticket_state)
             self._state.save()
 
+    def _transition_with_retry(self, tid: str, target: TransitionTarget) -> None:
+        """Move *tid* to *target*, retrying only transient tracker failures.
+
+        Pipeline transitions (In Progress at turn start, Needs Input at turn
+        end, and the failure path's Needs Input) are retried here because no
+        other code re-applies them: the poll loop only schedules turns, it
+        never reconciles tracker state, so a transition lost to a transient
+        HTTP 503 or read timeout leaves the ticket in the wrong state until a
+        human notices.  Other tracker calls can rely on the poll loop — a
+        missed comment fetch or issue list simply happens again next tick.
+
+        Retries only :class:`TrackerTransientError`, up to three attempts
+        total (about 2s then 5s apart).  Non-transient errors (``ValueError``
+        for an unmapped target, any other ``TrackerError``) propagate
+        immediately, and the last transient error is re-raised after the final
+        attempt, so each call site's existing ``except``/log handling is
+        unchanged.
+        """
+        attempts = len(_TRANSITION_RETRY_DELAYS) + 1
+        for attempt in range(attempts):
+            try:
+                self._tracker.transition_to(tid, target)
+                return
+            except TrackerTransientError:
+                if attempt == attempts - 1:
+                    raise
+                delay = _TRANSITION_RETRY_DELAYS[attempt]
+                logger.warning(
+                    "Transient tracker error transitioning %s to '%s' "
+                    "(attempt %d/%d) — retrying in %.0fs",
+                    tid,
+                    target.value,
+                    attempt + 1,
+                    attempts,
+                    delay,
+                )
+                time.sleep(delay)
+                if self._is_cancelled(tid):
+                    # The ticket may have been moved to QA during the sleep,
+                    # and _reconcile_serve cancels its turn there.  Retrying
+                    # now could pull it out of QA with a stale needs_input
+                    # transition, so give up and let the call site decide.
+                    logger.info(
+                        "Ticket %s cancelled during retry of transition to "
+                        "'%s' — not retrying",
+                        tid,
+                        target.value,
+                    )
+                    raise
+
     def _transition_failed_to_needs_input(self, tid: str) -> None:
         """Best-effort: move a failed ticket to the tracker's Needs Input state.
 
@@ -2606,7 +2684,7 @@ class Orchestrator:
             )
             return
         try:
-            self._tracker.transition_to(tid, TransitionTarget.needs_input)
+            self._transition_with_retry(tid, TransitionTarget.needs_input)
         except Exception:
             logger.exception(
                 "Failed to transition %s to '%s'",

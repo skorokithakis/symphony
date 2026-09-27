@@ -51,7 +51,11 @@ from symphony_linear.state import (
     TicketState,
     TicketStatus,
 )
-from symphony_linear.tracker import TrackerError, TransitionTarget
+from symphony_linear.tracker import (
+    TrackerError,
+    TrackerTransientError,
+    TransitionTarget,
+)
 from symphony_linear.webhook import WebhookServer
 from symphony_linear.workspace import SecretsError, WorkspaceError
 
@@ -252,6 +256,96 @@ class TestAgentCallables:
 
 
 # ---------------------------------------------------------------------------
+# Transition retry
+# ---------------------------------------------------------------------------
+
+
+class TestTransitionWithRetry:
+    def test_transient_error_retried_then_succeeds(
+        self, orchestrator: Orchestrator, linear: FakeLinearClient
+    ) -> None:
+        attempts = 0
+        original = linear.transition_to_state
+
+        def flaky(issue_id: str, state_name: str) -> None:
+            nonlocal attempts
+            attempts += 1
+            if attempts == 1:
+                raise TrackerTransientError("503 Service Unavailable")
+            original(issue_id, state_name)
+
+        with (
+            mock.patch.object(linear, "transition_to_state", side_effect=flaky),
+            mock.patch("symphony_linear.orchestrator.time.sleep") as mock_sleep,
+        ):
+            orchestrator._transition_with_retry(
+                "ticket-1", TransitionTarget.needs_input
+            )
+
+        # The retried attempt reached the tracker; nothing raised.
+        assert attempts == 2
+        assert linear.calls.get("transition_to_state") == [("ticket-1", "Needs Input")]
+        mock_sleep.assert_called_once_with(2.0)
+
+    def test_transient_errors_exhaust_three_attempts_and_reraise(
+        self, orchestrator: Orchestrator
+    ) -> None:
+        transitions = mock.Mock(side_effect=TrackerTransientError("503"))
+        with (
+            mock.patch.object(orchestrator._tracker, "transition_to", transitions),
+            mock.patch("symphony_linear.orchestrator.time.sleep") as mock_sleep,
+        ):
+            with pytest.raises(TrackerTransientError):
+                orchestrator._transition_with_retry(
+                    "ticket-1", TransitionTarget.in_progress
+                )
+
+        assert transitions.call_count == 3
+        assert [call.args[0] for call in mock_sleep.call_args_list] == [2.0, 5.0]
+
+    @pytest.mark.parametrize("error", [ValueError("no mapping"), TrackerError("boom")])
+    def test_non_transient_error_fails_immediately(
+        self, orchestrator: Orchestrator, error: Exception
+    ) -> None:
+        transitions = mock.Mock(side_effect=error)
+        with (
+            mock.patch.object(orchestrator._tracker, "transition_to", transitions),
+            mock.patch("symphony_linear.orchestrator.time.sleep") as mock_sleep,
+        ):
+            with pytest.raises(type(error)):
+                orchestrator._transition_with_retry(
+                    "ticket-1", TransitionTarget.in_progress
+                )
+
+        assert transitions.call_count == 1
+        mock_sleep.assert_not_called()
+
+    def test_cancelled_during_retry_sleep_stops_retrying(
+        self, orchestrator: Orchestrator
+    ) -> None:
+        transitions = mock.Mock(side_effect=TrackerTransientError("503"))
+
+        def cancel_on_sleep(_delay: float) -> None:
+            orchestrator._cancel_ticket("ticket-1")
+
+        with (
+            mock.patch.object(orchestrator._tracker, "transition_to", transitions),
+            mock.patch(
+                "symphony_linear.orchestrator.time.sleep", side_effect=cancel_on_sleep
+            ) as mock_sleep,
+        ):
+            with pytest.raises(TrackerTransientError):
+                orchestrator._transition_with_retry(
+                    "ticket-1", TransitionTarget.needs_input
+                )
+
+        # The cancellation check after the sleep re-raises instead of making
+        # the second attempt.
+        assert transitions.call_count == 1
+        mock_sleep.assert_called_once_with(2.0)
+
+
+# ---------------------------------------------------------------------------
 # New ticket pipeline
 # ---------------------------------------------------------------------------
 
@@ -321,6 +415,83 @@ class TestNewTicketPipeline:
         _, kw = mock_finalize.call_args
         assert kw.get("on_subprocess") is not None
         assert kw.get("auto_branch") is True  # global default
+
+    def test_transient_in_progress_failure_is_retried(
+        self, orchestrator: Orchestrator, linear: FakeLinearClient
+    ) -> None:
+        attempts = 0
+        original = linear.transition_to_state
+
+        def flaky(issue_id: str, state_name: str) -> None:
+            nonlocal attempts
+            if state_name == "In Progress" and attempts == 0:
+                attempts += 1
+                raise TrackerTransientError("503 Service Unavailable")
+            original(issue_id, state_name)
+
+        with (
+            mock.patch("symphony_linear.orchestrator.clone_workspace") as mock_clone,
+            mock.patch(
+                "symphony_linear.orchestrator.finalize_workspace"
+            ) as mock_finalize,
+            mock.patch(
+                "symphony_linear.orchestrator.load_project_config"
+            ) as mock_load_config,
+            mock.patch("symphony_linear.orchestrator.run_initial") as mock_run_initial,
+            mock.patch.object(linear, "transition_to_state", side_effect=flaky),
+            mock.patch("symphony_linear.orchestrator.time.sleep") as mock_sleep,
+        ):
+            issue = self._setup_mocks(
+                mock_clone, mock_finalize, mock_load_config, mock_run_initial, linear
+            )
+            orchestrator._new_ticket_pipeline(issue)
+
+        # The retried in_progress transition landed and the turn still ran.
+        mock_run_initial.assert_called_once()
+        assert ("ticket-1", "In Progress") in linear.calls["transition_to_state"]
+        assert ("ticket-1", "Needs Input") in linear.calls["transition_to_state"]
+        ts = orchestrator._state.get("ticket-1")
+        assert ts is not None
+        assert ts.status == TicketStatus.needs_input
+        mock_sleep.assert_called_once_with(2.0)
+
+    def test_end_of_turn_transition_cancelled_leaves_state_unchanged(
+        self, orchestrator: Orchestrator, linear: FakeLinearClient
+    ) -> None:
+        original = linear.transition_to_state
+
+        def flaky(issue_id: str, state_name: str) -> None:
+            if state_name == "Needs Input":
+                raise TrackerTransientError("503 Service Unavailable")
+            original(issue_id, state_name)
+
+        def cancel_on_sleep(_delay: float) -> None:
+            orchestrator._cancel_ticket("ticket-1")
+
+        with (
+            mock.patch("symphony_linear.orchestrator.clone_workspace") as mock_clone,
+            mock.patch(
+                "symphony_linear.orchestrator.finalize_workspace"
+            ) as mock_finalize,
+            mock.patch(
+                "symphony_linear.orchestrator.load_project_config"
+            ) as mock_load_config,
+            mock.patch("symphony_linear.orchestrator.run_initial") as mock_run_initial,
+            mock.patch.object(linear, "transition_to_state", side_effect=flaky),
+            mock.patch(
+                "symphony_linear.orchestrator.time.sleep", side_effect=cancel_on_sleep
+            ),
+        ):
+            issue = self._setup_mocks(
+                mock_clone, mock_finalize, mock_load_config, mock_run_initial, linear
+            )
+            orchestrator._new_ticket_pipeline(issue)
+
+        ts = orchestrator._state.get("ticket-1")
+        assert ts is not None
+        # The cancelling path owns the state now, so the failed transition must
+        # not overwrite the working status with failed/needs_input.
+        assert ts.status == TicketStatus.working
 
     def test_omp_dispatches_initial_and_tags_session(
         self, orchestrator: Orchestrator, linear: FakeLinearClient
@@ -2396,6 +2567,43 @@ class TestResumePipeline:
             orchestrator._resume_pipeline(ts)
         updated = orchestrator._state.get("ticket-1")
         assert updated is not None and updated.status == TicketStatus.needs_input
+
+    def test_end_of_turn_transition_cancelled_leaves_state_unchanged(
+        self, orchestrator: Orchestrator, linear: FakeLinearClient
+    ) -> None:
+        ts = self._make_ts()
+        orchestrator._state.upsert(ts)
+        linear.set_response("list_comments_since", [_make_comment("c1", "Fix please")])
+        original = linear.transition_to_state
+
+        def flaky(issue_id: str, state_name: str) -> None:
+            if state_name == "Needs Input":
+                raise TrackerTransientError("503 Service Unavailable")
+            original(issue_id, state_name)
+
+        def cancel_on_sleep(_delay: float) -> None:
+            orchestrator._cancel_ticket("ticket-1")
+
+        with (
+            mock.patch(
+                "symphony_linear.orchestrator.load_project_config",
+                return_value=ProjectConfig(),
+            ),
+            mock.patch(
+                "symphony_linear.orchestrator.run_resume", return_value=("Done!", None)
+            ),
+            mock.patch.object(linear, "transition_to_state", side_effect=flaky),
+            mock.patch(
+                "symphony_linear.orchestrator.time.sleep", side_effect=cancel_on_sleep
+            ),
+        ):
+            orchestrator._resume_pipeline(ts)
+
+        updated = orchestrator._state.get("ticket-1")
+        assert updated is not None
+        # The cancelling path owns the state now, so the failed transition must
+        # not overwrite the working status with failed/needs_input.
+        assert updated.status == TicketStatus.working
 
     def test_omp_dispatches_resume(
         self, orchestrator: Orchestrator, linear: FakeLinearClient
