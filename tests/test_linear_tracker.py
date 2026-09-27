@@ -875,6 +875,40 @@ class TestDownloadAttachment:
 
 
 # ---------------------------------------------------------------------------
+# is_upload_url
+# ---------------------------------------------------------------------------
+
+
+class TestIsUploadUrl:
+    """Tests for LinearTracker.is_upload_url."""
+
+    @pytest.mark.parametrize(
+        "url",
+        [
+            "https://uploads.linear.app/abc/file.zip",
+            "https://public.linear.app/abc/file.bin",
+        ],
+    )
+    def test_upload_hosts(self, tracker: LinearTracker, url: str) -> None:
+        assert tracker.is_upload_url(url) is True
+
+    @pytest.mark.parametrize(
+        "url",
+        [
+            "https://linear.app/team/issue/ABC-1",
+            "https://evil.example.com/file.zip",
+            "http://uploads.linear.app/abc/file.zip",
+            "https://169.254.169.254/x.png",
+            "https://github.com/org/repo/pull/1",
+            "",
+            "not a url",
+        ],
+    )
+    def test_non_upload_urls(self, tracker: LinearTracker, url: str) -> None:
+        assert tracker.is_upload_url(url) is False
+
+
+# ---------------------------------------------------------------------------
 # _LinearAuth (host-based auth header restriction)
 # ---------------------------------------------------------------------------
 

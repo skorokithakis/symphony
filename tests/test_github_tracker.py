@@ -2795,6 +2795,50 @@ class TestDownloadAttachment:
 
 
 # ---------------------------------------------------------------------------
+# is_upload_url
+# ---------------------------------------------------------------------------
+
+
+class TestIsUploadUrl:
+    """Tests for GitHubTracker.is_upload_url.
+
+    The download allowlist contains all of github.com, so extraction must
+    only treat ``/user-attachments/`` paths as uploads there.
+    """
+
+    @pytest.mark.parametrize(
+        "url",
+        [
+            "https://user-images.githubusercontent.com/123/x.png",
+            "https://private-user-images.githubusercontent.com/123/x.png",
+            "https://objects.githubusercontent.com/x.bin",
+            "https://github.com/user-attachments/assets/abc-123",
+            "https://github.com/user-attachments/files/123/archive.zip",
+        ],
+    )
+    def test_upload_urls(self, tracker: GitHubTracker, url: str) -> None:
+        assert tracker.is_upload_url(url) is True
+
+    @pytest.mark.parametrize(
+        "url",
+        [
+            "https://github.com/org/repo",
+            "https://github.com/org/repo/pull/1",
+            "https://github.com/org/repo/blob/main/file.zip",
+            "https://github.com/user-attachments",
+            "https://raw.githubusercontent.com/org/repo/main/f.py",
+            "https://evil.example.com/x.png",
+            "http://user-images.githubusercontent.com/123/x.png",
+            "https://169.254.169.254/x.png",
+            "",
+            "not a url",
+        ],
+    )
+    def test_non_upload_urls(self, tracker: GitHubTracker, url: str) -> None:
+        assert tracker.is_upload_url(url) is False
+
+
+# ---------------------------------------------------------------------------
 # _GitHubAuth (host-based auth header restriction)
 # ---------------------------------------------------------------------------
 

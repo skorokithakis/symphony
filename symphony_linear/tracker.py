@@ -282,6 +282,19 @@ class Tracker(Protocol):
         """
         ...
 
+    def is_upload_url(self, url: str) -> bool:
+        """Return ``True`` if *url* points at an uploaded-file host.
+
+        Per-backend because what counts as a "downloadable upload" differs:
+        Linear serves uploads from dedicated hosts, while GitHub's download
+        allowlist also contains all of ``github.com`` — ordinary repo and
+        PR links must not be downloaded.
+
+        Used by attachment extraction to decide whether a plain Markdown
+        link or a bare URL is an uploaded file worth fetching.
+        """
+        ...
+
     def is_in_qa(self, issue: Issue) -> bool:
         """Return ``True`` when QA is enabled and *issue* is in the QA state.
 

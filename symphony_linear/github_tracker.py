@@ -43,14 +43,17 @@ logger = logging.getLogger(__name__)
 # Auth class for attachment downloads
 # ---------------------------------------------------------------------------
 
-_GITHUB_UPLOAD_HOSTS: frozenset[str] = frozenset(
+_GITHUB_UPLOAD_URL_HOSTS: frozenset[str] = frozenset(
     {
         "user-images.githubusercontent.com",
         "private-user-images.githubusercontent.com",
-        "github.com",
         "objects.githubusercontent.com",
     }
 )
+
+# Hosts we will *download* from.  Wider than the upload-URL hosts because
+# legacy GitHub asset URLs are served directly from github.com.
+_GITHUB_UPLOAD_HOSTS: frozenset[str] = _GITHUB_UPLOAD_URL_HOSTS | {"github.com"}
 
 
 class _GitHubAuth(httpx.Auth):
@@ -1164,6 +1167,25 @@ class GitHubTracker:
             raise
         except (httpx.TimeoutException, httpx.NetworkError) as exc:
             raise AttachmentDownloadError(f"Download failed for {url}: {exc}") from exc
+
+    def is_upload_url(self, url: str) -> bool:
+        """Return ``True`` when *url* is an HTTPS GitHub upload URL.
+
+        The ``*.githubusercontent.com`` upload hosts always qualify.  On
+        ``github.com`` only the ``/user-attachments/`` path is an upload:
+        the download allowlist also contains all of ``github.com``, so repo
+        and PR links must be excluded from extraction.
+        """
+        try:
+            parsed = urlparse(url)
+            host = parsed.hostname
+        except ValueError:
+            return False
+        if parsed.scheme != "https" or host is None:
+            return False
+        if host == "github.com":
+            return parsed.path.startswith("/user-attachments/")
+        return host in _GITHUB_UPLOAD_URL_HOSTS
 
     # ------------------------------------------------------------------
     # QA helpers

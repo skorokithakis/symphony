@@ -2,11 +2,14 @@
 
 from __future__ import annotations
 
+import os
 from unittest.mock import Mock
 
 
 from symphony_linear.attachments import (
+    AttachmentRef,
     AttachmentResult,
+    extract_attachment_refs,
     extract_image_refs,
     process_attachments,
 )
@@ -271,6 +274,91 @@ class TestExtractImageRefs:
 
 
 # ===========================================================================
+# extract_attachment_refs
+# ===========================================================================
+
+
+class TestExtractAttachmentRefs:
+    """Tests for :func:`extract_attachment_refs`."""
+
+    @staticmethod
+    def _tracker(upload_urls: set[str]) -> Mock:
+        tracker = Mock()
+        tracker.is_upload_url = Mock(side_effect=lambda url: url in upload_urls)
+        return tracker
+
+    def test_images_are_included_unchanged(self) -> None:
+        """Image extraction keeps working with a tracker that rejects links."""
+        body = "![a](https://example.com/a.png)\nhttps://example.com/b.jpg"
+        refs = extract_attachment_refs(body, self._tracker(set()))
+        assert refs == [
+            AttachmentRef("https://example.com/a.png", "a"),
+            AttachmentRef("https://example.com/b.jpg", ""),
+        ]
+
+    def test_plain_link_to_upload_is_picked_up(self) -> None:
+        """A plain Markdown link whose URL is an upload is extracted."""
+        url = "https://uploads.linear.app/abc/archive.zip"
+        body = f"[archive.zip]({url})"
+        refs = extract_attachment_refs(body, self._tracker({url}))
+        assert refs == [AttachmentRef(url, "archive.zip")]
+
+    def test_plain_link_to_non_upload_ignored(self) -> None:
+        """Ordinary repo/PR-style links are not extracted."""
+        body = "[a PR](https://github.com/org/repo/pull/1)"
+        assert extract_attachment_refs(body, self._tracker(set())) == []
+
+    def test_bare_upload_url_picked_up(self) -> None:
+        """A bare URL that is an upload but not an image is extracted."""
+        url = "https://uploads.linear.app/abc/download"
+        body = url
+        refs = extract_attachment_refs(body, self._tracker({url}))
+        assert refs == [AttachmentRef(url, "")]
+
+    def test_bare_non_upload_non_image_ignored(self) -> None:
+        """A bare non-image URL that is not an upload is ignored."""
+        body = "https://example.com/page"
+        assert extract_attachment_refs(body, self._tracker(set())) == []
+
+    def test_dedup_images_win_source_order(self) -> None:
+        """A URL used both as a plain link and as an image stays an image.
+
+        The image pass runs first, so the image's alt text is retained.
+        """
+        url = "https://uploads.linear.app/abc/x.png"
+        body = f"[link text]({url})\n![alt]({url})"
+        refs = extract_attachment_refs(body, self._tracker({url}))
+        assert refs == [AttachmentRef(url, "alt")]
+
+    def test_mixed_order_is_images_then_links_then_bare(self) -> None:
+        """Extraction order: markdown images, links, then bare uploads."""
+        img = "https://example.com/pic.png"
+        link = "https://uploads.linear.app/a/one.zip"
+        bare = "https://uploads.linear.app/a/two.bin"
+        body = f"{bare}\n[one.zip]({link})\n![pic]({img})"
+        refs = extract_attachment_refs(body, self._tracker({link, bare}))
+        assert refs == [
+            AttachmentRef(img, "pic"),
+            AttachmentRef(link, "one.zip"),
+            AttachmentRef(bare, ""),
+        ]
+
+    def test_link_with_title_is_parsed(self) -> None:
+        """An optional trailing title on a plain link is accepted."""
+        url = "https://uploads.linear.app/a/f.bin"
+        body = f'[f.bin]({url} "the file")'
+        refs = extract_attachment_refs(body, self._tracker({url}))
+        assert refs == [AttachmentRef(url, "f.bin")]
+
+    def test_image_syntax_is_not_double_counted_as_link(self) -> None:
+        """Image syntax must not also match the plain-link pass."""
+        url = "https://uploads.linear.app/a/pic.png"
+        body = f"![alt]({url})"
+        refs = extract_attachment_refs(body, self._tracker({url}))
+        assert refs == [AttachmentRef(url, "alt")]
+
+
+# ===========================================================================
 # process_attachments
 # ===========================================================================
 
@@ -285,9 +373,16 @@ class TestProcessAttachments:
     @staticmethod
     def _fake_tracker(
         responses: dict[str, tuple[bytes, str | None] | Exception],
+        upload_urls: set[str] | None = None,
     ) -> Mock:
         """Return a Mock whose ``download_attachment`` maps URLs to
-        ``(data, content_type)`` or raises an exception."""
+        ``(data, content_type)`` or raises an exception.
+
+        ``is_upload_url`` reports a URL as uploadable when it is in
+        *upload_urls*; when that is omitted it falls back to "in
+        *responses*", which is the useful default for tests that only
+        exercise markdown-image extraction.
+        """
         tracker = Mock()
         tracker.download_attachment = Mock(
             side_effect=lambda url, _responses=responses: (
@@ -296,6 +391,9 @@ class TestProcessAttachments:
                 else (_ for _ in ()).throw(_responses[url])  # type: ignore[union-attr]
             )
         )
+        if upload_urls is None:
+            upload_urls = {url for url in responses}
+        tracker.is_upload_url = Mock(side_effect=lambda url: url in upload_urls)
         return tracker
 
     # ------------------------------------------------------------------
@@ -408,8 +506,8 @@ class TestProcessAttachments:
         written = (attachments_dir / "img-0001.jpg").read_bytes()
         assert written == b"jpegdata"
 
-    def test_unsupported_extension_from_url(self, tmp_path) -> None:
-        """A Markdown image with an unsupported extension (.pdf) is skipped."""
+    def test_image_syntax_non_image_saved_as_generic(self, tmp_path) -> None:
+        """An image-syntax ref whose target is not an image is saved generically."""
         body = "![doc](https://example.com/doc.pdf)"
         attachments_dir = tmp_path / "attachments"
         tracker = self._fake_tracker(
@@ -419,14 +517,15 @@ class TestProcessAttachments:
         result = process_attachments(body, tracker, str(attachments_dir))
 
         assert result.file_paths == []
-        assert result.skipped == [
-            ("https://example.com/doc.pdf", "unsupported type: application/pdf")
-        ]
-        # Body is left untouched for skipped URLs.
-        assert result.rewritten_body == body
+        assert result.skipped == []
+        # Downgraded refs become plain links, not image syntax.
+        assert result.rewritten_body == (
+            "[doc](/tmp/symphony-attachments/file-0001-doc)"
+        )
+        assert (attachments_dir / "file-0001-doc").read_bytes() == b"pdfdata"
 
-    def test_unsupported_content_type(self, tmp_path) -> None:
-        """A URL with no extension and a non-image Content-Type is skipped."""
+    def test_image_syntax_svg_saved_as_generic(self, tmp_path) -> None:
+        """A URL with no extension and a non-image Content-Type is generic."""
         body = "![file](https://example.com/download)"
         attachments_dir = tmp_path / "attachments"
         tracker = self._fake_tracker(
@@ -436,21 +535,280 @@ class TestProcessAttachments:
         result = process_attachments(body, tracker, str(attachments_dir))
 
         assert result.file_paths == []
-        assert result.skipped == [
-            ("https://example.com/download", "unsupported type: image/svg+xml")
-        ]
+        assert result.skipped == []
+        assert result.rewritten_body == (
+            "[file](/tmp/symphony-attachments/file-0001-file)"
+        )
+        assert (attachments_dir / "file-0001-file").read_bytes() == b"svgdata"
 
-    def test_no_extension_no_content_type(self, tmp_path) -> None:
-        """A URL with no extension and no Content-Type is skipped."""
+    def test_no_extension_no_content_type_named_from_alt(self, tmp_path) -> None:
+        """With no type info, an image-syntax ref still uses its alt text."""
         body = "![thing](https://example.com/opaque)"
         attachments_dir = tmp_path / "attachments"
         tracker = self._fake_tracker({"https://example.com/opaque": (b"binary", None)})
 
         result = process_attachments(body, tracker, str(attachments_dir))
 
-        assert result.skipped == [
-            ("https://example.com/opaque", "unsupported type: unknown")
-        ]
+        assert result.skipped == []
+        assert result.file_paths == []
+        assert result.rewritten_body == (
+            "[thing](/tmp/symphony-attachments/file-0001-thing)"
+        )
+        assert (attachments_dir / "file-0001-thing").read_bytes() == b"binary"
+
+    # ------------------------------------------------------------------
+    # Non-image uploads
+    # ------------------------------------------------------------------
+
+    def test_plain_link_zip_downloaded_but_not_a_file_path(self, tmp_path) -> None:
+        """A plain link to an upload is downloaded and its link text is kept."""
+        url = "https://uploads.linear.app/abc/archive.zip"
+        body = f"Please inspect [archive.zip]({url})."
+        attachments_dir = tmp_path / "attachments"
+        tracker = self._fake_tracker({url: (b"PK\x03\x04zip", "application/zip")})
+
+        result = process_attachments(body, tracker, str(attachments_dir))
+
+        sandbox_path = "/tmp/symphony-attachments/file-0001-archive.zip"
+        assert result.rewritten_body == f"Please inspect [archive.zip]({sandbox_path})."
+        # Non-images are never handed to the agent as --file arguments.
+        assert result.file_paths == []
+        assert result.skipped == []
+        assert (
+            attachments_dir / "file-0001-archive.zip"
+        ).read_bytes() == b"PK\x03\x04zip"
+
+    def test_bare_upload_url_becomes_plain_path(self, tmp_path) -> None:
+        """A bare non-image upload URL is replaced by the sandbox path."""
+        url = "https://uploads.linear.app/abc/download"
+        body = url
+        attachments_dir = tmp_path / "attachments"
+        tracker = self._fake_tracker({url: (b"data", "application/zip")})
+
+        result = process_attachments(body, tracker, str(attachments_dir))
+
+        # No link text: fall back to the Content-Type extension.
+        sandbox_path = "/tmp/symphony-attachments/file-0001.zip"
+        assert result.rewritten_body == sandbox_path
+        assert result.file_paths == []
+        assert (attachments_dir / "file-0001.zip").read_bytes() == b"data"
+
+    def test_bare_upload_url_no_name_no_content_type(self, tmp_path) -> None:
+        """With nothing to name it, a bare upload becomes plain ``file-NNNN``."""
+        url = "https://uploads.linear.app/abc/download"
+        tracker = self._fake_tracker({url: (b"data", None)})
+
+        result = process_attachments(url, tracker, str(tmp_path / "a"))
+
+        assert result.rewritten_body == "/tmp/symphony-attachments/file-0001"
+        assert (tmp_path / "a" / "file-0001").read_bytes() == b"data"
+
+    def test_plain_link_to_non_upload_ignored(self, tmp_path) -> None:
+        """Ordinary links are left alone; no download is attempted."""
+        body = "[a PR](https://github.com/org/repo/pull/1)"
+        tracker = self._fake_tracker({})
+
+        result = process_attachments(body, tracker, str(tmp_path / "a"))
+
+        assert result.rewritten_body == body
+        assert result.file_paths == []
+        assert result.skipped == []
+        tracker.download_attachment.assert_not_called()
+
+    def test_image_and_generic_share_index(self, tmp_path) -> None:
+        """Images and non-image files draw from one shared index."""
+        img = "https://example.com/pic.png"
+        doc = "https://uploads.linear.app/abc/notes.pdf"
+        body = f"![pic]({img})\n[notes.pdf]({doc})"
+        attachments_dir = tmp_path / "attachments"
+        tracker = self._fake_tracker(
+            {
+                img: (b"png", "image/png"),
+                doc: (b"pdf", "application/pdf"),
+            }
+        )
+
+        result = process_attachments(body, tracker, str(attachments_dir))
+
+        assert result.file_paths == ["/tmp/symphony-attachments/img-0001.png"]
+        assert result.rewritten_body == (
+            "![pic](/tmp/symphony-attachments/img-0001.png)\n"
+            "[notes.pdf](/tmp/symphony-attachments/file-0002-notes.pdf)"
+        )
+        assert result.next_index == 2
+        assert (attachments_dir / "file-0002-notes.pdf").exists()
+
+    def test_generic_filename_sanitised_and_truncated(self, tmp_path) -> None:
+        """Path separators and unsafe characters are replaced, and it truncates."""
+        url = "https://uploads.linear.app/abc/evil"
+        body = f"[../../etc/passwd]({url})"
+        attachments_dir = tmp_path / "attachments"
+        tracker = self._fake_tracker({url: (b"data", "application/octet-stream")})
+
+        result = process_attachments(body, tracker, str(attachments_dir))
+
+        assert ".." in result.rewritten_body  # link text preserved in the prompt
+        written = [p.name for p in attachments_dir.iterdir()]
+        assert len(written) == 1
+        name = written[0]
+        assert name.startswith("file-0001-")
+        assert "/" not in name and "\\" not in name
+        # The path component of the name must not escape the attachments dir.
+        assert os.path.basename(name) == name
+
+    def test_generic_name_truncated_to_max_length(self, tmp_path) -> None:
+        """An over-long link text is truncated to a filesystem-safe length."""
+        url = "https://uploads.linear.app/abc/long"
+        body = f"[{'x' * 200}.zip]({url})"
+        attachments_dir = tmp_path / "attachments"
+        tracker = self._fake_tracker({url: (b"data", "application/zip")})
+
+        process_attachments(body, tracker, str(attachments_dir))
+
+        name = next(attachments_dir.iterdir()).name
+        assert len(name) <= len("file-0001-") + 80
+
+    def test_generic_respects_existing_count(self, tmp_path) -> None:
+        """Non-image numbering continues from *existing_count*."""
+        url = "https://uploads.linear.app/abc/a.zip"
+        body = f"[a.zip]({url})"
+        attachments_dir = tmp_path / "attachments"
+        tracker = self._fake_tracker({url: (b"data", "application/zip")})
+
+        result = process_attachments(
+            body, tracker, str(attachments_dir), existing_count=4
+        )
+
+        assert result.rewritten_body == (
+            "[a.zip](/tmp/symphony-attachments/file-0005-a.zip)"
+        )
+        assert result.next_index == 5
+
+    def test_generic_byte_cap_exceeded(self, tmp_path) -> None:
+        """The per-turn cap applies to non-image files too."""
+        url = "https://uploads.linear.app/abc/big.zip"
+        body = f"[big.zip]({url})"
+        attachments_dir = tmp_path / "attachments"
+        tracker = self._fake_tracker({url: (b"12345", "application/zip")})
+
+        result = process_attachments(
+            body, tracker, str(attachments_dir), per_turn_byte_cap=4
+        )
+
+        assert result.file_paths == []
+        assert result.skipped == [(url, "turn byte cap exceeded")]
+        assert result.rewritten_body == body
+        assert not (attachments_dir / "file-0001-big.zip").exists()
+
+    def test_link_and_bare_same_url_both_rewritten(self, tmp_path) -> None:
+        """A generic URL appearing as a link and a bare URL is rewritten twice."""
+        url = "https://uploads.linear.app/abc/f.bin"
+        body = f"[f.bin]({url})\n{url}"
+        attachments_dir = tmp_path / "attachments"
+        tracker = self._fake_tracker({url: (b"data", None)})
+
+        result = process_attachments(body, tracker, str(attachments_dir))
+
+        sandbox_path = "/tmp/symphony-attachments/file-0001-f.bin"
+        assert result.rewritten_body == f"[f.bin]({sandbox_path})\n{sandbox_path}"
+
+    def test_plain_link_to_image_added_to_file_paths(self, tmp_path) -> None:
+        """A plain link whose target really is an image is treated as one."""
+        url = "https://uploads.linear.app/abc/pic.png"
+        body = f"[pic]({url})"
+        attachments_dir = tmp_path / "attachments"
+        tracker = self._fake_tracker({url: (b"png", "image/png")})
+
+        result = process_attachments(body, tracker, str(attachments_dir))
+
+        assert result.file_paths == ["/tmp/symphony-attachments/img-0001.png"]
+        assert result.rewritten_body == (
+            "[pic](/tmp/symphony-attachments/img-0001.png)"
+        )
+
+    # ------------------------------------------------------------------
+    # URL rewriting must be token-bounded (no prefix corruption)
+    # ------------------------------------------------------------------
+
+    def test_shared_prefix_url_not_corrupted(self, tmp_path) -> None:
+        """A shorter upload URL must not corrupt a longer one sharing its prefix.
+
+        Regression: the bare-URL pass used a global ``str.replace``, so
+        rewriting ``.../a`` also rewrote the ``.../a`` prefix of
+        ``.../a/b.zip`` on the following line.
+        """
+        short = "https://uploads.linear.app/a"
+        long = "https://uploads.linear.app/a/b.zip"
+        body = f"{short}\n{long}"
+        attachments_dir = tmp_path / "attachments"
+        tracker = self._fake_tracker(
+            {short: (b"1", None), long: (b"2", "application/zip")}
+        )
+
+        result = process_attachments(body, tracker, str(attachments_dir))
+
+        assert result.rewritten_body == (
+            "/tmp/symphony-attachments/file-0001\n"
+            "/tmp/symphony-attachments/file-0002.zip"
+        )
+        assert (attachments_dir / "file-0001").read_bytes() == b"1"
+        assert (attachments_dir / "file-0002.zip").read_bytes() == b"2"
+
+    def test_image_url_prefix_does_not_corrupt_longer_generic(self, tmp_path) -> None:
+        """Same regression for an image URL that is a prefix of a later upload.
+
+        The image is processed first; its shorter URL must not eat into the
+        longer bare URL's line.
+        """
+        short = "https://uploads.linear.app/a.png"
+        long = "https://uploads.linear.app/a.png/b.zip"
+        body = f"{short}\n{long}"
+        attachments_dir = tmp_path / "attachments"
+        tracker = self._fake_tracker(
+            {short: (b"png", "image/png"), long: (b"zip", "application/zip")}
+        )
+
+        result = process_attachments(body, tracker, str(attachments_dir))
+
+        assert result.rewritten_body == (
+            "![](/tmp/symphony-attachments/img-0001.png)\n"
+            "/tmp/symphony-attachments/file-0002.zip"
+        )
+        assert result.file_paths == ["/tmp/symphony-attachments/img-0001.png"]
+
+    # ------------------------------------------------------------------
+    # Content-Type classification
+    # ------------------------------------------------------------------
+
+    def test_declared_non_image_type_wins_over_png_url(self, tmp_path) -> None:
+        """A declared non-image Content-Type beats a misleading .png URL."""
+        url = "https://uploads.linear.app/abc/photo.png"
+        body = f"![photo]({url})"
+        attachments_dir = tmp_path / "attachments"
+        tracker = self._fake_tracker({url: (b"<html>", "text/html")})
+
+        result = process_attachments(body, tracker, str(attachments_dir))
+
+        # Not an image: excluded from file_paths and downgraded to a link.
+        assert result.file_paths == []
+        assert result.rewritten_body == (
+            "[photo](/tmp/symphony-attachments/file-0001-photo)"
+        )
+        assert (attachments_dir / "file-0001-photo").read_bytes() == b"<html>"
+
+    def test_generic_content_type_falls_back_to_url_extension(self, tmp_path) -> None:
+        """An opaque octet-stream type still lets the .png URL decide."""
+        url = "https://uploads.linear.app/abc/photo.png"
+        body = f"![photo]({url})"
+        attachments_dir = tmp_path / "attachments"
+        tracker = self._fake_tracker({url: (b"png", "application/octet-stream")})
+
+        result = process_attachments(body, tracker, str(attachments_dir))
+
+        assert result.file_paths == ["/tmp/symphony-attachments/img-0001.png"]
+        assert result.rewritten_body == (
+            "![photo](/tmp/symphony-attachments/img-0001.png)"
+        )
 
     # ------------------------------------------------------------------
     # Download errors

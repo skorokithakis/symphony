@@ -254,6 +254,21 @@ class LinearTracker:
         except (httpx.TimeoutException, httpx.NetworkError) as exc:
             raise AttachmentDownloadError(f"Download failed for {url}: {exc}") from exc
 
+    def is_upload_url(self, url: str) -> bool:
+        """Return ``True`` when *url* is an HTTPS Linear upload URL.
+
+        Only the dedicated upload hosts count; everything else (including
+        arbitrary links that merely appear in a ticket body) does not.
+        """
+        try:
+            parsed = urlparse(url)
+            host = parsed.hostname
+        except ValueError:
+            return False
+        if parsed.scheme != "https" or host is None:
+            return False
+        return host in _LINEAR_UPLOAD_HOSTS
+
     # ------------------------------------------------------------------
     # QA helpers
     # ------------------------------------------------------------------
