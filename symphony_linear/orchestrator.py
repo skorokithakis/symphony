@@ -12,7 +12,7 @@ from concurrent.futures import Future, ThreadPoolExecutor
 from dataclasses import dataclass, field
 from datetime import datetime, timezone
 from pathlib import Path
-from typing import Any
+from typing import Any, Callable, TypeVar
 
 from symphony_linear import omp, opencode, pi
 from symphony_linear.agent_runner import AgentCancelled, AgentError, AgentTimeout
@@ -91,9 +91,12 @@ _IGNORED_COMMENT_BODY = (
     "and I'll pick it up."
 )
 
-# Delays between retries of a pipeline state transition.  Three attempts
-# total: the first immediately, then one after each delay.
-_TRANSITION_RETRY_DELAYS: tuple[float, ...] = (2.0, 5.0)
+# Delays between retries of a transient-prone pipeline tracker call.  Three
+# attempts total: the first immediately, then one after each delay.
+_TRANSIENT_RETRY_DELAYS: tuple[float, ...] = (2.0, 5.0)
+
+# Return type of the callable handed to Orchestrator._retry_transient.
+_T = TypeVar("_T")
 
 # ---------------------------------------------------------------------------
 # Helpers
@@ -2615,38 +2618,41 @@ class Orchestrator:
             self._state.upsert(ticket_state)
             self._state.save()
 
-    def _transition_with_retry(self, tid: str, target: TransitionTarget) -> None:
-        """Move *tid* to *target*, retrying only transient tracker failures.
+    def _retry_transient(
+        self, tid: str, description: str, call: Callable[[], _T]
+    ) -> _T:
+        """Run *call*, retrying only transient tracker failures, and return it.
 
-        Pipeline transitions (In Progress at turn start, Needs Input at turn
-        end, and the failure path's Needs Input) are retried here because no
-        other code re-applies them: the poll loop only schedules turns, it
-        never reconciles tracker state, so a transition lost to a transient
-        HTTP 503 or read timeout leaves the ticket in the wrong state until a
-        human notices.  Other tracker calls can rely on the poll loop — a
-        missed comment fetch or issue list simply happens again next tick.
+        Pipeline tracker calls that would otherwise be lost are retried here:
+        state transitions (In Progress at turn start, Needs Input at turn end,
+        and the failure path's Needs Input) and the final-reply post.  Nothing
+        re-applies either — the poll loop only schedules turns and never
+        reconciles tracker state, and a reply that failed to post is not
+        re-sent, so a transient HTTP 503 or read timeout leaves the ticket in
+        the wrong state or the human without the answer until someone notices.
+        Other tracker calls can rely on the poll loop: a missed comment fetch,
+        issue list, or non-final comment post simply happens again (or is
+        re-triggered by a human) on a later tick.
 
         Retries only :class:`TrackerTransientError`, up to three attempts
         total (about 2s then 5s apart).  Non-transient errors (``ValueError``
         for an unmapped target, any other ``TrackerError``) propagate
         immediately, and the last transient error is re-raised after the final
-        attempt, so each call site's existing ``except``/log handling is
-        unchanged.
+        attempt, so each call site's existing ``except`` handling is unchanged.
+
+        A retry after a timeout may duplicate the tracker call — accepted for
+        the final reply, where a possible duplicate comment beats a lost one.
         """
-        attempts = len(_TRANSITION_RETRY_DELAYS) + 1
-        for attempt in range(attempts):
+        attempts = len(_TRANSIENT_RETRY_DELAYS) + 1
+        for attempt, delay in enumerate(_TRANSIENT_RETRY_DELAYS):
             try:
-                self._tracker.transition_to(tid, target)
-                return
+                return call()
             except TrackerTransientError:
-                if attempt == attempts - 1:
-                    raise
-                delay = _TRANSITION_RETRY_DELAYS[attempt]
                 logger.warning(
-                    "Transient tracker error transitioning %s to '%s' "
+                    "Transient tracker error on %s for %s "
                     "(attempt %d/%d) — retrying in %.0fs",
+                    description,
                     tid,
-                    target.value,
                     attempt + 1,
                     attempts,
                     delay,
@@ -2655,15 +2661,24 @@ class Orchestrator:
                 if self._is_cancelled(tid):
                     # The ticket may have been moved to QA during the sleep,
                     # and _reconcile_serve cancels its turn there.  Retrying
-                    # now could pull it out of QA with a stale needs_input
-                    # transition, so give up and let the call site decide.
+                    # now could pull it out of QA or post a reply it no longer
+                    # wants, so give up and let the call site decide.
                     logger.info(
-                        "Ticket %s cancelled during retry of transition to "
-                        "'%s' — not retrying",
+                        "Ticket %s cancelled during retry of %s — not retrying",
                         tid,
-                        target.value,
+                        description,
                     )
                     raise
+        # Final attempt: no retries left, so a transient error propagates.
+        return call()
+
+    def _transition_with_retry(self, tid: str, target: TransitionTarget) -> None:
+        """Move *tid* to *target* through :meth:`_retry_transient`."""
+        self._retry_transient(
+            tid,
+            f"transition to '{target.value}'",
+            lambda: self._tracker.transition_to(tid, target),
+        )
 
     def _transition_failed_to_needs_input(self, tid: str) -> None:
         """Best-effort: move a failed ticket to the tracker's Needs Input state.
@@ -2721,8 +2736,23 @@ class Orchestrator:
             # uses — keeps is_bot_comment detection working.
             kind += f" · model: {model}"
         try:
-            return self._tracker.post_comment(tid, body, kind)
+            return self._retry_transient(
+                tid,
+                "posting the final reply",
+                lambda: self._tracker.post_comment(tid, body, kind),
+            )
         except Exception:
+            if self._is_cancelled(tid):
+                # Cancelled while the reply was retrying (e.g. a human moved
+                # the ticket to QA and the serve reconcile cancelled the
+                # turn): that path has already recorded the intended state, so
+                # leave it alone rather than overwrite it with failed/Needs
+                # Input.
+                logger.info(
+                    "Ticket %s cancelled during final reply retry — leaving state unchanged",
+                    tid,
+                )
+                return None
             logger.exception("Failed to post final message for %s", tid)
             with self._state_lock:
                 ts = self._state.get(tid)
@@ -2731,6 +2761,12 @@ class Orchestrator:
                     ts.updated_at = _iso_now()
                     self._state.upsert(ts)
                     self._state.save()
+            # The reply is lost; park the tracker ticket in Needs Input so it
+            # does not sit in In Progress with nothing working.  No error
+            # comment and no last_seen advance: a human comment is what
+            # retries the turn.  _transition_failed_to_needs_input skips a
+            # cancelled ticket itself.
+            self._transition_failed_to_needs_input(tid)
             return None
 
     def _save_setup_error(

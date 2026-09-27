@@ -346,6 +346,115 @@ class TestTransitionWithRetry:
 
 
 # ---------------------------------------------------------------------------
+# Final reply retry
+# ---------------------------------------------------------------------------
+
+
+class TestPostFinalMessageRetry:
+    def test_transient_failure_then_success_posts_reply_once(
+        self, orchestrator: Orchestrator, linear: FakeLinearClient
+    ) -> None:
+        original = linear.post_comment
+        attempts = 0
+
+        def flaky(issue_id: str, body: str) -> Comment:
+            nonlocal attempts
+            attempts += 1
+            if attempts == 1:
+                raise TrackerTransientError("503 Service Unavailable")
+            return original(issue_id, body)
+
+        with (
+            mock.patch.object(linear, "post_comment", side_effect=flaky),
+            mock.patch("symphony_linear.orchestrator.time.sleep") as mock_sleep,
+        ):
+            comment = orchestrator._post_final_message("ticket-1", "The answer", None)
+
+        assert comment is not None
+        # One failed attempt, one successful post — the reply lands once.
+        assert attempts == 2
+        assert len(linear.calls.get("post_comment", [])) == 1
+        assert linear.calls["post_comment"][0][1].startswith("The answer")
+        mock_sleep.assert_called_once_with(2.0)
+
+    def test_exhausted_retries_fail_without_comment_and_move_to_needs_input(
+        self, orchestrator: Orchestrator, linear: FakeLinearClient
+    ) -> None:
+        ts = TicketState(
+            ticket_id="ticket-1",
+            ticket_identifier="TEAM-1",
+            repo_url="https://github.com/org/repo.git",
+            workspace_path="/tmp/ws/TEAM-1",
+            branch="feature/test",
+            status=TicketStatus.working,
+            session_id="ses-abc",
+            last_seen_comment_id="cmt-seen-1",
+        )
+        orchestrator._state.upsert(ts)
+        posts = mock.Mock(side_effect=TrackerTransientError("503"))
+
+        with (
+            mock.patch.object(linear, "post_comment", posts),
+            mock.patch("symphony_linear.orchestrator.time.sleep") as mock_sleep,
+        ):
+            comment = orchestrator._post_final_message("ticket-1", "The answer", None)
+
+        assert comment is None
+        assert posts.call_count == 3
+        assert [call.args[0] for call in mock_sleep.call_args_list] == [2.0, 5.0]
+        # No comment posted, last_seen untouched, status failed, ticket in Needs Input.
+        assert linear.calls.get("post_comment") is None
+        saved = orchestrator._state.get("ticket-1")
+        assert saved is not None
+        assert saved.status == TicketStatus.failed
+        assert saved.last_seen_comment_id == "cmt-seen-1"
+        assert ("ticket-1", "Needs Input") in linear.calls.get(
+            "transition_to_state", []
+        )
+
+    def test_cancel_during_retry_sleep_leaves_state_unchanged(
+        self, orchestrator: Orchestrator, linear: FakeLinearClient
+    ) -> None:
+        ts = TicketState(
+            ticket_id="ticket-1",
+            ticket_identifier="TEAM-1",
+            repo_url="https://github.com/org/repo.git",
+            workspace_path="/tmp/ws/TEAM-1",
+            branch="feature/test",
+            status=TicketStatus.working,
+            session_id="ses-abc",
+            last_seen_comment_id="cmt-seen-1",
+        )
+        orchestrator._state.upsert(ts)
+        posts = mock.Mock(side_effect=TrackerTransientError("503"))
+
+        def cancel_on_sleep(_delay: float) -> None:
+            orchestrator._cancel_ticket("ticket-1")
+
+        with (
+            mock.patch.object(linear, "post_comment", posts),
+            mock.patch(
+                "symphony_linear.orchestrator.time.sleep", side_effect=cancel_on_sleep
+            ) as mock_sleep,
+        ):
+            comment = orchestrator._post_final_message("ticket-1", "The answer", None)
+
+        assert comment is None
+        # One attempt, one sleep, then the cancellation check aborts the retry.
+        assert posts.call_count == 1
+        mock_sleep.assert_called_once_with(2.0)
+        # The cancelling path owns the state now; the failed post must not
+        # overwrite it or park the ticket in Needs Input.
+        saved = orchestrator._state.get("ticket-1")
+        assert saved is not None
+        assert saved.status == TicketStatus.working
+        assert saved.last_seen_comment_id == "cmt-seen-1"
+        assert ("ticket-1", "Needs Input") not in linear.calls.get(
+            "transition_to_state", []
+        )
+
+
+# ---------------------------------------------------------------------------
 # New ticket pipeline
 # ---------------------------------------------------------------------------
 
