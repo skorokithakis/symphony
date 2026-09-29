@@ -70,6 +70,7 @@ class CheckoutWatcher:
             )
         else:
             self.head = head
+            logger.info("Auto-restart on checkout change is on (HEAD %s)", head[:12])
 
     def read_head(self) -> str | None:
         """Return the checkout's current HEAD sha, or None if unavailable."""

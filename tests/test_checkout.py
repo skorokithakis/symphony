@@ -32,7 +32,8 @@ class TestCheckoutWatcher:
             "symphony_linear.checkout.subprocess.run",
             return_value=_completed(0, "abc123\n"),
         ) as mock_run:
-            watcher = CheckoutWatcher(package_dir=tmp_path)
+            with caplog.at_level(logging.INFO, logger="symphony_linear.checkout"):
+                watcher = CheckoutWatcher(package_dir=tmp_path)
 
         assert watcher.disabled is False
         assert watcher.head == "abc123"
@@ -53,7 +54,7 @@ class TestCheckoutWatcher:
             "--error-unmatch",
             "__init__.py",
         ]
-        assert "auto-restart" not in caplog.text
+        assert "Auto-restart on checkout change is on (HEAD abc123)" in caplog.text
 
     def test_not_a_checkout_is_disabled(
         self, tmp_path: Path, caplog: pytest.LogCaptureFixture

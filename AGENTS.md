@@ -315,7 +315,10 @@ shutting down, or the ticket is no longer triggered — see `_is_still_triggered
   directory is not a checkout, git is unavailable, or
   `symphony_linear/__init__.py` is not tracked (`git ls-files --error-unmatch`)
   — e.g. a wheel installed into the repo's own `.venv` — the watcher is
-  `disabled`, logs once at INFO, and `read_head` is never called again. A
+  `disabled`, logs once at INFO, and `read_head` is never called again. An
+  enabled watcher logs its baseline `HEAD` once at startup, and a move seen
+  while tasks are in flight logs one INFO deferral per new `HEAD` (not once per
+  tick) until the tasks finish. A
   running QA serve never blocks a restart; it is relaunched after. Uncommitted
   edits do not move `HEAD`, so they never trigger it, and `execv` lives in
   `cli.py` (not the orchestrator) to keep the latter testable.

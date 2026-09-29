@@ -10064,6 +10064,53 @@ class TestCheckoutRestart:
             assert orchestrator._checkout_restart_due() is True
         assert watcher.head == "bbb"
 
+    def test_deferred_restart_logs_once_per_new_head(
+        self, orchestrator: Orchestrator, caplog: pytest.LogCaptureFixture
+    ) -> None:
+        watcher = _FakeCheckoutWatcher("aaaaaaaaaaaa", "bbbbbbbbbbbb")
+        orchestrator._checkout_watcher = watcher
+        with orchestrator._task_lock:
+            orchestrator._active_tasks["ticket-1"] = Future()
+
+        with (
+            mock.patch(
+                "symphony_linear.orchestrator.validate_checkout"
+            ) as mock_validate,
+            caplog.at_level(logging.INFO, logger="symphony_linear.orchestrator"),
+        ):
+            assert orchestrator._checkout_restart_due() is False
+            assert orchestrator._checkout_restart_due() is False
+
+        # One line for the new HEAD, not one per tick; the baseline is left
+        # untouched so the deferred change is still pending.
+        assert caplog.text.count("restart deferred until 1 active task(s) finish") == 1
+        assert "Checkout changed (aaaaaaaaaaaa -> bbbbbbbbbbbb)" in caplog.text
+        mock_validate.assert_not_called()
+        assert watcher.head == "aaaaaaaaaaaa"
+
+    def test_deferred_restart_logs_again_for_a_new_head(
+        self, orchestrator: Orchestrator, caplog: pytest.LogCaptureFixture
+    ) -> None:
+        watcher = _FakeCheckoutWatcher("aaaaaaaaaaaa", "bbbbbbbbbbbb")
+        orchestrator._checkout_watcher = watcher
+        with orchestrator._task_lock:
+            orchestrator._active_tasks["ticket-1"] = Future()
+
+        with (
+            mock.patch(
+                "symphony_linear.orchestrator.validate_checkout"
+            ) as mock_validate,
+            caplog.at_level(logging.INFO, logger="symphony_linear.orchestrator"),
+        ):
+            assert orchestrator._checkout_restart_due() is False
+            watcher.current = "cccccccccccc"
+            assert orchestrator._checkout_restart_due() is False
+
+        assert caplog.text.count("restart deferred until 1 active task(s) finish") == 2
+        assert "Checkout changed (aaaaaaaaaaaa -> bbbbbbbbbbbb)" in caplog.text
+        assert "Checkout changed (aaaaaaaaaaaa -> cccccccccccc)" in caplog.text
+        mock_validate.assert_not_called()
+
     def test_changed_idle_and_valid_requests_restart(
         self, orchestrator: Orchestrator, caplog: pytest.LogCaptureFixture
     ) -> None:

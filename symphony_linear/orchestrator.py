@@ -281,6 +281,10 @@ class Orchestrator:
         # None means "not initialised yet".  When disabled, the daemon is not
         # running from a git checkout and auto-restart is off.
         self._checkout_watcher: CheckoutWatcher | None = None
+        # Last HEAD for which a deferred-restart INFO line was logged, so a
+        # restart waiting on in-flight tasks is reported once per new HEAD
+        # rather than once per poll tick.
+        self._restart_deferred_head: str | None = None
 
     # ==================================================================
     # Public API
@@ -371,8 +375,18 @@ class Orchestrator:
         if new_head is None or new_head == watcher.head:
             return False
         with self._task_lock:
-            if self._active_tasks:
-                return False
+            active = len(self._active_tasks)
+        if active:
+            if self._restart_deferred_head != new_head:
+                self._restart_deferred_head = new_head
+                logger.info(
+                    "Checkout changed (%s -> %s); restart deferred until %d "
+                    "active task(s) finish",
+                    (watcher.head or "")[:12],
+                    new_head[:12],
+                    active,
+                )
+            return False
         if not validate_checkout(self._workspace):
             watcher.head = new_head
             return False
