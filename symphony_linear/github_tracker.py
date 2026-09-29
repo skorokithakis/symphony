@@ -1025,6 +1025,7 @@ class GitHubTracker:
                 },
             },
         )
+        logger.info("Transitioned %s to '%s'", id, status_name)
 
     # ------------------------------------------------------------------
     # Tracker protocol — State checks

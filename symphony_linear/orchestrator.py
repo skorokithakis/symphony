@@ -2347,6 +2347,18 @@ class Orchestrator:
         else:
             message = replay_message
 
+        if self._is_cancelled(tid):
+            return
+
+        try:
+            self._transition_with_retry(tid, TransitionTarget.in_progress)
+        except Exception:
+            logger.exception(
+                "Failed to transition %s to '%s'",
+                tid,
+                TransitionTarget.in_progress.value,
+            )
+
         if (
             ticket_state.session_id is not None
             and not self._session_matches_current_agent(ticket_state.agent)
@@ -2372,28 +2384,32 @@ class Orchestrator:
 
         # --- Process attachments ---
         # ensure_attachments_dir applies the path-containment security check
-        # before creating the directory.
-        host_attachments_dir = ensure_attachments_dir(
-            ticket_state.ticket_identifier, str(self._workspace)
-        )
-        # Ensure the per-ticket tmp directory exists before the resumed turn
-        # runs inside the sandbox (bwrap --bind is fatal when the source dir
-        # is missing).
-        tmp_path = ensure_tmp_dir(ticket_state.ticket_identifier, str(self._workspace))
-        dir_map = ensure_dir_map(
-            self._config.sandbox.dir_map,
-            ticket_state.ticket_identifier,
-            str(self._workspace),
-        )
+        # before creating the directory.  All of these are inside the same
+        # try so a mkdir/permission failure transitions the ticket to Needs
+        # Input instead of leaving it in In Progress with no work running.
         try:
+            host_attachments_dir = ensure_attachments_dir(
+                ticket_state.ticket_identifier, str(self._workspace)
+            )
+            # Ensure the per-ticket tmp directory exists before the resumed turn
+            # runs inside the sandbox (bwrap --bind is fatal when the source dir
+            # is missing).
+            tmp_path = ensure_tmp_dir(
+                ticket_state.ticket_identifier, str(self._workspace)
+            )
+            dir_map = ensure_dir_map(
+                self._config.sandbox.dir_map,
+                ticket_state.ticket_identifier,
+                str(self._workspace),
+            )
             secrets_file = ensure_secrets_file(
                 ticket_state.repo_url,
                 ticket_state.ticket_identifier,
                 str(self._workspace),
                 self._config.sandbox.secrets_dir,
             )
-        except (WorkspaceError, FileNotFoundError) as exc:
-            logger.error("Secrets preparation failed for %s: %s", tid, exc)
+        except (WorkspaceError, OSError) as exc:
+            logger.error("Workspace preparation failed for %s: %s", tid, exc)
             self._transition_failed_to_needs_input(tid)
             err_comment = self._post_comment_safe(
                 tid,
@@ -2445,9 +2461,11 @@ class Orchestrator:
                 self._state.upsert(ticket_state)
                 self._state.save()
 
-        # Load per-project config BEFORE transitioning Linear (re-read on every
-        # resume to pick up in-repo changes).  A malformed config aborts early so
-        # the ticket doesn't flap between states.
+        # Load per-project config (re-read on every resume to pick up in-repo
+        # changes).  The In Progress transition above runs first on purpose, so
+        # the human sees the pickup at once.  A malformed config still ends in
+        # Needs Input, because the failure path below transitions there before
+        # it comments; the cost is a brief In Progress -> Needs Input step.
         #
         # load_project_config now reads directly from origin/HEAD via git show,
         # so repo-side config fixes are picked up regardless of which branch the
@@ -2476,15 +2494,6 @@ class Orchestrator:
 
         if self._is_cancelled(tid):
             return
-
-        try:
-            self._transition_with_retry(tid, TransitionTarget.in_progress)
-        except Exception:
-            logger.exception(
-                "Failed to transition %s to '%s'",
-                tid,
-                TransitionTarget.in_progress.value,
-            )
 
         with self._state_lock:
             ticket_state.status = TicketStatus.working

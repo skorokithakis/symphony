@@ -2804,6 +2804,99 @@ class TestResumePipeline:
         updated = orchestrator._state.get("ticket-1")
         assert updated is not None and updated.status == TicketStatus.needs_input
 
+    def test_in_progress_transition_precedes_config_load(
+        self, orchestrator: Orchestrator, linear: FakeLinearClient
+    ) -> None:
+        """In Progress is set before load_project_config on resume."""
+        ts = self._make_ts()
+        orchestrator._state.upsert(ts)
+        linear.set_response("list_comments_since", [_make_comment("c1", "Go")])
+
+        events: list[str] = []
+        orig_transition = linear.transition_to_state
+
+        def record_transition(iid: str, state: str) -> None:
+            events.append(f"transition:{state}")
+            orig_transition(iid, state)
+
+        def record_config(_path: str) -> ProjectConfig:
+            events.append("config")
+            return ProjectConfig()
+
+        with (
+            mock.patch(
+                "symphony_linear.orchestrator.load_project_config",
+                side_effect=record_config,
+            ),
+            mock.patch(
+                "symphony_linear.orchestrator.run_resume", return_value=("Done!", None)
+            ),
+            mock.patch.object(
+                linear, "transition_to_state", side_effect=record_transition
+            ),
+        ):
+            orchestrator._resume_pipeline(ts)
+
+        assert events.index("transition:In Progress") < events.index("config")
+
+    def test_workspace_prep_failure_transitions_to_needs_input(
+        self, orchestrator: Orchestrator, linear: FakeLinearClient
+    ) -> None:
+        """A resume whose workspace prep raises parks the ticket in Needs Input.
+
+        Regression: ensure_attachments_dir / ensure_tmp_dir / ensure_dir_map used
+        to sit outside any try, so a mkdir failure only got logged and left the
+        ticket in In Progress with no turn running.
+        """
+        ts = self._make_ts()
+        orchestrator._state.upsert(ts)
+        linear.set_response("list_comments_since", [_make_comment("c1", "Go")])
+
+        events: list[str] = []
+        orig_transition = linear.transition_to_state
+        orig_comment = linear.post_comment
+
+        def record_transition(iid: str, state: str) -> None:
+            events.append(f"transition:{state}")
+            orig_transition(iid, state)
+
+        def record_comment(iid: str, body: str) -> Comment:
+            events.append(f"comment:{body}")
+            return orig_comment(iid, body)
+
+        with (
+            mock.patch(
+                "symphony_linear.orchestrator.ensure_attachments_dir",
+                return_value="/tmp/ws/TEAM-1/attachments",
+            ),
+            mock.patch(
+                "symphony_linear.orchestrator.ensure_tmp_dir",
+                side_effect=WorkspaceError("tmp boom"),
+            ),
+            mock.patch.object(
+                linear, "transition_to_state", side_effect=record_transition
+            ),
+            mock.patch.object(linear, "post_comment", side_effect=record_comment),
+        ):
+            orchestrator._resume_pipeline(ts)
+
+        transitions = linear.calls.get("transition_to_state", [])
+        assert ("ticket-1", "In Progress") in transitions
+        assert ("ticket-1", "Needs Input") in transitions
+        assert transitions.index(("ticket-1", "In Progress")) < transitions.index(
+            ("ticket-1", "Needs Input")
+        )
+
+        needs_input_idx = events.index("transition:Needs Input")
+        error_idx = next(
+            i for i, e in enumerate(events) if "Workspace preparation failed" in e
+        )
+        assert needs_input_idx < error_idx
+
+        updated = orchestrator._state.get("ticket-1")
+        assert updated is not None
+        assert updated.status == TicketStatus.failed
+
     def test_end_of_turn_transition_cancelled_leaves_state_unchanged(
         self, orchestrator: Orchestrator, linear: FakeLinearClient
     ) -> None:
@@ -3492,10 +3585,14 @@ class TestResumeProjectConfig:
         assert updated.setup_error == "project_config_invalid"
         assert updated.last_seen_comment_id is not None
 
-    def test_project_config_error_transitions_to_needs_input_not_in_progress(
+    def test_project_config_error_ends_in_needs_input_after_early_in_progress(
         self, orchestrator: Orchestrator, linear: FakeLinearClient
     ) -> None:
-        """ProjectConfigError on resume transitions to needs_input, never in_progress."""
+        """ProjectConfigError on resume parks in needs_input.
+
+        The In Progress transition now happens before config load, so the
+        failure path adds a brief In Progress -> Needs Input step.
+        """
         ts = self._make_ts()
         orchestrator._state.upsert(ts)
         linear.set_response("list_comments_since", [_make_comment("c1", "Go")])
@@ -3511,10 +3608,13 @@ class TestResumeProjectConfig:
         ticket_transitions = [
             (tid, state) for tid, state in transition_calls if tid == "ticket-1"
         ]
-        # The failure path parks the ticket in Needs Input, and must not move
-        # it to In Progress (no turn ever started).
-        assert ticket_transitions == [("ticket-1", "Needs Input")], (
-            f"Expected only a needs_input transition for ticket-1, got: {ticket_transitions}"
+        # The failure path parks the ticket in Needs Input; the early move to
+        # In Progress (before config load) is the only other transition.
+        assert ticket_transitions == [
+            ("ticket-1", "In Progress"),
+            ("ticket-1", "Needs Input"),
+        ], (
+            f"Expected In Progress then Needs Input for ticket-1, got: {ticket_transitions}"
         )
 
     def test_missing_project_config_falls_back_to_globals_on_resume(

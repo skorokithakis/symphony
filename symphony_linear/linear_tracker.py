@@ -165,6 +165,7 @@ class LinearTracker:
                 f"No state mapping configured for transition target '{target.value}'"
             )
         self._linear.transition_to_state(id, state_name)
+        logger.info("Transitioned %s to '%s'", id, state_name)
 
     def is_still_triggered(self, issue: Issue) -> bool:
         active_states = {

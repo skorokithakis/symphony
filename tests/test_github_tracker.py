@@ -7,6 +7,7 @@ Uses ``unittest.mock.MagicMock`` — no real network calls.
 
 from __future__ import annotations
 
+import logging
 from typing import Any
 from unittest.mock import MagicMock
 
@@ -1654,6 +1655,24 @@ class TestTransitionTo:
         tracker = _resolved_tracker(client_mock, config_no_qa)
         with pytest.raises(ValueError, match="no qa_status"):
             tracker.transition_to("I_1", TransitionTarget.qa)
+
+    def test_logs_successful_transition(
+        self,
+        tracker: GitHubTracker,
+        client_mock: MagicMock,
+        caplog: pytest.LogCaptureFixture,
+    ) -> None:
+        tracker._item_id_map["I_1"] = "PVTI_1"
+        client_mock._query.return_value = {"updateProjectV2ItemFieldValue": {}}
+        with caplog.at_level(logging.INFO, logger="symphony_linear.github_tracker"):
+            tracker.transition_to("I_1", TransitionTarget.in_progress)
+
+        records = [
+            r for r in caplog.records if r.name == "symphony_linear.github_tracker"
+        ]
+        assert [(r.levelno, r.getMessage()) for r in records] == [
+            (logging.INFO, "Transitioned I_1 to 'In Progress'")
+        ]
 
     def test_refreshes_item_map_when_missing(
         self, tracker: GitHubTracker, client_mock: MagicMock

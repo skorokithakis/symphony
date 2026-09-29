@@ -6,6 +6,7 @@ delegates to the underlying LinearClient.
 
 from __future__ import annotations
 
+import logging
 from typing import Any
 from unittest.mock import MagicMock
 
@@ -295,6 +296,34 @@ class TestTransitionTo:
         with pytest.raises(ValueError, match="No state mapping"):
             tracker.transition_to("i-1", TransitionTarget.qa)
         linear_mock.transition_to_state.assert_not_called()
+
+    def test_logs_successful_transition(
+        self,
+        tracker: LinearTracker,
+        linear_mock: MagicMock,
+        caplog: pytest.LogCaptureFixture,
+    ) -> None:
+        with caplog.at_level(logging.INFO, logger="symphony_linear.linear_tracker"):
+            tracker.transition_to("i-1", TransitionTarget.in_progress)
+
+        records = [
+            r for r in caplog.records if r.name == "symphony_linear.linear_tracker"
+        ]
+        assert [(r.levelno, r.getMessage()) for r in records] == [
+            (logging.INFO, "Transitioned i-1 to 'In Progress'")
+        ]
+
+    def test_does_not_log_failed_transition(
+        self,
+        linear_mock: MagicMock,
+        config_no_qa: _LinearConfig,
+        caplog: pytest.LogCaptureFixture,
+    ) -> None:
+        tracker = LinearTracker(linear_mock, config_no_qa)
+        with caplog.at_level(logging.INFO, logger="symphony_linear.linear_tracker"):
+            with pytest.raises(ValueError, match="No state mapping"):
+                tracker.transition_to("i-1", TransitionTarget.qa)
+        assert "Transitioned" not in caplog.text
 
 
 class TestIsStillTriggered:
