@@ -556,6 +556,102 @@ class TestNewTicketPipeline:
         assert kw.get("on_subprocess") is not None
         assert kw.get("auto_branch") is True  # global default
 
+    def test_in_progress_transition_precedes_workspace_prep(
+        self, orchestrator: Orchestrator, linear: FakeLinearClient
+    ) -> None:
+        """The In Progress transition runs before clone/setup.
+
+        Clone + ``.symphony/setup`` can take minutes; the ticket should leave
+        its starting state (usually Needs Input) immediately instead of
+        sitting there until prep finishes.
+        """
+        events: list[str] = []
+        orig_transition = linear.transition_to_state
+
+        def record_transition(iid: str, state: str) -> None:
+            events.append(f"transition:{state}")
+            orig_transition(iid, state)
+
+        def record_clone(*a: Any, **kw: Any) -> tuple[str, bool]:
+            events.append("clone")
+            return ("/tmp/ws/TEAM-1", False)
+
+        linear.set_response(
+            "get_project",
+            Project(
+                id="proj-1",
+                name="Test",
+                links=[
+                    ProjectLink(label="Repo", url="https://github.com/org/repo.git")
+                ],
+            ),
+        )
+        linear.set_response("get_issue", _make_issue(description="Fix"))
+        with (
+            mock.patch(
+                "symphony_linear.orchestrator.clone_workspace",
+                side_effect=record_clone,
+            ),
+            mock.patch("symphony_linear.orchestrator.finalize_workspace"),
+            mock.patch(
+                "symphony_linear.orchestrator.load_project_config",
+                return_value=ProjectConfig(),
+            ),
+            mock.patch(
+                "symphony_linear.orchestrator.run_initial",
+                return_value=("ses-abc", "Done!", None),
+            ),
+            mock.patch.object(
+                linear, "transition_to_state", side_effect=record_transition
+            ),
+        ):
+            orchestrator._new_ticket_pipeline(_make_issue())
+
+        assert events.index("transition:In Progress") < events.index("clone")
+
+    def test_clone_failure_still_parks_in_needs_input_after_early_in_progress(
+        self, orchestrator: Orchestrator, linear: FakeLinearClient
+    ) -> None:
+        """A prep failure after the early In Progress transition still ends
+        in Needs Input (In Progress first, clone failure, Needs Input last)."""
+        from symphony_linear.workspace import CloneFailed
+
+        events: list[str] = []
+        orig_transition = linear.transition_to_state
+
+        def record_transition(iid: str, state: str) -> None:
+            events.append(f"transition:{state}")
+            orig_transition(iid, state)
+
+        linear.set_response(
+            "get_project",
+            Project(
+                id="proj-1",
+                name="Test",
+                links=[
+                    ProjectLink(label="Repo", url="https://github.com/org/repo.git")
+                ],
+            ),
+        )
+        with (
+            mock.patch(
+                "symphony_linear.orchestrator.clone_workspace",
+                side_effect=CloneFailed("fail"),
+            ),
+            mock.patch.object(
+                linear, "transition_to_state", side_effect=record_transition
+            ),
+        ):
+            orchestrator._new_ticket_pipeline(_make_issue())
+
+        assert events.index("transition:In Progress") < events.index(
+            "transition:Needs Input"
+        )
+        ts = orchestrator._state.get("ticket-1")
+        assert ts is not None
+        assert ts.status == TicketStatus.failed
+        assert ts.setup_error is not None
+
     def test_transient_in_progress_failure_is_retried(
         self, orchestrator: Orchestrator, linear: FakeLinearClient
     ) -> None:

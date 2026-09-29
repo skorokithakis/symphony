@@ -1897,6 +1897,24 @@ class Orchestrator:
         if self._is_cancelled(tid):
             return
 
+        # --- Transition Linear to In Progress ---
+        # Before workspace preparation on purpose: clone + .symphony/setup can
+        # take minutes and the human should see the ticket move out of its
+        # starting state (usually Needs Input) immediately.  Errors are
+        # swallowed and logged so a tracker hiccup does not abort the turn;
+        # every failure path below still parks the ticket in Needs Input.
+        try:
+            self._transition_with_retry(tid, TransitionTarget.in_progress)
+        except Exception:
+            logger.exception(
+                "Failed to transition %s to '%s'",
+                tid,
+                TransitionTarget.in_progress.value,
+            )
+
+        if self._is_cancelled(tid):
+            return
+
         # Model override for the primary agent, resolved from the freshly
         # fetched issue: a ``Model:`` label on the issue itself, else one on
         # its project as a project-wide default.  Nothing is persisted:
@@ -1914,19 +1932,6 @@ class Orchestrator:
         tmp_path = prepared.tmp_path
         dir_map = prepared.dir_map
         secrets_file = prepared.secrets_file
-
-        # --- Transition Linear to In Progress ---
-        try:
-            self._transition_with_retry(tid, TransitionTarget.in_progress)
-        except Exception:
-            logger.exception(
-                "Failed to transition %s to '%s'",
-                tid,
-                TransitionTarget.in_progress.value,
-            )
-
-        if self._is_cancelled(tid):
-            return
 
         # --- Rehydrate from session snapshot (if any) ---
         # This runs *before* the metadata comment is posted.  A restore returns
