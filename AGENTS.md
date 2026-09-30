@@ -119,12 +119,24 @@ shutting down, or the ticket is no longer triggered — see `_is_still_triggered
   archived, or the ticket was deleted. With `linear.trigger_label: null`, the
   trigger instead requires an active state and a project `Repo` external link,
   with its label compared case-insensitively after stripping whitespace.
-  **Dirty workspaces are never deleted without a second move.** On the first
-  cleanup of a dirty workspace (per
-  `workspace.dirty_summary`), the daemon refuses: it posts a comment, transitions
+  **Dirty workspaces are never deleted without a second move.** When step 3
+  cleans up an untriggered ticket it checks once (`_is_task_in_flight`) whether
+  a task is in flight and stops it, telling the human in the same `cleanup`
+  comment: on a clean workspace a `cleanup` comment naming the current tracker
+  state is posted where cleanup used to be silent, and on a dirty workspace the
+  stop line is appended to whichever receipt is posted. On the first cleanup
+  of a dirty workspace (per
+  `workspace.dirty_summary`), the daemon refuses: it stops any in-flight turn
+  (before the transition) and posts a comment, transitions
   the ticket back to Needs Input, and sets `TicketState.cleanup_refused_state`
   to the workflow state the ticket was left in (Needs Input if the transition
-  succeeded, the state it was already in if it failed). A later cleanup deletes
+  succeeded, the state it was already in if it failed). When the stopped turn
+  had left the entry in `working`/`bootstrapping`, the refusal also parks it at
+  `TicketStatus.needs_input` and anchors `last_seen_comment_id` to the refusal
+  comment (falling back to `_baseline_comment_id`), so the comments that fed
+  the cancelled turn are not replayed and a later human comment resumes work;
+  without this the entry would stay `working` + `cleanup_refused_state`, which
+  step 4 skips, and no reply could ever resume it. A later cleanup deletes
   (rmtree) only when the ticket has moved away from that recorded state; if the
   ticket is still in it — human never moved it again, or the refusal transition
   failed — the state entry is dropped but the dirty directory is kept, so a

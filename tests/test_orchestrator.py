@@ -4590,6 +4590,7 @@ class TestTick:
         assert "2 uncommitted files, 1 commit not on any remote." in body
         assert "**Needs Input**" in body
         assert "*Symphony · cleanup*" in body
+        assert "I also stopped the running agent turn." not in body
         # Best-effort transition back to needs_input.
         assert ("ticket-1", "Needs Input") in linear.calls.get(
             "transition_to_state", []
@@ -4629,6 +4630,7 @@ class TestTick:
         assert "**Stopped tracking this ticket.**" in body
         assert f"`{ws_dir}`" in body
         assert "*Symphony · cleanup*" in body
+        assert "I also stopped the running agent turn." not in body
 
     def test_dirty_workspace_refusal_transition_failure_keeps_directory(
         self,
@@ -4730,6 +4732,7 @@ class TestTick:
         assert "**Workspace deleted.**" in body
         assert "2 uncommitted files." in body
         assert "*Symphony · cleanup*" in body
+        assert "I also stopped the running agent turn." not in body
 
     def test_delete_receipt_failure_does_not_block_cleanup(
         self,
@@ -4816,6 +4819,8 @@ class TestTick:
 
         assert orchestrator._state.get("ticket-1") is None
         assert not ws_dir.exists()
+        # No in-flight turn → cleanup stays silent.
+        assert linear.calls.get("post_comment", []) == []
 
     def test_deleted_ticket_dirty_workspace_removed(
         self,
@@ -4840,6 +4845,293 @@ class TestTick:
 
         assert orchestrator._state.get("ticket-1") is None
         assert not ws_dir.exists()
+
+    # --- Step-3 in-flight turn stop ---
+
+    def test_clean_workspace_in_flight_stops_turn_and_comments(
+        self,
+        orchestrator: Orchestrator,
+        linear: FakeLinearClient,
+        tmp_path: Path,
+        dirty_summary: mock.MagicMock,
+    ) -> None:
+        """Clean workspace + in-flight turn → killed, comment names the state."""
+        ws_root = tmp_path / "workspaces"
+        ws_dir = ws_root / "TEAM-1" / "repo"
+        ws_dir.mkdir(parents=True)
+        (ws_dir / "sentinel").write_text("x")
+
+        self._add_state(
+            orchestrator, workspace_path=str(ws_dir), status=TicketStatus.working
+        )
+        dirty_summary.return_value = None
+        linear.set_response("list_triggered_issues", [])
+        linear.set_response("get_issue", _make_issue(state="Done"))
+        orchestrator._active_tasks["ticket-1"] = Future()
+
+        with mock.patch.object(orchestrator, "_cancel_ticket") as m_cancel:
+            orchestrator._tick()
+            time.sleep(0.2)
+
+        m_cancel.assert_called_once_with("ticket-1")
+        posts = linear.calls.get("post_comment", [])
+        assert len(posts) == 1
+        _, body = posts[0]
+        assert "**Stopped the running agent turn.**" in body
+        assert "**Done**" in body
+        assert "*Symphony · cleanup*" in body
+        assert orchestrator._state.get("ticket-1") is None
+        assert not ws_dir.exists()
+
+    def test_dirty_workspace_moved_again_in_flight_adds_stop_line(
+        self,
+        orchestrator: Orchestrator,
+        linear: FakeLinearClient,
+        tmp_path: Path,
+        dirty_summary: mock.MagicMock,
+    ) -> None:
+        """Moved-again delete receipt gains one stop line when a turn was running."""
+        ws_root = tmp_path / "workspaces"
+        ws_dir = ws_root / "TEAM-1" / "repo"
+        ws_dir.mkdir(parents=True)
+        (ws_dir / "sentinel").write_text("x")
+
+        self._add_state(
+            orchestrator,
+            workspace_path=str(ws_dir),
+            cleanup_refused_state="Needs Input",
+            status=TicketStatus.working,
+        )
+        dirty_summary.return_value = "2 uncommitted files."
+        linear.set_response("list_triggered_issues", [])
+        linear.set_response("get_issue", _make_issue(state="Done"))
+        orchestrator._active_tasks["ticket-1"] = Future()
+
+        with mock.patch.object(orchestrator, "_cancel_ticket") as m_cancel:
+            orchestrator._tick()
+            time.sleep(0.2)
+
+        m_cancel.assert_called_once_with("ticket-1")
+        posts = linear.calls.get("post_comment", [])
+        assert len(posts) == 1
+        _, body = posts[0]
+        assert "**Workspace deleted.**" in body
+        assert "I also stopped the running agent turn." in body
+        assert "*Symphony · cleanup*" in body
+
+    def test_dirty_workspace_still_refused_in_flight_adds_stop_line(
+        self,
+        orchestrator: Orchestrator,
+        linear: FakeLinearClient,
+        tmp_path: Path,
+        dirty_summary: mock.MagicMock,
+    ) -> None:
+        """Stop-tracking notice gains one stop line when a turn was running."""
+        ws_root = tmp_path / "workspaces"
+        ws_dir = ws_root / "TEAM-1" / "repo"
+        ws_dir.mkdir(parents=True)
+        (ws_dir / "sentinel").write_text("x")
+
+        self._add_state(
+            orchestrator,
+            workspace_path=str(ws_dir),
+            cleanup_refused_state="Needs Input",
+            status=TicketStatus.working,
+        )
+        dirty_summary.return_value = "2 uncommitted files."
+        linear.set_response("list_triggered_issues", [])
+        linear.set_response("get_issue", _make_issue(state="Needs Input", labels=[]))
+        orchestrator._active_tasks["ticket-1"] = Future()
+
+        with mock.patch.object(orchestrator, "_cancel_ticket") as m_cancel:
+            orchestrator._tick()
+            time.sleep(0.2)
+
+        m_cancel.assert_called_once_with("ticket-1")
+        posts = linear.calls.get("post_comment", [])
+        assert len(posts) == 1
+        _, body = posts[0]
+        assert "**Stopped tracking this ticket.**" in body
+        assert "I also stopped the running agent turn." in body
+        assert "*Symphony · cleanup*" in body
+
+    def test_dirty_workspace_first_cleanup_in_flight_kills_and_parks(
+        self,
+        orchestrator: Orchestrator,
+        linear: FakeLinearClient,
+        tmp_path: Path,
+        dirty_summary: mock.MagicMock,
+    ) -> None:
+        """First refusal + in-flight turn → killed before the transition, parked
+        at needs_input, refusal comment anchors last_seen."""
+        ws_root = tmp_path / "workspaces"
+        ws_dir = ws_root / "TEAM-1" / "repo"
+        ws_dir.mkdir(parents=True)
+        (ws_dir / "sentinel").write_text("x")
+
+        self._add_state(
+            orchestrator,
+            workspace_path=str(ws_dir),
+            status=TicketStatus.working,
+        )
+        dirty_summary.return_value = "2 uncommitted files."
+        linear.set_response("list_triggered_issues", [])
+        linear.set_response("get_issue", _make_issue(state="Done"))
+        orchestrator._active_tasks["ticket-1"] = Future()
+
+        with mock.patch.object(orchestrator, "_cancel_ticket") as m_cancel:
+            orchestrator._tick()
+            time.sleep(0.2)
+
+        m_cancel.assert_called_once_with("ticket-1")
+        ts = orchestrator._state.get("ticket-1")
+        assert ts is not None
+        assert ts.status == TicketStatus.needs_input
+        assert ts.cleanup_refused_state == "Needs Input"
+        # Anchored to the refusal comment (the fake client's first post).
+        assert ts.last_seen_comment_id == "cmt-ticket-1-2"
+        assert ws_dir.exists()
+        posts = linear.calls.get("post_comment", [])
+        assert len(posts) == 1
+        _, body = posts[0]
+        assert "**Workspace not clean — I did not delete it.**" in body
+        assert "I also stopped the running agent turn." in body
+        assert "*Symphony · cleanup*" in body
+
+    def test_dirty_workspace_first_cleanup_no_in_flight_keeps_status(
+        self,
+        orchestrator: Orchestrator,
+        linear: FakeLinearClient,
+        tmp_path: Path,
+        dirty_summary: mock.MagicMock,
+    ) -> None:
+        """Without a task in flight the refusal leaves status alone (no stop line).
+
+        The entry is an interrupted turn, not a running one; recovery is
+        deliberately skipped while cleanup_refused_state is set.
+        """
+        ws_root = tmp_path / "workspaces"
+        ws_dir = ws_root / "TEAM-1" / "repo"
+        ws_dir.mkdir(parents=True)
+        (ws_dir / "sentinel").write_text("x")
+
+        self._add_state(
+            orchestrator,
+            workspace_path=str(ws_dir),
+            status=TicketStatus.working,
+        )
+        dirty_summary.return_value = "2 uncommitted files."
+        linear.set_response("list_triggered_issues", [])
+        linear.set_response("get_issue", _make_issue(state="Done"))
+
+        orchestrator._tick()
+        time.sleep(0.2)
+
+        ts = orchestrator._state.get("ticket-1")
+        assert ts is not None
+        assert ts.status == TicketStatus.working
+        assert ts.cleanup_refused_state == "Needs Input"
+        posts = linear.calls.get("post_comment", [])
+        assert len(posts) == 1
+        _, body = posts[0]
+        assert "I also stopped the running agent turn." not in body
+
+    def test_human_comment_after_refusal_kill_resumes_on_later_tick(
+        self,
+        orchestrator: Orchestrator,
+        linear: FakeLinearClient,
+        tmp_path: Path,
+        dirty_summary: mock.MagicMock,
+    ) -> None:
+        """After a refusal-kill parks the entry, a human reply resumes the session."""
+        ws_root = tmp_path / "workspaces"
+        ws_dir = ws_root / "TEAM-1" / "repo"
+        ws_dir.mkdir(parents=True)
+        (ws_dir / "sentinel").write_text("x")
+
+        self._add_state(
+            orchestrator,
+            workspace_path=str(ws_dir),
+            status=TicketStatus.working,
+            session_id="ses-abc",
+        )
+        dirty_summary.return_value = "2 uncommitted files."
+        linear.set_response("list_triggered_issues", [])
+        linear.set_response("get_issue", _make_issue(state="Done"))
+        orchestrator._active_tasks["ticket-1"] = Future()
+
+        # Tick 1: refusal kills the turn and parks the entry.
+        orchestrator._tick()
+        time.sleep(0.2)
+
+        ts = orchestrator._state.get("ticket-1")
+        assert ts is not None
+        assert ts.status == TicketStatus.needs_input
+        assert ts.last_seen_comment_id == "cmt-ticket-1-2"
+        # Simulate the killed task's wrapper finishing so the dedup slot and the
+        # cancellation flag are cleared for the next tick.
+        with orchestrator._task_lock:
+            orchestrator._active_tasks.pop("ticket-1", None)
+        orchestrator._cancelled.discard("ticket-1")
+
+        # Tick 2: the trigger comes back and a human replies after the notice.
+        linear.set_response("list_triggered_issues", [_make_issue()])
+        linear.set_response(
+            "list_comments_since",
+            [
+                _make_comment(
+                    "cmt-ticket-1-2",
+                    "refusal\n\n*Symphony · cleanup*",
+                    user_id="usr-bot",
+                ),
+                _make_comment("cmt-human-2", "please continue"),
+            ],
+        )
+        with (
+            mock.patch(
+                "symphony_linear.orchestrator.load_project_config",
+                return_value=ProjectConfig(),
+            ),
+            mock.patch(
+                "symphony_linear.orchestrator.run_resume",
+                return_value=("Done!", None),
+            ) as m_run_resume,
+        ):
+            orchestrator._tick()
+            time.sleep(0.2)
+
+        m_run_resume.assert_called_once()
+        assert ("ticket-1", "In Progress") in linear.calls.get(
+            "transition_to_state", []
+        )
+
+    def test_deleted_ticket_in_flight_no_comment(
+        self,
+        orchestrator: Orchestrator,
+        linear: FakeLinearClient,
+        tmp_path: Path,
+        dirty_summary: mock.MagicMock,
+    ) -> None:
+        """Deleted ticket stays silent even with a task in flight."""
+        ws_root = tmp_path / "workspaces"
+        ws_dir = ws_root / "TEAM-1" / "repo"
+        ws_dir.mkdir(parents=True)
+        (ws_dir / "sentinel").write_text("x")
+
+        self._add_state(
+            orchestrator, workspace_path=str(ws_dir), status=TicketStatus.working
+        )
+        dirty_summary.return_value = "2 uncommitted files."
+        linear.set_response("list_triggered_issues", [])
+        linear.set_response("get_issue", LinearNotFoundError("gone"))
+        orchestrator._active_tasks["ticket-1"] = Future()
+
+        orchestrator._tick()
+        time.sleep(0.2)
+
+        assert orchestrator._state.get("ticket-1") is None
+        assert not ws_dir.exists()
+        assert linear.calls.get("post_comment", []) == []
 
     def test_fetch_triggered_issues_includes_qa_state_when_set(
         self,

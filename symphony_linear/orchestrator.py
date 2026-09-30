@@ -91,6 +91,9 @@ _IGNORED_COMMENT_BODY = (
     "I'll post my reply when this turn finishes. Comment again after that "
     "and I'll pick it up."
 )
+# Appended to a step-3 cleanup comment when an in-flight agent turn was
+# stopped because the ticket is no longer triggered.
+_STOPPED_TURN_LINE = "\n\nI also stopped the running agent turn."
 
 # Delays between retries of a transient-prone pipeline tracker call.  Three
 # attempts total: the first immediately, then one after each delay.
@@ -744,6 +747,10 @@ class Orchestrator:
                 if self._is_still_triggered(current):
                     continue
 
+                # Checked once per ticket, before any cancel, so every cleanup
+                # path below agrees on whether a turn was actually running.
+                in_flight = self._is_task_in_flight(tid)
+
                 summary = dirty_summary(workspace_path)
                 if summary is not None:
                     if ticket_state.cleanup_refused_state is None:
@@ -755,6 +762,12 @@ class Orchestrator:
                             "refusing cleanup",
                             tid,
                         )
+                        if in_flight:
+                            # Stop the turn before the transition so a cancelled
+                            # turn cannot race the state write below.  The
+                            # pipeline's AgentCancelled handler salvages the
+                            # session id into the entry we keep.
+                            self._cancel_ticket(tid)
                         needs_input_name = self._tracker.transition_name_for(
                             TransitionTarget.needs_input
                         )
@@ -779,7 +792,7 @@ class Orchestrator:
                             else f"I could not move the ticket back to "
                             f"**{needs_input_name}** — please move it yourself."
                         )
-                        self._post_comment_safe(
+                        comment = self._post_comment_safe(
                             tid,
                             (
                                 "**Workspace not clean — I did not delete it.**\n\n"
@@ -790,20 +803,44 @@ class Orchestrator:
                                 "Commit and push the work, or ask me to do it. "
                                 "If you move the ticket out again, I will delete "
                                 "the workspace."
+                                + (_STOPPED_TURN_LINE if in_flight else "")
                             ),
+                            return_comment=True,
                             kind="cleanup",
                         )
                         # Remember which state we left the ticket in: the
                         # needs-input state if the transition worked, otherwise
                         # wherever it already was.  A later tick deletes only
                         # when the ticket has moved away from that state.
-                        ticket_state.cleanup_refused_state = (
-                            needs_input_name if transition_ok else current.state
-                        )
-                        ticket_state.updated_at = _iso_now()
+                        #
+                        # A killed in-flight turn leaves the entry in
+                        # working/bootstrapping, which step 4 skips, so a human
+                        # reply would never resume it.  Park it at needs_input
+                        # and anchor last_seen to the refusal comment so the
+                        # comments that fed the cancelled turn are not replayed;
+                        # only a later human comment resumes work.  Re-check the
+                        # live entry under the lock: a pipeline may have written
+                        # it since we snapshot the loop list, and get() returns
+                        # the live object (never upsert a stale snapshot here).
                         with self._state_lock:
-                            self._state.upsert(ticket_state)
-                            self._state.save()
+                            live_entry = self._state.get(tid)
+                            if live_entry is not None:
+                                live_entry.cleanup_refused_state = (
+                                    needs_input_name if transition_ok else current.state
+                                )
+                                if in_flight and live_entry.status in (
+                                    TicketStatus.working,
+                                    TicketStatus.bootstrapping,
+                                ):
+                                    live_entry.status = TicketStatus.needs_input
+                                    if comment is not None:
+                                        live_entry.last_seen_comment_id = comment.id
+                                    else:
+                                        baseline = self._baseline_comment_id(tid)
+                                        if baseline is not None:
+                                            live_entry.last_seen_comment_id = baseline
+                                live_entry.updated_at = _iso_now()
+                                self._state.save()
                         continue
                     if current.state == ticket_state.cleanup_refused_state:
                         # The ticket is exactly where we left it after the
@@ -829,6 +866,7 @@ class Orchestrator:
                                 "Trigger the ticket again and I will pick up "
                                 "that workspace where it is. Nothing deletes it "
                                 "on its own."
+                                + (_STOPPED_TURN_LINE if in_flight else "")
                             ),
                             kind="cleanup",
                         )
@@ -855,6 +893,7 @@ class Orchestrator:
                             "workspace. It still held:\n\n"
                             f"{summary}\n\n"
                             "Those changes are gone."
+                            + (_STOPPED_TURN_LINE if in_flight else "")
                         ),
                         kind="cleanup",
                     )
@@ -867,6 +906,24 @@ class Orchestrator:
                     current.archived_at is not None,
                 )
                 self._cancel_ticket(tid)
+                if in_flight and summary is None:
+                    # Step 3 normally cleans a clean workspace silently; when a
+                    # turn was actually running, say why it was stopped.  A dirty
+                    # workspace already got its receipt above, with the stop line
+                    # appended, so it must not get a second comment here.  The
+                    # trigger can go away for reasons other than a human move
+                    # (label removed, archived), so name the current state
+                    # rather than claiming the human moved the ticket.
+                    self._post_comment_safe(
+                        tid,
+                        (
+                            "**Stopped the running agent turn.**\n\n"
+                            "This ticket is no longer triggered (its current "
+                            f"state is **{current.state}**), so I stopped the "
+                            "agent turn that was running for it."
+                        ),
+                        kind="cleanup",
+                    )
                 identifier = ticket_state.ticket_identifier
 
                 # Snapshot session into persistent mapping before removing state.
