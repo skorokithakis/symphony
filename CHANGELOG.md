@@ -1,5 +1,44 @@
 # Changelog
 
+## [0.8.0](https://github.com/skorokithakis/symphony/compare/v0.7.0...v0.8.0) (2026-10-01)
+
+
+### Features
+
+* Add a project-wide default model ([bc8772a](https://github.com/skorokithakis/symphony/commit/bc8772a16e54b4dcb87bd4a7125301fff07cbf83))
+* Add OMP as a selectable coding agent alongside OpenCode ([b5a1a6d](https://github.com/skorokithakis/symphony/commit/b5a1a6d25effb6afb0030d0893964bfc74d0d300))
+* Add per-repo secrets files for sandbox launches ([795ae3c](https://github.com/skorokithakis/symphony/commit/795ae3c04171f9389dce56c97e89d278f1181394))
+* Add pi as a selectable coding agent ([36a3d8f](https://github.com/skorokithakis/symphony/commit/36a3d8fa4dfa5fd67af5341040f02e10f1df3d6f))
+* Add sandbox.dir_map for per-ticket and shared bind mounts ([7424d9a](https://github.com/skorokithakis/symphony/commit/7424d9a217d9baf489b6a43f0b1fa63cbce324b3))
+* Download non-image file attachments into the sandbox ([f8b9d0d](https://github.com/skorokithakis/symphony/commit/f8b9d0d3f5a3d47b0ecd505d3c9a9b771ebce449))
+* Log auto-restart state and deferred restarts ([f9b3241](https://github.com/skorokithakis/symphony/commit/f9b32414c0351918cfc5f4d384acf06d75559aed))
+* Make the Linear trigger label optional ([3eb911c](https://github.com/skorokithakis/symphony/commit/3eb911c6a0c6f3dd5aea7c8ae248e4ae851c5783))
+* Prepare workspace and run setup when a new ticket starts in QA ([873ed23](https://github.com/skorokithakis/symphony/commit/873ed237bb65529bf0499f96411aa23f1188c6d5))
+* Restart the daemon automatically when its git checkout changes ([251cbd3](https://github.com/skorokithakis/symphony/commit/251cbd387dc352db8f6dd5e4ffa0bdb9d6a9801f))
+* Stop the running agent turn and say so when a ticket leaves In Progress ([3ab3701](https://github.com/skorokithakis/symphony/commit/3ab37012920d851db5c62308a041e56442ddb5ec))
+
+
+### Bug Fixes
+
+* Detect pi-family mid-turn failures despite a zero exit code ([1f0f1ba](https://github.com/skorokithakis/symphony/commit/1f0f1ba42d88c8176828d35d181a1822674f962b))
+* Keep a QA-interrupted ticket reachable by comment ([2ea5f07](https://github.com/skorokithakis/symphony/commit/2ea5f07798976207821a0050381f5fb91c702b93))
+* Keep tickets in QA after a QA move stops a running turn ([c03950b](https://github.com/skorokithakis/symphony/commit/c03950b90b252bc245476ef3a313607a0c8ddefc))
+* Log tracker transitions and move resumed tickets to In Progress first ([2bf4b92](https://github.com/skorokithakis/symphony/commit/2bf4b922d76a1d2baab95c275b1fba21d23c2b21))
+* Move new tickets to In Progress before cloning the workspace ([200cf90](https://github.com/skorokithakis/symphony/commit/200cf909d66c2a7d5e2c0ea6fa54c0cb7dc2ca51))
+* Post a single Restored comment when resuming a session from Done ([49f20fb](https://github.com/skorokithakis/symphony/commit/49f20fb29cc8918b73db54b126b0757ef7e7c6f6))
+* Retry transient errors when posting the final reply ([bba4e90](https://github.com/skorokithakis/symphony/commit/bba4e904b2d9652cf7166c5cec370cd6dce35414))
+* Retry transient tracker errors on pipeline state transitions ([34ae6d9](https://github.com/skorokithakis/symphony/commit/34ae6d975c760fab04a75c728b78b4cb20a695fb))
+* Stop the running agent turn when a ticket is moved out of In Progress ([bc8456b](https://github.com/skorokithakis/symphony/commit/bc8456b73ac431ff796536c56350e4fb53f0459a))
+* Stop the sandboxed agent reading daemon credentials ([#16](https://github.com/skorokithakis/symphony/issues/16)) ([34cf7a4](https://github.com/skorokithakis/symphony/commit/34cf7a4f0d58f8d5f3450b5f34f50a5ef535f2d8))
+* Tell the user when a mid-turn comment is ignored ([e4da13a](https://github.com/skorokithakis/symphony/commit/e4da13a3cd49751f0f02402a46eeea9ff9a617a6))
+
+
+### Documentation
+
+* Document trigger_label: null in the example config ([7a67339](https://github.com/skorokithakis/symphony/commit/7a67339091b4ccb87bef6d3741205756b09756f6))
+* Record QA stop comment-anchor decision ([b16c2a4](https://github.com/skorokithakis/symphony/commit/b16c2a4dba1653f540ca8d569bb0150041a18b47))
+* Record tracker transition retry decision ([54bfc02](https://github.com/skorokithakis/symphony/commit/54bfc02d9ed3f790baf7d90f2b04270e2f6c60e1))
+
 ## [0.7.0](https://github.com/skorokithakis/symphony/compare/v0.6.0...v0.7.0) (2026-08-22)
 
 
