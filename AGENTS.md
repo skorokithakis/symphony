@@ -395,6 +395,34 @@ shutting down, or the ticket is no longer triggered — see `_is_still_triggered
   mid-turn) — via `_transition_failed_to_needs_input`. The internal status
   stays `failed` so the retry routes above keep working. Interrupted turns
   are the exception: they are re-run by the restart-recovery invariant above.
+- **A mid-turn move out of In Progress stops the turn.** Tick step 4, before
+  its normal per-status handling, looks at each tracked ticket that is still in
+  the trigger list whose tick-list state is neither the in-progress state name
+  (`transition_name_for(TransitionTarget.in_progress)`) nor QA and that has a
+  registered subprocess entry (`_subprocesses[tid]`; covers an agent turn and
+  `.symphony/setup`). It re-fetches the issue with `get_issue` *before*
+  checking process liveness (`returncode is None`), and when the fresh issue is
+  still neither In Progress nor QA it stops the turn: `_cancel_ticket`, then
+  the shared `_park_cancelled_turn` helper — the same park/notice/anchor logic
+  `_reconcile_serve` uses for a QA winner — which, for a `working` or
+  `bootstrapping` entry, sets `TicketStatus.needs_input`, posts one
+  `cleanup`-kind notice naming the current state, and anchors
+  `last_seen_comment_id` to that notice (falling back to
+  `_baseline_comment_id`), deliberately leaving the tracker state alone. The
+  rest of step 4 is then skipped for that ticket (no mid-turn warning, no
+  scheduling); a `TrackerError` on the re-fetch is logged and the ticket is
+  skipped until the next tick. "Task in flight" is not the signal — the daemon
+  leaves the ticket in Needs Input at turn start (before its In Progress
+  transition) and turn end (after its Needs Input transition), and re-reading
+  the issue before checking liveness avoids both: a live process implies the
+  In Progress transition already ran. Accepted risk: if that transition failed,
+  the next tick stops the turn. A cancel that kills `.symphony/setup` makes
+  `run_setup` raise `SetupFailed`; `_prepare_workspace`'s finalize failure path
+  checks `_is_cancelled` first and returns quietly (no error comment, no
+  `failed` state, no sticky `setup_error`), so it cannot clobber the parked
+  entry. This is the same trade-off as the QA path
+  (gnosis `udbvzt`) — the comments that fed the stopped turn are dropped, and
+  only a later human reply resumes.
 - **Setup errors are sticky.** `setup_error` is set when project/repo-link/
   workspace prep fails, and is cleared only when the user comments on the
   ticket. Don't clear it elsewhere.

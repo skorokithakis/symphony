@@ -58,7 +58,7 @@ from symphony_linear.tracker import (
     TransitionTarget,
 )
 from symphony_linear.webhook import WebhookServer
-from symphony_linear.workspace import SecretsError, WorkspaceError
+from symphony_linear.workspace import SecretsError, SetupFailed, WorkspaceError
 
 
 # ---------------------------------------------------------------------------
@@ -10221,6 +10221,295 @@ class TestCorrection3:
         assert needs_input_transitions == [], (
             f"Expected no needs_input transition after cancellation, got: {needs_input_transitions}"
         )
+
+
+# ---------------------------------------------------------------------------
+# Mid-turn stop when a ticket leaves In Progress
+# ---------------------------------------------------------------------------
+
+
+class TestMidTurnLeftInProgressStop:
+    """Tick step 4 stops a turn whose ticket a human moved out of In Progress."""
+
+    def _register_live_proc(self, orch: Orchestrator, tid: str = "ticket-1") -> Any:
+        proc = subprocess.Popen(["sleep", "60"])
+        assert orch._register_subprocess(tid, proc)
+        return proc
+
+    def test_stop_when_moved_to_needs_input_mid_turn(
+        self,
+        orchestrator: Orchestrator,
+        linear: FakeLinearClient,
+    ) -> None:
+        _add_ticket_state(orchestrator, status=TicketStatus.working)
+        agent_proc = self._register_live_proc(orchestrator)
+
+        tick_issue = _make_issue(id="ticket-1", state="Needs Input", labels=["Agent"])
+        refetched = _make_issue(id="ticket-1", state="Needs Input", labels=["Agent"])
+        linear.set_response("list_triggered_issues", [tick_issue])
+        linear.set_response("get_issue", refetched)
+
+        orchestrator._tick()
+
+        assert agent_proc.returncode is not None, "the running turn should be killed"
+        updated = orchestrator._state.get("ticket-1")
+        assert updated is not None
+        assert updated.status == TicketStatus.needs_input
+        posts = [
+            (tid, body)
+            for tid, body in linear.calls.get("post_comment", [])
+            if tid == "ticket-1"
+        ]
+        assert len(posts) == 1, f"expected exactly one notice, got {posts}"
+        assert "moved to **Needs Input**" in posts[0][1]
+        assert "*Symphony · cleanup*" in posts[0][1]
+        # The notice anchors last_seen so the cancelled turn's comments are not
+        # replayed; the workflow state is deliberately left alone.
+        assert updated.last_seen_comment_id == "cmt-ticket-1-2"
+        assert linear.calls.get("transition_to_state", []) == []
+
+    def test_stopped_turn_resumes_on_later_human_reply(
+        self,
+        orchestrator: Orchestrator,
+        linear: FakeLinearClient,
+    ) -> None:
+        _add_ticket_state(orchestrator, status=TicketStatus.working)
+        self._register_live_proc(orchestrator)
+
+        tick_issue = _make_issue(id="ticket-1", state="Needs Input", labels=["Agent"])
+        linear.set_response("list_triggered_issues", [tick_issue])
+        linear.set_response("get_issue", tick_issue)
+        orchestrator._tick()
+
+        assert orchestrator._state.get("ticket-1").status == TicketStatus.needs_input  # type: ignore[union-attr]
+
+        # The cancelled task's wrapper would clear this on completion; without
+        # that the resume below would early-return as cancelled.
+        with orchestrator._subprocess_lock:
+            orchestrator._cancelled.discard("ticket-1")
+
+        # A human comment posted after the notice resumes the session.
+        linear.set_response(
+            "list_comments_since", [_make_comment("cmt-human-2", "Continue")]
+        )
+        with (
+            mock.patch(
+                "symphony_linear.orchestrator.load_project_config",
+                return_value=ProjectConfig(),
+            ),
+            mock.patch(
+                "symphony_linear.orchestrator.run_resume", return_value=("Done!", None)
+            ) as m_run_resume,
+        ):
+            orchestrator._tick()
+            time.sleep(0.2)
+
+        m_run_resume.assert_called_once()
+        assert ("ticket-1", "In Progress") in linear.calls.get(
+            "transition_to_state", []
+        )
+
+    def test_stop_parks_bootstrapping_setup_turn(
+        self,
+        orchestrator: Orchestrator,
+        linear: FakeLinearClient,
+    ) -> None:
+        """.symphony/setup leaves the entry bootstrapping; the stop must park it."""
+        _add_ticket_state(orchestrator, status=TicketStatus.bootstrapping)
+        agent_proc = self._register_live_proc(orchestrator)
+
+        tick_issue = _make_issue(id="ticket-1", state="Needs Input", labels=["Agent"])
+        linear.set_response("list_triggered_issues", [tick_issue])
+        linear.set_response("get_issue", tick_issue)
+
+        orchestrator._tick()
+
+        assert agent_proc.returncode is not None
+        updated = orchestrator._state.get("ticket-1")
+        assert updated is not None
+        assert updated.status == TicketStatus.needs_input
+        assert updated.last_seen_comment_id == "cmt-ticket-1-2"
+
+    def test_cancelled_setup_failure_does_not_clobber_parked_entry(
+        self,
+        orchestrator: Orchestrator,
+        linear: FakeLinearClient,
+    ) -> None:
+        """A cancel that kills .symphony/setup must not be reported as a failure.
+
+        Drives the real ``_prepare_workspace`` path: ``finalize_workspace``
+        (running the setup subprocess) raises ``SetupFailed`` after the tick
+        kills the process.  The except branch must notice the cancel and return
+        quietly, leaving the entry parked by ``_park_cancelled_turn`` with no
+        error comment and no sticky ``setup_error``.
+        """
+        issue = _make_issue(id="ticket-1", state="Needs Input", labels=["Agent"])
+        linear.set_response("list_triggered_issues", [issue])
+        linear.set_response("get_issue", issue)
+        linear.set_response(
+            "get_project",
+            Project(
+                id="proj-1",
+                name="Test",
+                links=[
+                    ProjectLink(label="Repo", url="https://github.com/org/repo.git")
+                ],
+            ),
+        )
+
+        proc_registered = threading.Event()
+
+        def fake_finalize(*args: Any, **kwargs: Any) -> None:
+            proc = subprocess.Popen(["sleep", "60"])
+            kwargs["on_subprocess"](proc)
+            proc_registered.set()
+            # Mirror run_setup: wait for the process, then report failure once
+            # the tick's cancel kills it.
+            proc.wait()
+            raise SetupFailed("setup killed")
+
+        def prepare() -> None:
+            orchestrator._prepare_workspace(issue)
+
+        with (
+            mock.patch(
+                "symphony_linear.orchestrator.clone_workspace",
+                return_value=("/tmp/ws/TEAM-1", False),
+            ),
+            mock.patch(
+                "symphony_linear.orchestrator.load_project_config",
+                return_value=ProjectConfig(),
+            ),
+            mock.patch(
+                "symphony_linear.orchestrator.finalize_workspace",
+                side_effect=fake_finalize,
+            ),
+        ):
+            worker = threading.Thread(target=prepare)
+            worker.start()
+            assert proc_registered.wait(timeout=5), "setup subprocess not registered"
+            orchestrator._tick()
+            worker.join(timeout=5)
+
+        assert not worker.is_alive()
+        updated = orchestrator._state.get("ticket-1")
+        assert updated is not None
+        assert updated.status == TicketStatus.needs_input
+        assert updated.setup_error is None
+        posts = [
+            (tid, body)
+            for tid, body in linear.calls.get("post_comment", [])
+            if tid == "ticket-1"
+        ]
+        assert len(posts) == 1, f"expected only the stop notice, got {posts}"
+        assert "moved to **Needs Input**" in posts[0][1]
+        assert not any("Symphony error" in body for _, body in posts)
+        assert linear.calls.get("transition_to_state", []) == []
+
+    def test_no_stop_when_no_live_subprocess(
+        self,
+        orchestrator: Orchestrator,
+        linear: FakeLinearClient,
+    ) -> None:
+        ts = _add_ticket_state(orchestrator, status=TicketStatus.working)
+        # A finished process leaves a registration behind but is not live.
+        dead_proc = mock.MagicMock(spec=subprocess.Popen)
+        dead_proc.returncode = 0
+        with orchestrator._subprocess_lock:
+            orchestrator._subprocesses["ticket-1"] = dead_proc
+        # Keep the recovery branch from scheduling a rerun for the working entry.
+        ts.cleanup_refused_state = "Needs Input"
+        ts.session_id = None
+        orchestrator._state.save()
+
+        tick_issue = _make_issue(id="ticket-1", state="Needs Input", labels=["Agent"])
+        linear.set_response("list_triggered_issues", [tick_issue])
+        linear.set_response("get_issue", tick_issue)
+
+        orchestrator._tick()
+
+        assert not orchestrator._is_cancelled("ticket-1")
+        assert dead_proc.kill.call_count == 0
+        assert linear.calls.get("post_comment") is None
+
+    def test_no_stop_when_refetch_shows_in_progress(
+        self,
+        orchestrator: Orchestrator,
+        linear: FakeLinearClient,
+    ) -> None:
+        _add_ticket_state(orchestrator, status=TicketStatus.working)
+        agent_proc = self._register_live_proc(orchestrator)
+        # An in-flight task keeps step 4's working branch from scheduling recovery.
+        not_done_future: mock.MagicMock = mock.MagicMock()
+        not_done_future.done.return_value = False
+        with orchestrator._task_lock:
+            orchestrator._active_tasks["ticket-1"] = not_done_future  # type: ignore[assignment]
+
+        # Tick list is stale (Needs Input) but the fresh read shows In Progress:
+        # the pipeline's own transition already landed, so nothing stops.
+        tick_issue = _make_issue(id="ticket-1", state="Needs Input", labels=["Agent"])
+        refetched = _make_issue(id="ticket-1", state="In Progress", labels=["Agent"])
+        linear.set_response("list_triggered_issues", [tick_issue])
+        linear.set_response("get_issue", refetched)
+
+        orchestrator._tick()
+
+        assert not orchestrator._is_cancelled("ticket-1")
+        assert agent_proc.returncode is None
+        assert linear.calls.get("post_comment") is None
+
+    def test_no_stop_for_qa_tickets(
+        self,
+        tmp_path: Path,
+        state_mgr: StateManager,
+        linear: FakeLinearClient,
+    ) -> None:
+        config = _make_qa_config(tmp_path)
+        orch = Orchestrator(
+            config=config,
+            state=state_mgr,
+            tracker=LinearTracker(linear=linear, config=config.linear),
+            workspace=tmp_path / "ws",
+        )  # type: ignore[arg-type]
+        _add_ticket_state(orch, status=TicketStatus.working)
+        agent_proc = self._register_live_proc(orch)
+        not_done_future: mock.MagicMock = mock.MagicMock()
+        not_done_future.done.return_value = False
+        with orch._task_lock:
+            orch._active_tasks["ticket-1"] = not_done_future  # type: ignore[assignment]
+
+        qa_issue = _make_qa_issue(state="In Review")
+        linear.set_response("list_triggered_issues", [qa_issue])
+
+        # QA has its own handling (and its own tests); isolate step 4 here.
+        with mock.patch.object(orch, "_reconcile_serve"):
+            orch._tick()
+
+        assert not orch._is_cancelled("ticket-1")
+        assert agent_proc.returncode is None
+        assert linear.calls.get("post_comment") is None
+
+    def test_refetch_tracker_error_skips_without_stopping(
+        self,
+        orchestrator: Orchestrator,
+        linear: FakeLinearClient,
+    ) -> None:
+        _add_ticket_state(orchestrator, status=TicketStatus.working)
+        agent_proc = self._register_live_proc(orchestrator)
+        not_done_future: mock.MagicMock = mock.MagicMock()
+        not_done_future.done.return_value = False
+        with orchestrator._task_lock:
+            orchestrator._active_tasks["ticket-1"] = not_done_future  # type: ignore[assignment]
+
+        tick_issue = _make_issue(id="ticket-1", state="Needs Input", labels=["Agent"])
+        linear.set_response("list_triggered_issues", [tick_issue])
+        linear.set_response("get_issue", TrackerError("boom"))
+
+        orchestrator._tick()
+
+        assert not orchestrator._is_cancelled("ticket-1")
+        assert agent_proc.returncode is None
+        assert linear.calls.get("post_comment") is None
 
 
 # ---------------------------------------------------------------------------

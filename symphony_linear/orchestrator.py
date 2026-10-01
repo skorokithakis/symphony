@@ -967,6 +967,66 @@ class Orchestrator:
                 # flight; a stale QA entry is parked in needs_input, where a human
                 # comment can reach it again.
 
+                # A human may move a ticket out of In Progress while a turn runs.
+                # Step-3 cleanup only fires for untriggered tickets and
+                # _reconcile_serve only handles tickets entering QA, so a move to
+                # Needs Input (still an active state, so still triggered) would
+                # leave the turn running.  Stop it here.
+                #
+                # "Task in flight" is deliberately not the signal: the daemon
+                # itself leaves the ticket in Needs Input at turn start (before
+                # its In Progress transition) and at turn end (after its Needs
+                # Input transition).  Re-reading the issue before checking
+                # process liveness avoids both.  A live process implies the
+                # pipeline already ran its In Progress transition (it happens
+                # first), so the fresh read shows In Progress and nothing stops;
+                # a finished turn's process is dead, so liveness is false.
+                # Accepted risk: if that In Progress transition failed, the next
+                # tick stops the turn.
+                tick_issue = issues_by_id.get(tid)
+                if tick_issue is not None and not self._tracker.is_in_qa(tick_issue):
+                    in_progress_name = self._tracker.transition_name_for(
+                        TransitionTarget.in_progress
+                    )
+                    if tick_issue.state != in_progress_name:
+                        with self._subprocess_lock:
+                            registered = self._subprocesses.get(tid) is not None
+                        if registered:
+                            try:
+                                refetched = self._tracker.get_issue(tid)
+                            except TrackerError:
+                                logger.exception(
+                                    "Tracker error re-fetching %s during mid-turn "
+                                    "stop check — skipping this tick",
+                                    tid,
+                                )
+                                continue
+                            if (
+                                refetched.state != in_progress_name
+                                and not self._tracker.is_in_qa(refetched)
+                            ):
+                                with self._subprocess_lock:
+                                    proc = self._subprocesses.get(tid)
+                                if proc is not None and proc.returncode is None:
+                                    logger.info(
+                                        "Ticket %s left In Progress (state=%s) "
+                                        "mid-turn — stopping the running turn",
+                                        tid,
+                                        refetched.state,
+                                    )
+                                    self._cancel_ticket(tid)
+                                    self._park_cancelled_turn(
+                                        tid,
+                                        (
+                                            "**Symphony**: I stopped the running "
+                                            "turn because this ticket was moved to "
+                                            f"**{refetched.state}**. Reply on this "
+                                            "ticket to continue."
+                                        ),
+                                        kind="cleanup",
+                                    )
+                                    continue
+
                 if st == TicketStatus.failed and ticket_state.setup_error is not None:
                     continue
                 if st == TicketStatus.working:
@@ -1246,54 +1306,14 @@ class Orchestrator:
                 winner.identifier,
             )
             self._cancel_ticket(winner_id)
-
-            made_resumable = False
-            with self._state_lock:
-                state_entry = self._state.get(winner_id)
-                if state_entry is not None and state_entry.status in (
-                    TicketStatus.working,
-                    TicketStatus.bootstrapping,
-                ):
-                    # Without this write the ticket stays working forever and
-                    # tick step 4 never reaches the needs_input/failed resume
-                    # branch that reads new human comments.  The write lives
-                    # here rather than in the pipelines' AgentCancelled
-                    # handler because that handler also runs on daemon
-                    # shutdown (where needs_input would disarm restart
-                    # recovery) and on ticket cleanup (where it would
-                    # resurrect a removed entry).  get() returns the live
-                    # entry, so no upsert is needed.
-                    state_entry.status = TicketStatus.needs_input
-                    state_entry.updated_at = _iso_now()
-                    self._state.save()
-                    made_resumable = True
-            if made_resumable:
-                comment = self._post_comment_safe(
-                    winner_id,
-                    (
-                        "**Symphony**: The running turn was stopped because this ticket "
-                        "entered QA. A reply on this ticket will continue the work."
-                    ),
-                    return_comment=True,
-                    kind="qa",
-                )
-                with self._state_lock:
-                    # Advance last_seen past the notice so the comments that fed
-                    # the cancelled turn are not re-seen as new and replayed on
-                    # the next tick (which would re-enter the work and kill the
-                    # serve again).  Re-check the entry: step-3 cleanup removes
-                    # entries without holding _state_lock, and get() returns the
-                    # live entry, so never upsert here or a cleaned-up ticket
-                    # would be resurrected.
-                    live_entry = self._state.get(winner_id)
-                    if live_entry is not None:
-                        if comment is not None:
-                            live_entry.last_seen_comment_id = comment.id
-                        else:
-                            baseline = self._baseline_comment_id(winner_id)
-                            if baseline is not None:
-                                live_entry.last_seen_comment_id = baseline
-                        self._state.save()
+            self._park_cancelled_turn(
+                winner_id,
+                (
+                    "**Symphony**: The running turn was stopped because this ticket "
+                    "entered QA. A reply on this ticket will continue the work."
+                ),
+                kind="qa",
+            )
 
         logger.info(
             "Starting QA serve for %s (workspace=%s)", winner.identifier, workspace_path
@@ -1358,6 +1378,62 @@ class Orchestrator:
             name=f"serve-watchdog-{winner.identifier}",
         )
         t.start()
+
+    def _park_cancelled_turn(
+        self, ticket_id: str, notice_body: str, *, kind: str
+    ) -> None:
+        """Park a cancelled in-flight turn so a human reply can resume it.
+
+        A killed turn leaves its state entry in ``working``/``bootstrapping``,
+        which tick step 4 skips, so without this a human reply would never
+        reach it.  When the live entry is in one of those states, set it to
+        ``needs_input`` and post exactly one *notice_body* comment
+        (*kind* labels its footer), then anchor ``last_seen_comment_id`` to
+        that notice (falling back to the newest comment via
+        ``_baseline_comment_id``) so the comments that fed the cancelled turn
+        are not replayed on the following tick.  Does nothing when the entry is
+        missing or already in any other state.
+
+        Shared by the QA serve reconciliation and the mid-turn
+        left-In-Progress stop.  The tracker ticket's workflow state is
+        deliberately left alone: the caller owns that decision.
+
+        Lock discipline mirrors the QA path: re-read the live entry under
+        ``_state_lock`` and never upsert a stale snapshot, because step-3
+        cleanup removes entries without holding the lock and an upsert would
+        resurrect a cleaned-up ticket.  ``get()`` returns the live object, so
+        mutating it needs no upsert.
+        """
+        made_resumable = False
+        with self._state_lock:
+            state_entry = self._state.get(ticket_id)
+            if state_entry is not None and state_entry.status in (
+                TicketStatus.working,
+                TicketStatus.bootstrapping,
+            ):
+                state_entry.status = TicketStatus.needs_input
+                state_entry.updated_at = _iso_now()
+                self._state.save()
+                made_resumable = True
+        if not made_resumable:
+            return
+        comment = self._post_comment_safe(
+            ticket_id, notice_body, return_comment=True, kind=kind
+        )
+        with self._state_lock:
+            # Advance last_seen past the notice so the comments that fed the
+            # cancelled turn are not re-seen as new and replayed.  Re-check the
+            # entry: step-3 cleanup may have removed it while the comment post
+            # was in flight, and get() returns the live entry.
+            live_entry = self._state.get(ticket_id)
+            if live_entry is not None:
+                if comment is not None:
+                    live_entry.last_seen_comment_id = comment.id
+                else:
+                    baseline = self._baseline_comment_id(ticket_id)
+                    if baseline is not None:
+                        live_entry.last_seen_comment_id = baseline
+                self._state.save()
 
     def _start_qa_setup(self, winner_id: str, winner: Issue) -> None:
         """Schedule workspace preparation for a never-worked QA winner.
@@ -1920,6 +1996,21 @@ class Orchestrator:
                 tmp_path=tmp_path,
             )
         except (WorkspaceError, FileNotFoundError) as exc:
+            if self._is_cancelled(tid):
+                # The .symphony/setup subprocess was killed by a cancel (the QA
+                # path, step-3 cleanup, or the mid-turn left-In-Progress stop),
+                # so run_setup raised SetupFailed.  That is not a genuine
+                # failure: the cancelling path owns the state (it already parked
+                # the entry and posted its own notice), and reporting here would
+                # clobber the parked entry with failed + a sticky setup_error and
+                # post a duplicate error comment.  Return quietly, exactly like
+                # the other post-cancel checks in this method.
+                logger.info(
+                    "Workspace finalization cancelled for %s — not reporting: %s",
+                    tid,
+                    exc,
+                )
+                return None
             logger.error("Workspace finalization failed for %s: %s", tid, exc)
             self._transition_failed_to_needs_input(tid)
             err_comment = self._post_comment_safe(
