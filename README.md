@@ -700,6 +700,10 @@ URL find the same file, and GitLab subgroups become extra directories. Set
 `sandbox.secrets_dir` to keep the files somewhere other than
 `<workspace>/secrets`.
 
+The path comes from the repo URL, not the project name. Only the host is
+lowercased; the owner and name keep their case, so `Acme/API.git` needs
+`Acme/API.env`.
+
 Before each sandbox launch (setup, every agent turn, and QA serve), Symphony
 copies the file to `secrets.env` in the ticket's directory, outside the git
 checkout, and sets `SYMPHONY_SECRETS_FILE` to its path. Symphony does not
