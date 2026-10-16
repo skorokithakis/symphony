@@ -1,5 +1,9 @@
 """OpenCode adapter for symphony-lite.
 
+Targets the OpenCode V2 CLI only (``opencode run --standalone --format json
+--auto --print-logs``); V1 flags such as ``--dir`` and
+``--dangerously-skip-permissions`` no longer exist and V1 is unsupported.
+
 Launches OpenCode inside the bwrap sandbox and extracts the session ID,
 final assistant message, and context-window token count from the
 JSON event stream.
@@ -107,8 +111,11 @@ Key observations:
     If nothing survives (the turn ended on a tool call), it falls back to
     the full assembly, so the worst case equals the full trace.
 
-- ``stderr`` is empty on success; on failure it contains diagnostic output
-  that we include in ``OpenCodeError``.
+- ``stderr`` is empty on success; with ``--print-logs`` it carries the
+  server log.  V2 reports a failed turn as a stdout event
+  ``{"type": "error", "error": {"message": "..."}}`` with exit code 1 and
+  often an empty stderr; both the error message(s) and the stderr tail are
+  included in ``OpenCodeError``.
 - The stream is always valid line-delimited JSON.  Corrupt lines are logged
   and skipped.
 
@@ -146,22 +153,22 @@ from symphony_linear.sandbox import SECRETS_ENV_VAR
 logger = logging.getLogger(__name__)
 
 # ---------------------------------------------------------------------------
-# Sandbox environment
+# Command line
 # ---------------------------------------------------------------------------
 
-# Answer the three permissions that default to "ask" in OpenCode 1.18.16 so
-# they can never be raised. This must stay: 'opencode run' auto-approves
-# permission requests only for the top-level session — its event loop does
-# `if (event.properties.sessionID !== mainSessionID) continue` before the
-# auto-approve branch, so an ask raised by a SUBAGENT session (any session
-# created by the task tool) is never answered and the turn hangs until the
-# daemon's absolute timeout. '--dangerously-skip-permissions' is a hidden
-# alias of '--auto' implemented behind that same session-id filter, so it
-# does not help either. The sandbox uses --clearenv, so the variable only
-# reaches OpenCode because this adapter passes it in the runner env dict.
-OPENCODE_PERMISSION = (
-    '{"external_directory":"allow","doom_loop":"allow","read":"allow"}'
-)
+# Flags common to every turn (OpenCode V2 only; V1 is not supported).
+#
+# SECURITY: ``--standalone`` must stay.  Without it V2 connects to the user's
+# shared background OpenCode server over localhost TCP (the sandbox shares the
+# host network namespace), and the agent's tools then run on the host, outside
+# bwrap.  ``--standalone`` makes the CLI run its own in-process server inside
+# the sandbox.  The idle watchdog also depends on it: ``--print-logs`` only
+# emits server logs when the server runs in-process.
+#
+# ``--auto`` is V2's name for auto-approving permissions (V1 called it
+# ``--dangerously-skip-permissions``).  There is no ``--dir``: the sandbox sets
+# the working directory to the repo and V2 uses the cwd.
+_BASE_FLAGS = ["--standalone", "--format", "json", "--auto", "--print-logs"]
 
 # ---------------------------------------------------------------------------
 # Typed exception aliases
@@ -245,12 +252,7 @@ def run_initial(
     cmd: list[str] = [
         "opencode",
         "run",
-        "--dir",
-        workspace_path,
-        "--format",
-        "json",
-        "--dangerously-skip-permissions",
-        "--print-logs",
+        *_BASE_FLAGS,
     ]
     if model:
         cmd += ["--model", model]
@@ -351,14 +353,9 @@ def run_resume(
     cmd: list[str] = [
         "opencode",
         "run",
-        "--dir",
-        workspace_path,
+        *_BASE_FLAGS,
         "--session",
         session_id,
-        "--format",
-        "json",
-        "--dangerously-skip-permissions",
-        "--print-logs",
     ]
     if model:
         cmd += ["--model", model]
@@ -448,10 +445,7 @@ def _execute(
     secrets_file: str | None = None,
 ) -> tuple[str, str, int | None]:
     """Run an OpenCode command, then parse and validate its JSON event stream."""
-    env = {
-        "HOME": str(Path.home()),
-        "OPENCODE_PERMISSION": OPENCODE_PERMISSION,
-    }
+    env = {"HOME": str(Path.home())}
     if secrets_file:
         env[SECRETS_ENV_VAR] = secrets_file
     returncode, stdout_text, stderr_text, timeout_reason = agent_runner.run(
@@ -511,8 +505,13 @@ def _execute(
         )
 
     if returncode != 0:
+        error_messages = _extract_error_messages(parsed_events)
+        detail = ""
+        if error_messages:
+            detail = "\nerror: " + "; ".join(error_messages)
         raise OpenCodeError(
-            f"OpenCode exited with code {returncode}\nstderr: {stderr_text[-2000:]}"
+            f"OpenCode exited with code {returncode}{detail}"
+            f"\nstderr: {stderr_text[-2000:]}"
         )
 
     if session_id is None:
@@ -531,6 +530,25 @@ def _execute(
     final_message = _assemble_final_reply(parsed_events, session_id)
 
     return session_id, final_message, context_tokens
+
+
+def _extract_error_messages(events: list[dict]) -> list[str]:
+    """Return the messages of ``{"type": "error", "error": {"message": ...}}``
+    events.
+
+    V2 reports failures as a stdout event with exit code 1 and an empty
+    stderr, so these messages are the only diagnostic on such a failure.
+    """
+    messages: list[str] = []
+    for event in events:
+        if event.get("type") != "error":
+            continue
+        error = event.get("error")
+        if isinstance(error, dict):
+            message = error.get("message")
+            if isinstance(message, str) and message:
+                messages.append(message)
+    return messages
 
 
 def _assemble_final_reply(events: list[dict], session_id: str) -> str:

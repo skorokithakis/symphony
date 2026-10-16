@@ -257,20 +257,27 @@ shutting down, or the ticket is no longer triggered — see `_is_still_triggered
   interactive trust approval inherited from global settings would let a
   checked-out repo load extensions, skills, prompts, and themes;
   `--no-approve` makes daemon behavior deterministic.
-- **`OPENCODE_PERMISSION` is injected into the sandbox env for every turn** to
-  pre-answer the three permissions that default to `ask` (external_directory,
-  doom_loop, read); do not delete it as redundant with
-  `--dangerously-skip-permissions` — that flag auto-approves only top-level
-  session events, so a subagent permission ask would hang the turn forever.
-- **OMP and pi need no `OPENCODE_PERMISSION` equivalent.** OMP's
+- **OpenCode is V2 only, and `--standalone` is a security requirement.** Both
+  turns run `opencode run --standalone --format json --auto --print-logs`
+  (V1 flags `--dir` and `--dangerously-skip-permissions` are gone; the
+  sandbox's `--chdir` supplies the cwd). Without `--standalone`, V2 connects
+  to the user's shared background OpenCode server over localhost TCP — the
+  sandbox shares the host network — and the agent's tools then run on the
+  host outside bwrap. Verified empirically; `tests/test_opencode.py` asserts
+  the flag in both argvs. There is no `OPENCODE_PERMISSION` env: V2 has no
+  subagent permission hang, defaults `external_directory` to allow, and has
+  no `doom_loop` permission. V2 reports failures as a stdout NDJSON
+  `{"type":"error","error":{"message":...}}` event with exit code 1 and empty
+  stderr; `_execute` includes those messages in the `OpenCodeError`.
+- **OMP and pi need no permission-env equivalent.** OMP's
   `--auto-approve` setting lets a task-tool subagent run to completion; pi has
-  no tool-approval gate, so the OpenCode subagent-permission hang does not
-  reproduce.
+  no tool-approval gate.
 - **Turns have an idle watchdog on top of the absolute timeout.** `_execute`
   drains stdout/stderr with one thread per stream and kills the process when
   neither produced output for `turn_idle_timeout_seconds` (default 1200s) or
   after `turn_timeout_seconds` in total; the tracker comment says which limit
-  fired (`AgentTimeout.reason`). Load-bearing for OpenCode: `--print-logs` in both
+  fired (`AgentTimeout.reason`). Load-bearing for OpenCode: `--print-logs` (which
+  only emits server logs with `--standalone`) in both
   `run_initial` and `run_resume` mirrors OpenCode's internal log to stderr —
   the parent's NDJSON stdout is silent while a subagent task runs, so without
   the flag stdout alone is no liveness signal. Do not filter out the hourly

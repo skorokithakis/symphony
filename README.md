@@ -104,7 +104,7 @@ These are not Python packages and won't be installed for you:
   or `pacman -S bubblewrap`.
 - **git**, configured well enough to clone the repos you want the agent to
   work on.
-- **OpenCode** (the default) or **OMP**, installed and authenticated. The
+- **OpenCode** (the default; V2 only, V1 is unsupported) or **OMP**, installed and authenticated. The
   daemon invokes the selected `opencode` or `omp` binary inside the sandbox;
   it must be on the sandbox's `$PATH`. By default the sandbox uses the
   daemon's `$PATH`; set `SYMPHONY_SANDBOX_PATH` to use a different one, for
@@ -814,7 +814,7 @@ For an OpenCode session:
 
 ```bash
 cd <workspace>/TEAM-42/repo
-opencode run --session ses_abc123 -- "Hello, what's the status?"
+opencode run --standalone --session ses_abc123 -- "Hello, what's the status?"
 ```
 
 OpenCode session state lives under `~/.opencode/` and

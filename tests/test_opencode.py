@@ -16,7 +16,7 @@ import threading
 import time
 from pathlib import Path
 from typing import Any
-from unittest.mock import MagicMock, patch
+from unittest.mock import patch
 
 import pytest
 
@@ -833,6 +833,22 @@ class TestExecuteExitErrors:
         assert "AI_APICallError: Overloaded" in msg
         assert "loading path" not in msg
 
+    def test_error_event_message_included_in_error(self) -> None:
+        """V2 reports failures as a stdout error event with empty stderr."""
+        events = [
+            {"type": "step_start", "sessionID": "ses_e", "part": {}},
+            {"type": "error", "error": {"message": "Model not found: foo/bar"}},
+            {"type": "error", "error": {"message": "second problem"}},
+            {"type": "error", "error": "not-a-dict"},
+        ]
+        proc = _FakePopen(
+            stdout="\n".join(json.dumps(e) for e in events).encode(),
+            exit_code=1,
+        )
+        msg = str(self._run_initial(proc))
+        assert "Model not found: foo/bar" in msg
+        assert "second problem" in msg
+
     def test_signal_exit_raises_open_code_cancelled(self) -> None:
         """A signal exit retains a parsed session ID for recovery."""
         proc = _FakePopen(
@@ -1325,16 +1341,17 @@ class TestTmpPathForwarded:
 
 
 # ---------------------------------------------------------------------------
-# Unit: OPENCODE_PERMISSION is injected into the sandbox env
+# Unit: V2 argv (security-critical --standalone, no V1 flags)
 # ---------------------------------------------------------------------------
 
 
-class TestOpenCodePermissionEnv:
-    """Every turn must pass OPENCODE_PERMISSION to run_in_sandbox so the three
-    permissions that default to 'ask' (external_directory, doom_loop, read)
-    are pre-answered. Without it, an ask raised by a subagent session is
-    never replied to (OpenCode's auto-approve is filtered to the top-level
-    session) and the turn hangs until the daemon's absolute timeout."""
+class TestV2Argv:
+    """Both turns must use the V2 flag set.
+
+    ``--standalone`` is a security requirement: without it V2 talks to the
+    user's shared background server over localhost and the agent's tools run
+    on the host, outside bwrap.
+    """
 
     @staticmethod
     def _make_fake_popen() -> _FakePopen:
@@ -1347,20 +1364,18 @@ class TestOpenCodePermissionEnv:
         return _FakePopen(stdout=stdout, exit_code=0)
 
     @staticmethod
-    def _assert_permission(mock_sandbox: MagicMock) -> None:
-        env = mock_sandbox.call_args.kwargs["env"]
-        assert "OPENCODE_PERMISSION" in env
-        permission = json.loads(env["OPENCODE_PERMISSION"])
-        assert permission == {
-            "external_directory": "allow",
-            "doom_loop": "allow",
-            "read": "allow",
-        }
+    def _assert_v2_flags(cmd: list[str]) -> None:
+        for flag in ("--standalone", "--format", "--auto", "--print-logs"):
+            assert flag in cmd
+        assert cmd[cmd.index("--format") + 1] == "json"
+        assert "--dir" not in cmd
+        assert "--dangerously-skip-permissions" not in cmd
+        assert cmd.index("--standalone") < cmd.index("--")
 
-    def test_run_initial_injects_open_code_permission(self) -> None:
-        fake_proc = self._make_fake_popen()
+    def test_run_initial_argv(self) -> None:
         with patch(
-            "symphony_linear.agent_runner.run_in_sandbox", return_value=fake_proc
+            "symphony_linear.agent_runner.run_in_sandbox",
+            return_value=self._make_fake_popen(),
         ) as mock_sandbox:
             run_initial(
                 workspace_path="/ws",
@@ -1370,12 +1385,14 @@ class TestOpenCodePermissionEnv:
                 idle_timeout_seconds=60,
                 on_subprocess=lambda p: None,
             )
-        self._assert_permission(mock_sandbox)
+        cmd = mock_sandbox.call_args.kwargs["cmd"]
+        self._assert_v2_flags(cmd)
+        assert "--session" not in cmd
 
-    def test_run_resume_injects_open_code_permission(self) -> None:
-        fake_proc = self._make_fake_popen()
+    def test_run_resume_argv(self) -> None:
         with patch(
-            "symphony_linear.agent_runner.run_in_sandbox", return_value=fake_proc
+            "symphony_linear.agent_runner.run_in_sandbox",
+            return_value=self._make_fake_popen(),
         ) as mock_sandbox:
             run_resume(
                 workspace_path="/ws",
@@ -1386,7 +1403,24 @@ class TestOpenCodePermissionEnv:
                 idle_timeout_seconds=60,
                 on_subprocess=lambda p: None,
             )
-        self._assert_permission(mock_sandbox)
+        cmd = mock_sandbox.call_args.kwargs["cmd"]
+        self._assert_v2_flags(cmd)
+        assert cmd[cmd.index("--session") + 1] == "ses_x"
+
+    def test_no_opencode_permission_env(self) -> None:
+        with patch(
+            "symphony_linear.agent_runner.run_in_sandbox",
+            return_value=self._make_fake_popen(),
+        ) as mock_sandbox:
+            run_initial(
+                workspace_path="/ws",
+                tmp_path="/ws/tmp",
+                prompt="hello",
+                timeout_seconds=60,
+                idle_timeout_seconds=60,
+                on_subprocess=lambda p: None,
+            )
+        assert "OPENCODE_PERMISSION" not in mock_sandbox.call_args.kwargs["env"]
 
 
 # ---------------------------------------------------------------------------
