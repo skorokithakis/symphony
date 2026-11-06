@@ -166,7 +166,11 @@ shutting down, or the ticket is no longer triggered — see `_is_still_triggered
   emits argv from the resolved pairs. Git ops run
   *outside* the sandbox using the daemon's credentials; the selected coding
   agent and `.symphony/setup` run *inside*. OpenCode's session directories and
-  the pi family's `~/.omp` and `~/.pi` are deliberate read-write binds. OMP's
+  the pi family's `~/.omp` and `~/.pi` are deliberate read-write binds.
+  OpenCode V2 also needs `~/.local/state/opencode/locks` writable (created on
+  the host if missing); only `locks/` is bound, because the parent holds
+  `service.json`, which host OpenCode clients use to find the background
+  server. OMP's
   auth vault and run/daemons directory both live under `~/.omp`;
   `PI_CODING_AGENT_DIR` does not redirect OMP's `run/` path. pi's state lives
   under `~/.pi/agent/` and its credential vault is separate from OMP's —

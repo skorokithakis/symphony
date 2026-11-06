@@ -377,8 +377,9 @@ class TestRunInSandbox:
     def test_opencode_dirs_writable(
         self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
     ) -> None:
-        """Verify that ~/.opencode and ~/.local/share/opencode are writable
-        inside the sandbox when they exist on the host."""
+        """Verify that ~/.opencode, ~/.local/share/opencode and
+        ~/.local/state/opencode/locks are writable inside the sandbox, and
+        that the lock dir is created on the host when missing."""
         _require_bwrap()
 
         workspace = tmp_path / "workspace"
@@ -396,6 +397,8 @@ class TestRunInSandbox:
         opencode_xdg = fake_home / ".local" / "share" / "opencode"
         opencode_legacy.mkdir(parents=True, exist_ok=True)
         opencode_xdg.mkdir(parents=True, exist_ok=True)
+        # Deliberately not created: run_in_sandbox must create it.
+        opencode_locks = fake_home / ".local" / "state" / "opencode" / "locks"
 
         proc = run_in_sandbox(
             cmd=[
@@ -404,7 +407,8 @@ class TestRunInSandbox:
                 (
                     f'touch "{opencode_legacy}/.writetest" 2>&1 && echo "LEGACY_OK" || echo "LEGACY_FAIL";'
                     f'touch "{opencode_xdg}/.writetest" 2>&1 && echo "XDG_OK" || echo "XDG_FAIL";'
-                    f'rm -f "{opencode_legacy}/.writetest" "{opencode_xdg}/.writetest"'
+                    f'touch "{opencode_locks}/.writetest" 2>&1 && echo "LOCKS_OK" || echo "LOCKS_FAIL";'
+                    f'rm -f "{opencode_legacy}/.writetest" "{opencode_xdg}/.writetest" "{opencode_locks}/.writetest"'
                 ),
             ],
             workspace_path=str(workspace),
@@ -423,6 +427,10 @@ class TestRunInSandbox:
         )
         assert "LEGACY_OK" in output, f"~/.opencode not writable: {output}"
         assert "XDG_OK" in output, f"~/.local/share/opencode not writable: {output}"
+        assert "LOCKS_OK" in output, (
+            f"~/.local/state/opencode/locks not writable: {output}"
+        )
+        assert opencode_locks.is_dir()
 
     def test_agent_state_dirs_missing_ok(self, tmp_path: Path) -> None:
         """Verify missing OpenCode, OMP, and pi state dirs do not fail."""
@@ -488,6 +496,12 @@ class TestRunInSandbox:
         omp_dir = str(fake_home / ".omp")
         assert ("--bind-try", omp_dir, omp_dir) in zip(args, args[1:], args[2:])
         assert ("--bind-try", str(pi_dir), str(pi_dir)) in zip(args, args[1:], args[2:])
+        # Only OpenCode's locks/ is writable, not ~/.local/state/opencode
+        # itself (it holds service.json, which the agent must not rewrite).
+        locks_dir = str(fake_home / ".local" / "state" / "opencode" / "locks")
+        state_dir = str(fake_home / ".local" / "state" / "opencode")
+        assert ("--bind-try", locks_dir, locks_dir) in zip(args, args[1:], args[2:])
+        assert state_dir not in args
 
     def test_extra_rw_paths_writable(self, tmp_path: Path) -> None:
         """Verify that extra_rw_paths are writable inside the sandbox."""

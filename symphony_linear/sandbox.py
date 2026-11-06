@@ -9,6 +9,7 @@ and essential system resources.
 
 from __future__ import annotations
 
+import logging
 import os
 import shutil
 import subprocess
@@ -16,6 +17,8 @@ from pathlib import Path
 from typing import Any
 
 from symphony_linear.sandbox_path import resolve_sandbox_path
+
+logger = logging.getLogger(__name__)
 
 # Environment variable through which the daemon tells the sandboxed process
 # where its per-ticket secrets file (``<ticket_dir>/secrets.env``) lives.  The
@@ -160,6 +163,20 @@ def run_in_sandbox(
     pi_dir = str(Path("~/.pi").expanduser())
     bwrap_args.extend(["--bind-try", opencode_legacy, opencode_legacy])
     bwrap_args.extend(["--bind-try", opencode_xdg, opencode_xdg])
+    # OpenCode V2 creates lock files here (e.g. around its session DB in
+    # ~/.local/share/opencode); without a writable dir `opencode run` exits 1.
+    # Bind the host dir (not a private one) so locks are shared with host
+    # OpenCode, which uses the same session DB.  Only `locks/` is bound, not
+    # all of ~/.local/state/opencode: that dir also holds `service.json`,
+    # which points host clients at the background server, and the agent must
+    # not be able to rewrite it.  The dir is created on the host first because
+    # --bind-try silently skips a missing source.
+    opencode_locks = str(Path("~/.local/state/opencode/locks").expanduser())
+    try:
+        os.makedirs(opencode_locks, exist_ok=True)
+    except OSError as exc:
+        logger.warning("Could not create %s: %s", opencode_locks, exc)
+    bwrap_args.extend(["--bind-try", opencode_locks, opencode_locks])
     bwrap_args.extend(["--bind-try", omp_dir, omp_dir])
     bwrap_args.extend(["--bind-try", pi_dir, pi_dir])
 

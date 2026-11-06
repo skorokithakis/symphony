@@ -819,7 +819,10 @@ opencode run --standalone --session ses_abc123 -- "Hello, what's the status?"
 
 OpenCode session state lives under `~/.opencode/` and
 `~/.local/share/opencode/`. These are bind-mounted into the sandbox so
-session resumes work both from inside the daemon and from your shell. OMP
+session resumes work both from inside the daemon and from your shell.
+OpenCode's lock directory, `~/.local/state/opencode/locks/`, is also
+bind-mounted read-write (and created if missing); the rest of
+`~/.local/state/opencode/` stays read-only. OMP
 sessions live under `~/.omp/agent/sessions/<slugified-cwd>/`; use OMP's resume
 command from the same workspace path. `~/.omp` is likewise bind-mounted into
 the sandbox for OMP's session, authentication, and run state.
