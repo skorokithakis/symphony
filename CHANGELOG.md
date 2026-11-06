@@ -1,5 +1,12 @@
 # Changelog
 
+## [0.8.1](https://github.com/skorokithakis/symphony/compare/v0.8.0...v0.8.1) (2026-11-06)
+
+
+### Bug Fixes
+
+* Make OpenCode's lock directory writable inside the sandbox ([756b515](https://github.com/skorokithakis/symphony/commit/756b515840e138aa941e1ab6b5bfc2bf504cbef9))
+
 ## [0.8.0](https://github.com/skorokithakis/symphony/compare/v0.7.0...v0.8.0) (2026-10-16)
 
 
