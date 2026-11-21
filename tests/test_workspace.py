@@ -897,6 +897,112 @@ class TestRemoveTicketDir:
         remove("NO-SUCH-TICKET", str(root))  # still no exception
 
 
+class TestRemoveReadOnlyTree:
+    """remove() deletes read-only trees agents leave behind."""
+
+    @staticmethod
+    def _restore_permissions(path: Path) -> None:
+        """Make *path* deletable again so pytest's tmp cleanup never fails."""
+        if not path.exists():
+            return
+        for dirpath, _dirnames, _filenames in os.walk(path):
+            try:
+                os.chmod(dirpath, 0o755)
+            except OSError:
+                pass
+
+    def test_removes_read_only_nested_trees(self, tmp_path: Path) -> None:
+        """0555 dirs with files, under tmp/ and repo/, are removed."""
+        root = tmp_path / "ws"
+        root.mkdir()
+        ticket = "GO-7"
+        ticket_dir = root / _sanitize_identifier(ticket)
+
+        # Go-style cache: a 0555 dir with files and a 0555 subdirectory.
+        tmp_cache = ticket_dir / _TMP_DIR / "go-build" / "cache"
+        (tmp_cache / "sub").mkdir(parents=True)
+        (tmp_cache / "file.txt").write_text("cached")
+        (tmp_cache / "sub" / "nested.txt").write_text("nested")
+        os.chmod(tmp_cache / "sub", 0o555)
+        os.chmod(tmp_cache, 0o555)
+
+        # The same shape inside the repo checkout.
+        repo_cache = ticket_dir / _REPO_DIR / "vendor" / "cache"
+        repo_cache.mkdir(parents=True)
+        (repo_cache / "module.txt").write_text("module")
+        os.chmod(repo_cache, 0o555)
+
+        try:
+            remove(ticket, str(root))
+
+            assert not ticket_dir.exists()
+        finally:
+            self._restore_permissions(ticket_dir)
+
+    def test_does_not_chmod_symlink_targets_outside_ticket_dir(
+        self, tmp_path: Path
+    ) -> None:
+        """A symlink in a read-only dir is unlinked, not chased."""
+        root = tmp_path / "ws"
+        root.mkdir()
+        outside = tmp_path / "outside"
+        outside.mkdir()
+        outside_file = outside / "keep.txt"
+        outside_file.write_text("outside data")
+        ticket = "GO-8"
+        ticket_dir = root / _sanitize_identifier(ticket)
+        ro_dir = ticket_dir / _TMP_DIR
+        ro_dir.mkdir(parents=True)
+        os.symlink(outside, ro_dir / "link")
+
+        # Both the failing dir and the symlink target start read-only: a
+        # helper that chmodded through the symlink would make the target
+        # writable and could reach its contents.
+        os.chmod(ro_dir, 0o555)
+        os.chmod(outside, 0o555)
+
+        try:
+            remove(ticket, str(root))
+
+            assert not ticket_dir.exists()
+            assert stat.S_IMODE(outside.stat().st_mode) == 0o555
+            assert outside_file.read_text() == "outside data"
+        finally:
+            self._restore_permissions(ticket_dir)
+            os.chmod(outside, 0o755)
+
+    def test_read_only_symlink_to_outside_tree_is_left_untouched(
+        self, tmp_path: Path
+    ) -> None:
+        """A symlink inside a read-only subtree never exposes its target."""
+        root = tmp_path / "ws"
+        root.mkdir()
+        outside = tmp_path / "outside"
+        outside.mkdir()
+        outside_file = outside / "keep.txt"
+        outside_file.write_text("outside data")
+        os.chmod(outside, 0o555)
+
+        ticket = "GO-9"
+        ticket_dir = root / _sanitize_identifier(ticket)
+        ro_dir = ticket_dir / _REPO_DIR / "cache"
+        (ro_dir / "sub").mkdir(parents=True)
+        (ro_dir / "sub" / "file.txt").write_text("cached")
+        os.symlink(outside, ro_dir / "link")
+        os.chmod(ro_dir, 0o555)
+
+        try:
+            remove(ticket, str(root))
+
+            assert not ticket_dir.exists()
+            assert stat.S_IMODE(outside.stat().st_mode) == 0o555
+            assert sorted(entry.name for entry in outside.iterdir()) == ["keep.txt"]
+            assert outside_file.read_text() == "outside data"
+        finally:
+            self._restore_permissions(ticket_dir)
+            os.chmod(outside, 0o755)
+
+
 class TestComputeTicketDir:
     """compute_ticket_dir returns <root>/<sanitized_identifier>."""
 

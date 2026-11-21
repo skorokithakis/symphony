@@ -11,6 +11,7 @@ import logging
 import os
 import re
 import shutil
+import stat
 import subprocess
 from pathlib import Path
 from typing import Callable
@@ -1068,6 +1069,90 @@ def prepare(
     return real_path
 
 
+def _chmod_dirs_below(fd: int) -> None:
+    """Add owner read/write/execute to every real directory below *fd*.
+
+    *fd* is an open directory descriptor.  Children are opened relative to
+    their parent with ``O_NOFOLLOW``, so a symlink — including one swapped in
+    during the walk — is never followed and nothing outside the tree is
+    touched.  Only directories are chmodded, never files.  A failure on one
+    entry is skipped; the caller's retried ``rmtree`` surfaces anything that
+    still matters.
+    """
+    try:
+        with os.scandir(fd) as entries:
+            for entry in entries:
+                try:
+                    is_dir = entry.is_dir(follow_symlinks=False)
+                except OSError:
+                    continue
+                if not is_dir:
+                    continue
+                try:
+                    child_fd = os.open(
+                        entry.name,
+                        os.O_RDONLY | os.O_DIRECTORY | os.O_NOFOLLOW,
+                        dir_fd=fd,
+                    )
+                except OSError:
+                    continue
+                try:
+                    os.fchmod(
+                        child_fd,
+                        stat.S_IMODE(os.fstat(child_fd).st_mode)
+                        | stat.S_IRUSR
+                        | stat.S_IWUSR
+                        | stat.S_IXUSR,
+                    )
+                    _chmod_dirs_below(child_fd)
+                except OSError:
+                    continue
+                finally:
+                    try:
+                        os.close(child_fd)
+                    except OSError:
+                        pass
+    except OSError:
+        return
+
+
+def _make_tree_dirs_owner_writable(ticket_dir: str) -> None:
+    """Make every directory in *ticket_dir* owner-writable, without symlinks.
+
+    Used before retrying a ``shutil.rmtree`` that hit a read-only tree (for
+    example a Go module cache with mode ``0555``).  The tree is walked by file
+    descriptor: the root is opened with ``O_NOFOLLOW`` and every child is
+    opened relative to its parent, so neither path-based lookups nor symlinks
+    can lead outside *ticket_dir*.  Files are left untouched, and permissions
+    are not restored because the tree is about to be deleted.
+
+    Individual failures are skipped; if the tree cannot be opened at all the
+    function returns quietly and the caller's retried ``rmtree`` reports the
+    real error.
+    """
+    try:
+        root_fd = os.open(ticket_dir, os.O_RDONLY | os.O_DIRECTORY | os.O_NOFOLLOW)
+    except OSError:
+        return
+    try:
+        try:
+            os.fchmod(
+                root_fd,
+                stat.S_IMODE(os.fstat(root_fd).st_mode)
+                | stat.S_IRUSR
+                | stat.S_IWUSR
+                | stat.S_IXUSR,
+            )
+        except OSError:
+            pass
+        _chmod_dirs_below(root_fd)
+    finally:
+        try:
+            os.close(root_fd)
+        except OSError:
+            pass
+
+
 def remove(
     ticket_identifier: str,
     workspace_root: str,
@@ -1075,7 +1160,10 @@ def remove(
     """Delete the per-ticket directory (repo, attachments, tmp) for
     *ticket_identifier*.
 
-    Idempotent — no error if the ticket directory is already gone.
+    Idempotent — no error if the ticket directory is already gone.  Read-only
+    directory trees inside the ticket dir are made writable as needed so a
+    failed removal does not orphan the directory (the orchestrator has already
+    dropped the state entry by the time it calls this).
 
     Args:
         ticket_identifier: Human-readable ticket ID.
@@ -1083,6 +1171,7 @@ def remove(
 
     Raises:
         PathContainmentError: If the computed path escapes *workspace_root*.
+        OSError: If the tree still cannot be removed.
     """
     ticket_dir = compute_ticket_dir(ticket_identifier, workspace_root)
 
@@ -1091,7 +1180,16 @@ def remove(
 
     if os.path.isdir(ticket_dir):
         logger.info("Removing ticket directory %s", ticket_dir)
-        shutil.rmtree(ticket_dir, ignore_errors=False)
+        try:
+            shutil.rmtree(ticket_dir, ignore_errors=False)
+        except PermissionError:
+            logger.info(
+                "Ticket directory %s contains read-only directories; granting "
+                "owner access and retrying",
+                ticket_dir,
+            )
+            _make_tree_dirs_owner_writable(ticket_dir)
+            shutil.rmtree(ticket_dir)
         logger.info("Ticket directory %s removed", ticket_dir)
     else:
         logger.debug(
