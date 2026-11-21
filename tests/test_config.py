@@ -70,6 +70,16 @@ def _write_yaml(path: Path, data: object) -> None:
     path.write_text(yaml.dump(data))
 
 
+def _webui_block(**overrides: object) -> dict[str, object]:
+    block: dict[str, object] = {
+        "port": 8080,
+        "username": "admin",
+        "password": "secret",
+    }
+    block.update(overrides)
+    return block
+
+
 class TestLoadConfig:
     def test_valid_minimal_config(self, tmp_path: Path) -> None:
         cfg = {
@@ -727,7 +737,32 @@ class TestExactlyOneTracker:
         }
         _write_yaml(tmp_path / "config.yaml", cfg)
 
-        with pytest.raises(ValueError, match="Both 'linear' and 'github'"):
+        with pytest.raises(ValueError, match="More than one tracker backend"):
+            load_config(tmp_path)
+
+    def test_webui_and_linear_both_set_raises(self, tmp_path: Path) -> None:
+        cfg = {
+            "linear": {"api_key": "key"},
+            "webui": _webui_block(),
+        }
+        _write_yaml(tmp_path / "config.yaml", cfg)
+
+        with pytest.raises(ValueError, match="More than one tracker backend"):
+            load_config(tmp_path)
+
+    def test_webui_and_github_both_set_raises(self, tmp_path: Path) -> None:
+        cfg = {
+            "github": {
+                "token": "ghp_test",
+                "project": "orgs/my-org/projects/1",
+                "in_progress_status": "In Progress",
+                "needs_input_status": "Needs Input",
+            },
+            "webui": _webui_block(),
+        }
+        _write_yaml(tmp_path / "config.yaml", cfg)
+
+        with pytest.raises(ValueError, match="More than one tracker backend"):
             load_config(tmp_path)
 
     def test_neither_block_set_raises(self, tmp_path: Path) -> None:
@@ -774,6 +809,115 @@ class TestExactlyOneTracker:
         assert config.linear is not None
         assert config.linear.api_key == "my-token"
         assert config.github is None
+
+
+# ---------------------------------------------------------------------------
+# Web UI config tests
+# ---------------------------------------------------------------------------
+
+
+class TestWebUIConfig:
+    def test_webui_only_loads_with_defaults(self, tmp_path: Path) -> None:
+        cfg = {"webui": _webui_block()}
+        _write_yaml(tmp_path / "config.yaml", cfg)
+
+        config = load_config(tmp_path)
+        assert config.linear is None
+        assert config.github is None
+        assert config.webui is not None
+        assert config.webui.port == 8080
+        assert config.webui.host == "127.0.0.1"
+        assert config.webui.username == "admin"
+        assert config.webui.password == "secret"
+        assert config.webui.anthropic_api_key is None
+
+    def test_explicit_host_and_api_key(self, tmp_path: Path) -> None:
+        cfg = {"webui": _webui_block(host="0.0.0.0", anthropic_api_key="sk-ant-test")}
+        _write_yaml(tmp_path / "config.yaml", cfg)
+
+        config = load_config(tmp_path)
+        assert config.webui is not None
+        assert config.webui.host == "0.0.0.0"
+        assert config.webui.anthropic_api_key == "sk-ant-test"
+
+    def test_env_vars_expand_in_credentials(
+        self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        monkeypatch.setenv("WEBUI_USER", "expanded-user")
+        monkeypatch.setenv("WEBUI_PASS", "expanded-pass")
+        cfg = {"webui": _webui_block(username="$WEBUI_USER", password="${WEBUI_PASS}")}
+        _write_yaml(tmp_path / "config.yaml", cfg)
+
+        config = load_config(tmp_path)
+        assert config.webui is not None
+        assert config.webui.username == "expanded-user"
+        assert config.webui.password == "expanded-pass"
+
+    def test_port_missing_raises(self, tmp_path: Path) -> None:
+        block = _webui_block()
+        del block["port"]
+        _write_yaml(tmp_path / "config.yaml", {"webui": block})
+
+        with pytest.raises(ValueError, match="Config validation failed"):
+            load_config(tmp_path)
+
+    def test_username_missing_raises(self, tmp_path: Path) -> None:
+        block = _webui_block()
+        del block["username"]
+        _write_yaml(tmp_path / "config.yaml", {"webui": block})
+
+        with pytest.raises(ValueError, match="username"):
+            load_config(tmp_path)
+
+    def test_password_missing_raises(self, tmp_path: Path) -> None:
+        block = _webui_block()
+        del block["password"]
+        _write_yaml(tmp_path / "config.yaml", {"webui": block})
+
+        with pytest.raises(ValueError, match="password"):
+            load_config(tmp_path)
+
+    def test_empty_password_raises(self, tmp_path: Path) -> None:
+        _write_yaml(tmp_path / "config.yaml", {"webui": _webui_block(password="")})
+
+        with pytest.raises(ValueError, match="non-empty"):
+            load_config(tmp_path)
+
+    def test_whitespace_username_raises(self, tmp_path: Path) -> None:
+        _write_yaml(tmp_path / "config.yaml", {"webui": _webui_block(username="   ")})
+
+        with pytest.raises(ValueError, match="non-empty"):
+            load_config(tmp_path)
+
+    def test_webui_only_does_not_require_tracker_env(
+        self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        monkeypatch.delenv("LINEAR_API_KEY", raising=False)
+        monkeypatch.delenv("GITHUB_TOKEN", raising=False)
+        _write_yaml(tmp_path / "config.yaml", {"webui": _webui_block()})
+
+        config = load_config(tmp_path)
+        assert config.webui is not None
+
+    def test_webhook_with_webui_raises(self, tmp_path: Path) -> None:
+        cfg = {
+            "webui": _webui_block(),
+            "webhook": {"port": 4000, "linear_secret": "secret"},
+        }
+        _write_yaml(tmp_path / "config.yaml", cfg)
+
+        with pytest.raises(
+            ValueError, match="webhook block requires a 'linear:' backend"
+        ):
+            load_config(tmp_path)
+
+    def test_null_webui_with_linear_is_treated_as_absent(self, tmp_path: Path) -> None:
+        cfg = {"linear": {"api_key": "key"}, "webui": None}
+        _write_yaml(tmp_path / "config.yaml", cfg)
+
+        config = load_config(tmp_path)
+        assert config.webui is None
+        assert config.linear is not None
 
 
 # ---------------------------------------------------------------------------

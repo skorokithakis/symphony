@@ -1,8 +1,8 @@
 # config.yaml.example — fully annotated example for symphony-linear.
 # Copy this to your workspace directory as config.yaml and adjust to taste.
 #
-# Exactly one of `linear` or `github` must be configured.  Comment out or
-# remove the block you are not using.
+# Exactly one of `linear`, `github` or `webui` must be configured.  Comment
+# out or remove the blocks you are not using.
 
 linear:
   # REQUIRED. Linear Personal API key.
@@ -76,6 +76,39 @@ linear:
 #   # or a credential helper) since git ops run outside the sandbox under
 #   # the daemon user's identity.
 #   # clone_protocol: ssh
+
+
+# ---------------------------------------------------------------------------
+# Built-in tracker with a web UI (comment out the `linear:` and `github:`
+# blocks above and uncomment this block to use it).  Tickets live as JSON
+# files under <workspace>/tickets/ and are visible only in this web UI; they
+# do not appear in Linear or GitHub.  Run it as its own daemon with its own
+# workspace directory if you also run a Linear or GitHub daemon.
+#
+# Authentication is HTTP Basic on every request.  The password travels with
+# every request, so keep `host` on localhost and put HTTPS (a reverse proxy)
+# in front of anything reachable from elsewhere.
+# ---------------------------------------------------------------------------
+
+# webui:
+#   # REQUIRED. Port for the web UI server.
+#   port: 8080
+#
+#   # Bind address (default: 127.0.0.1).  The browser prompts for the
+#   # credentials below; there is no login page.
+#   host: 127.0.0.1
+#
+#   # REQUIRED. HTTP Basic auth credentials.  Both must be non-empty.
+#   username: admin
+#   password: change-me
+#
+#   # Optional. Anthropic API key used for automatic ticket titles.  When it
+#   # is set, the editor hides the Title field and Start writes a title in the
+#   # background from the ticket text (model id fixed in the code).  Without
+#   # it, Start requires a title.  The key lives in config.yaml, which the
+#   # sandbox masks from the coding agents.
+#   # anthropic_api_key: ${ANTHROPIC_API_KEY}
+
 
 # ---------------------------------------------------------------------------
 # Coding agent

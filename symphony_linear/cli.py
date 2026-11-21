@@ -14,12 +14,14 @@ from symphony_linear.github import GitHubClient
 from symphony_linear.github_tracker import GitHubTracker, GitHubTrackerConfig
 from symphony_linear.linear import LinearClient
 from symphony_linear.linear_tracker import LinearTracker
+from symphony_linear.local_tracker import LocalTracker
 from symphony_linear.logging import get_logger, setup_logging
 from symphony_linear.orchestrator import Orchestrator
 from symphony_linear.sandbox_path import resolve_sandbox_path
 from symphony_linear.state import load_state
 from symphony_linear.tracker import Tracker, model_label_name
 from symphony_linear.webhook import WebhookServer
+from symphony_linear.webui import WebUIServer
 
 logger = get_logger(__name__)
 
@@ -95,7 +97,7 @@ def main(argv: list[str] | None = None) -> None:
 
     # Load state and create the appropriate tracker backend.
     state = load_state(workspace)
-    tracker = _create_tracker(config)
+    tracker = _create_tracker(config, workspace)
 
     # Auto-provision the trigger field/label and model alias labels on startup.
     model_labels = [model_label_name(alias) for alias in config.models]
@@ -112,9 +114,30 @@ def main(argv: list[str] | None = None) -> None:
             on_wake=orchestrator.wake,
         )
         orchestrator.set_webhook_server(webhook_server)
-    # `is True` (not truthiness) so a mocked orchestrator in tests cannot
-    # accidentally trigger a re-exec.
-    if orchestrator.run() is True:
+    webui_server: WebUIServer | None = None
+    if config.webui is not None:
+        if not isinstance(tracker, LocalTracker):
+            raise RuntimeError("The webui backend requires the local tracker")
+        webui_server = WebUIServer(
+            store=tracker.store,
+            state=state,
+            config=config,
+            on_wake=orchestrator.wake,
+        )
+    try:
+        # Start inside the try so a failed bind/thread start still runs
+        # stop(); WebUIServer.stop() is safe when the loop never started.
+        if webui_server is not None:
+            webui_server.start()
+        # `is True` (not truthiness) so a mocked orchestrator in tests cannot
+        # accidentally trigger a re-exec.
+        restart = orchestrator.run() is True
+    finally:
+        # Stop the server before a re-exec so that requests in flight end
+        # cleanly and the port is free when the new process binds it.
+        if webui_server is not None:
+            webui_server.stop()
+    if restart:
         _reexec()
 
 
@@ -132,7 +155,7 @@ def _reexec() -> None:
     os.execv(sys.executable, argv)
 
 
-def _create_tracker(config: AppConfig) -> Tracker:
+def _create_tracker(config: AppConfig, workspace: Path) -> Tracker:
     """Instantiate the correct tracker backend based on config."""
     if config.linear is not None:
         linear_client = LinearClient(api_key=config.linear.api_key)
@@ -150,5 +173,7 @@ def _create_tracker(config: AppConfig) -> Tracker:
             clone_protocol=config.github.clone_protocol,
         )
         return GitHubTracker(client=github_client, config=github_tracker_config)
+    if config.webui is not None:
+        return LocalTracker(workspace)
     # The model_validator guarantees this is unreachable, but be defensive.
     raise RuntimeError("No tracker backend configured")

@@ -1,0 +1,17 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>{% if needs_input_count|default(0) %}({{ needs_input_count }}) {% endif %}{% block title %}symphony{% endblock %}</title>
+<link rel="stylesheet" href="/static/symphony.css">
+<script src="/static/app.js" defer></script>
+{% block scripts %}{% endblock %}
+</head>
+<body class="sym">
+<div class="{{ app_class }}">
+{% block content %}{% endblock %}
+</div>
+{% block overlay %}{% endblock %}
+</body>
+</html>

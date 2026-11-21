@@ -1,0 +1,342 @@
+"""Views for the home and archive pages.
+
+The pages are rendered on the server with Jinja2.  The view models are plain
+data in dataclasses here, which keeps the templates free of formatting rules.
+"""
+
+from __future__ import annotations
+
+import hashlib
+import json
+from dataclasses import asdict, dataclass
+from datetime import datetime, timezone
+from urllib.parse import urlsplit
+
+from symphony_linear.local_tracker import (
+    STATE_DONE,
+    STATE_DRAFT,
+    STATE_IN_PROGRESS,
+    STATE_NEEDS_INPUT,
+    STATE_QA,
+    LocalComment,
+    LocalTicket,
+    display_title as _display_title,
+)
+from symphony_linear.state import TicketState, TicketStatus
+from symphony_linear.webui.http_types import Request, Response
+from symphony_linear.webui.templates import render
+
+_EPOCH = datetime.min.replace(tzinfo=timezone.utc)
+
+#: Home groups, in the order they are displayed: (state, CSS class, empty text).
+_HOME_GROUPS: tuple[tuple[str, str, str], ...] = (
+    (STATE_NEEDS_INPUT, "state--input", "Nothing needs your input."),
+    (STATE_IN_PROGRESS, "state--progress", "Nothing is in progress."),
+    (STATE_QA, "state--qa", "Nothing is in QA."),
+    (STATE_DRAFT, "state--draft", "No drafts."),
+)
+
+
+# ---------------------------------------------------------------------------
+# Unread
+# ---------------------------------------------------------------------------
+
+
+def is_agent_kind(kind: str | None) -> bool:
+    """True for the kind strings the orchestrator stores on an agent reply."""
+    if kind is None:
+        return False
+    return kind == "final" or kind.startswith(("final · ", "context: "))
+
+
+def is_unread_comment(kind: str | None) -> bool:
+    """True for the comment kinds that make a ticket unread: replies and errors."""
+    return is_agent_kind(kind) or kind == "error"
+
+
+def unread_comments(ticket: LocalTicket) -> list[LocalComment]:
+    """Return the agent replies and errors posted after the seen marker.
+
+    The marker is a comment id, so comment order is the list order.  A marker
+    that no longer exists (a deleted comment) is treated as "nothing is
+    unread" rather than making the ticket permanently unread.
+    """
+    if ticket.seen_comment_id is None:
+        return [c for c in ticket.comments if is_unread_comment(c.kind)]
+    index = next(
+        (i for i, c in enumerate(ticket.comments) if c.id == ticket.seen_comment_id),
+        None,
+    )
+    if index is None:
+        return []
+    return [c for c in ticket.comments[index + 1 :] if is_unread_comment(c.kind)]
+
+
+def is_unread(ticket: LocalTicket) -> bool:
+    """True when the ticket has an agent reply or error the user has not seen."""
+    return bool(unread_comments(ticket))
+
+
+# ---------------------------------------------------------------------------
+# View models
+# ---------------------------------------------------------------------------
+
+
+@dataclass(frozen=True)
+class Row:
+    """One ticket row, with all display decisions already made."""
+
+    id: str
+    title: str
+    repo: str
+    updated_at: str
+    updated_text: str
+    working: bool
+    working_for: str | None
+    failed: bool
+    unread: bool
+
+
+@dataclass(frozen=True)
+class Group:
+    """A home-page section and its rows."""
+
+    title: str
+    state_class: str
+    count: int
+    rows: tuple[Row, ...]
+    empty_text: str
+
+
+@dataclass(frozen=True)
+class HomeList:
+    """The parts of a list page the poll re-renders and its fingerprint."""
+
+    groups: tuple[Group, ...]
+    open_count: int
+    needs_input_count: int
+    version: str
+
+
+@dataclass(frozen=True)
+class ArchiveList:
+    """The Done list, plus the count shown in the tab title."""
+
+    rows: tuple[Row, ...]
+    count: int
+    needs_input_count: int
+    version: str
+
+
+# ---------------------------------------------------------------------------
+# Pure formatting helpers
+# ---------------------------------------------------------------------------
+
+
+def short_repo(repo: str) -> str:
+    """Derive the ``owner/name`` display form from a stored repository value.
+
+    Accepts the store's ``owner/name`` shorthand, HTTPS/SSH URLs and
+    ``git@host:owner/name`` scp-style syntax.  Credentials embedded in a URL
+    are never shown.  An empty value reads as "No repository".
+    """
+    value = repo.strip()
+    if not value:
+        return "No repository"
+    if value.endswith(".git"):
+        value = value[: -len(".git")]
+
+    if "://" in value:
+        try:
+            path = urlsplit(value).path
+        except ValueError:
+            # Malformed URL (for example an unclosed IPv6 bracket).  Render
+            # the raw value: Jinja autoescapes it, and a page must never fail
+            # because a ticket has a bad repository string.
+            return value
+    elif value.startswith("git@") and ":" in value:
+        path = value.split(":", 1)[1]
+    else:
+        path = value
+
+    parts = [part for part in path.strip("/").split("/") if part]
+    if not parts:
+        return "No repository"
+    if parts[-1].endswith(".git"):
+        parts[-1] = parts[-1][: -len(".git")]
+    if len(parts) == 1:
+        return parts[0]
+    return f"{parts[-2]}/{parts[-1]}"
+
+
+def display_title(ticket: LocalTicket) -> str:
+    """Return the shared display fallback (see ``local_tracker.display_title``).
+
+    Kept as a module-level name because the web modules and their tests import
+    it from here; the rule itself lives in one place, next to the store.
+    """
+    return _display_title(ticket)
+
+
+def _parse_datetime(value: str) -> datetime | None:
+    try:
+        parsed = datetime.fromisoformat(value)
+    except (TypeError, ValueError):
+        return None
+    if parsed.tzinfo is None:
+        return parsed.replace(tzinfo=timezone.utc)
+    return parsed
+
+
+def _sort_key(value: str) -> datetime:
+    return _parse_datetime(value) or _EPOCH
+
+
+def _utc_text(value: str) -> str:
+    parsed = _parse_datetime(value)
+    if parsed is None:
+        return value
+    return parsed.astimezone(timezone.utc).strftime("%d %b %Y, %H:%M UTC")
+
+
+def _elapsed_text(start: str, now: datetime) -> str:
+    parsed = _parse_datetime(start)
+    if parsed is None:
+        return "0 s"
+    seconds = max(0, int((now - parsed).total_seconds()))
+    if seconds < 60:
+        return f"{seconds} s"
+    if seconds < 3600:
+        return f"{seconds // 60} min"
+    if seconds < 86400:
+        return f"{seconds // 3600} h"
+    return f"{seconds // 86400} d"
+
+
+# ---------------------------------------------------------------------------
+# Row assembly
+# ---------------------------------------------------------------------------
+
+
+def _row(ticket: LocalTicket, state_entry: TicketState | None, now: datetime) -> Row:
+    failed = state_entry is not None and (
+        state_entry.status == TicketStatus.failed or bool(state_entry.setup_error)
+    )
+    working = ticket.state == STATE_IN_PROGRESS and not failed
+    return Row(
+        id=ticket.id,
+        title=display_title(ticket),
+        repo=short_repo(ticket.repo),
+        updated_at=ticket.updated_at,
+        updated_text=_utc_text(ticket.updated_at),
+        working=working,
+        working_for=_elapsed_text(ticket.state_changed_at, now) if working else None,
+        failed=failed,
+        unread=is_unread(ticket),
+    )
+
+
+def _state_entries(request: Request) -> dict[str, TicketState]:
+    """Snapshot the StateManager's ticket list for read-only lookups.
+
+    The web layer must never write ``state.json``.  Copying the list once per
+    request avoids iterating a list the orchestrator may append to.
+    """
+    return {entry.ticket_id: entry for entry in list(request.app.state.tickets)}
+
+
+def needs_input_count(request: Request) -> int:
+    """Return the number of tickets waiting on the user, for the tab title."""
+    return sum(
+        1
+        for ticket in request.app.store.list_tickets()
+        if ticket.state == STATE_NEEDS_INPUT
+    )
+
+
+def _fingerprint(value: object) -> str:
+    """Return a stable digest of what a list fragment renders."""
+    payload = json.dumps(value, sort_keys=True, default=str, ensure_ascii=False)
+    return hashlib.sha256(payload.encode("utf-8")).hexdigest()[:16]
+
+
+def home_list(request: Request) -> HomeList:
+    """Build the home page's groups and the fingerprint of their rendering."""
+    now = datetime.now(timezone.utc)
+    tickets = request.app.store.list_tickets()
+    state_entries = _state_entries(request)
+
+    groups: list[Group] = []
+    for state, state_class, empty_text in _HOME_GROUPS:
+        matching = [ticket for ticket in tickets if ticket.state == state]
+        matching.sort(key=lambda ticket: _sort_key(ticket.updated_at), reverse=True)
+        rows = tuple(
+            _row(ticket, state_entries.get(ticket.id), now) for ticket in matching
+        )
+        groups.append(
+            Group(
+                title=state,
+                state_class=state_class,
+                count=len(rows),
+                rows=rows,
+                empty_text=empty_text,
+            )
+        )
+
+    return HomeList(
+        groups=tuple(groups),
+        open_count=sum(group.count for group in groups),
+        needs_input_count=needs_input_count(request),
+        version=_fingerprint([asdict(group) for group in groups]),
+    )
+
+
+def archive_list(request: Request) -> ArchiveList:
+    """Build the archive page's Done rows and their fingerprint."""
+    now = datetime.now(timezone.utc)
+    done = [
+        ticket
+        for ticket in request.app.store.list_tickets()
+        if ticket.state == STATE_DONE
+    ]
+    done.sort(key=lambda ticket: _sort_key(ticket.state_changed_at), reverse=True)
+    # The working/failed row variants belong to the home page; a finished
+    # ticket is shown plainly even if a stale StateManager entry lingers.
+    rows = tuple(_row(ticket, None, now) for ticket in done)
+    return ArchiveList(
+        rows=rows,
+        count=len(rows),
+        needs_input_count=needs_input_count(request),
+        version=_fingerprint([asdict(row) for row in rows]),
+    )
+
+
+# ---------------------------------------------------------------------------
+# Views
+# ---------------------------------------------------------------------------
+
+
+def home(request: Request) -> Response:
+    """Render the ticket list, grouped by workflow state."""
+    page = home_list(request)
+    return Response.html(
+        render(
+            "home.html",
+            app_class="app app--home",
+            page=page,
+            needs_input_count=page.needs_input_count,
+        )
+    )
+
+
+def archive(request: Request) -> Response:
+    """Render Done tickets, newest first."""
+    page = archive_list(request)
+    return Response.html(
+        render(
+            "archive.html",
+            app_class="app app--home",
+            page=page,
+            needs_input_count=page.needs_input_count,
+        )
+    )

@@ -1,0 +1,117 @@
+{% extends "base.html" %}
+{% from "_macros.html" import pending_files, saved_indicator %}
+
+{% block title %}{% if page.ticket_id %}{{ page.ticket_id }} · {% endif %}{{ page.heading }} · symphony{% endblock %}
+
+{% block scripts %}<script src="/static/upload.js" defer></script><script src="/static/editor.js" defer></script>{% endblock %}
+
+{% block content %}
+<header class="bar">
+  <a class="wordmark" href="/">symphony</a>
+</header>
+<main>
+  <div class="alert alert--warn" id="page-error" role="alert" hidden>
+    <svg class="ic" viewBox="0 0 20 20" aria-hidden="true"><path d="M10 3l8 14H2zM10 8.5v4M10 15v.2"></path></svg>
+    <p id="page-error-text"></p>
+  </div>
+  <form class="editor" id="editor" method="post" action="{{ page.save_action }}" novalidate
+        data-ticket-id="{{ page.ticket_id or '' }}"
+        data-api-save="{% if page.ticket_id %}/api/tickets/{{ page.ticket_id }}/edit{% else %}/api/new{% endif %}"
+        data-api-start="{% if page.ticket_id %}/api/tickets/{{ page.ticket_id }}/start{% else %}/api/new/start{% endif %}"
+        data-api-discard="{% if page.ticket_id %}/api/tickets/{{ page.ticket_id }}/discard{% else %}/api/new/discard{% endif %}"
+        data-api-upload="{{ page.upload_action }}"
+        data-api-upload-new="/api/new/files">
+    <header class="thead">
+      <div class="thead-top">
+        <a class="back" href="/" aria-label="Back to tickets"><svg class="ic" viewBox="0 0 20 20" aria-hidden="true"><path d="M12 4l-6 6 6 6"></path></svg><span class="back-t">Tickets</span></a>
+        <span class="tid" id="editor-tid">{% if page.ticket_id %}{{ page.ticket_id }}{% endif %}</span>
+        <span class="state state--draft">Draft</span>
+      </div>
+      <h1 class="ttitle">{{ page.heading }}</h1>
+    </header>
+
+    <div class="editor-body">
+      {% if page.has_title_field %}
+      <div class="field">
+        <label for="title">Title</label>
+        <input class="input" id="title" name="title" type="text" value="{{ page.title }}"{% if page.errors.get("title") %} aria-invalid="true" aria-describedby="title-err"{% endif %}>
+        {% if page.errors.get("title") %}
+        <p class="field-err" id="title-err"><svg class="ic ic--sm" viewBox="0 0 20 20" aria-hidden="true"><path d="M10 3l8 14H2zM10 8.5v4M10 15v.2"></path></svg>{{ page.errors["title"] }}</p>
+        {% endif %}
+      </div>
+      {% else %}
+      <p class="field-note">{{ page.title_note }}</p>
+      {% endif %}
+
+      <div class="field field--grow">
+        <p class="drop">Drop files to attach<small>Any file type, up to 50 MB each</small></p>
+        <label for="description">Ticket text</label>
+        <textarea class="input input--big" id="description" name="description" rows="9" placeholder="Describe the task for one repository. Markdown works."{% if page.errors.get("description") %} aria-invalid="true" aria-describedby="description-err"{% endif %}>{% if page.description.startswith("\n") %}&#10;{% endif %}{{ page.description }}</textarea>
+        {% if page.errors.get("description") %}
+        <p class="field-err" id="description-err"><svg class="ic ic--sm" viewBox="0 0 20 20" aria-hidden="true"><path d="M10 3l8 14H2zM10 8.5v4M10 15v.2"></path></svg>{{ page.errors["description"] }}</p>
+        {% endif %}
+        <ul class="files" id="editor-files" data-target="description"{% if not page.files %} hidden{% endif %}>{{ pending_files(page.files, "description") }}</ul>
+        <div class="field-tools">
+          <input class="sr" id="description-file" type="file" multiple tabindex="-1" aria-label="Attach files">
+          <button class="btn btn--quiet" type="button" id="description-attach"><svg class="ic" viewBox="0 0 20 20" aria-hidden="true"><path d="M15 9.5l-5.6 5.6a2.6 2.6 0 01-3.7-3.7l6.2-6.2a1.8 1.8 0 012.5 2.5l-6 6"></path></svg>Attach files</button>
+          <span class="field-note">Paste and drop also work. 50 MB maximum for each file; the agent reads at most 50 MB per message. Attaching needs JavaScript.</span>
+        </div>
+      </div>
+    </div>
+
+    <div class="editor-side">
+      <div class="field">
+        <label for="repo">Repository</label>
+        <input class="input mono" id="repo" name="repo" type="text" list="repos" placeholder="owner/name" value="{{ page.repo }}"{% if page.errors.get("repo") %} aria-invalid="true" aria-describedby="repo-err"{% endif %}>
+        {% if page.recent_repos %}
+        <datalist id="repos">
+          {% for repo in page.recent_repos %}<option value="{{ repo.value }}"></option>{% endfor %}
+        </datalist>
+        {% endif %}
+        {% if page.errors.get("repo") %}
+        <p class="field-err" id="repo-err"><svg class="ic ic--sm" viewBox="0 0 20 20" aria-hidden="true"><path d="M10 3l8 14H2zM10 8.5v4M10 15v.2"></path></svg>{{ page.errors["repo"] }}</p>
+        {% endif %}
+        {% if page.recent_repos %}
+        <div class="recent"><span>Recent</span>{% for repo in page.recent_repos %}<button class="chip" type="button" data-repo-chip="{{ repo.value }}" title="{{ repo.value }}">{{ repo.label }}</button>{% endfor %}</div>
+        {% endif %}
+      </div>
+
+      {% if page.models %}
+      <div class="field">
+        <span class="label" id="model-label">Model</span>
+        <div class="model-chips" role="radiogroup" aria-labelledby="model-label">
+          {% for model in page.models %}<input class="sr" type="radio" name="model" id="model-{{ loop.index }}" value="{{ model.alias }}"{% if model.selected %} checked{% endif %}><label class="chip" for="model-{{ loop.index }}" aria-pressed="{{ 'true' if model.selected else 'false' }}">{{ model.alias }}</label>{% endfor %}
+        </div>
+      </div>
+      {% endif %}
+    </div>
+
+    <div class="form-actions">
+      <button class="btn" type="submit" form="discard-request" id="act-discard" data-open-dialog="discard-dialog">Discard</button>
+      {{ saved_indicator(page.saved_at) }}
+      <span class="reason" id="editor-upload-reason" role="status" hidden></span>
+      <button class="btn btn--primary" type="submit" id="act-start" formaction="{{ page.start_action }}">Start</button>
+    </div>
+  </form>
+</main>
+<nav class="dock" aria-label="Main">
+  <a class="btn btn--primary" href="/new" aria-current="page"><svg class="ic" viewBox="0 0 20 20" aria-hidden="true"><path d="M10 4v12M4 10h12"></path></svg>New ticket</a>
+  <div class="dock-links">
+    <a class="dock-link" href="/">Tickets</a>
+    <a class="dock-link" href="/archive">Archive</a>
+  </div>
+</nav>
+{% endblock %}
+
+{% block overlay %}
+<form id="discard-request" method="post" action="{{ page.discard_action }}" hidden></form>
+<dialog class="confirm" id="discard-dialog" data-api-discard="{% if page.ticket_id %}/api/tickets/{{ page.ticket_id }}/discard{% else %}/api/new/discard{% endif %}" aria-labelledby="discard-t"{% if page.discard_open %} open data-auto-open{% endif %}>
+  <p class="confirm-t" id="discard-t">Discard this draft?</p>
+  <p>The text and the attached files are deleted. You cannot get them back.</p>
+  <form class="confirm-actions" method="post" action="{{ page.discard_action }}">
+    <input type="hidden" name="confirm" value="1">
+    <a class="btn" id="act-keep" href="{{ page.keep_action }}">Keep the draft</a>
+    <button class="btn btn--danger" type="submit">Discard</button>
+  </form>
+</dialog>
+{% endblock %}

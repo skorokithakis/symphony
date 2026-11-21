@@ -6,12 +6,12 @@ Orientation for AI agents working on this repo. Pair this with `README.md`
 ## What this is
 
 `symphony-linear` is a single-process Python daemon that orchestrates AI work on
-Linear or GitHub issues (one tracker backend and coding-agent CLI per daemon
-instance). The loop:
+Linear issues, GitHub issues, or tickets in its own built-in tracker (one
+tracker backend and coding-agent CLI per daemon instance). The loop:
 
-1. Poll the tracker for issues with the trigger signal (label or project
-   field, depending on backend).
-2. For each new issue: clone the project's repo into a per-ticket workspace,
+1. Poll the tracker for issues with the trigger signal (a label, a project
+   field, or a workflow state, depending on backend).
+2. For each new issue: clone the ticket's repo into a per-ticket workspace,
    switch to the ticket branch, optionally run `.symphony/setup`, then run
    the configured coding-agent CLI inside a bubblewrap sandbox with the ticket
    title + description as the prompt.
@@ -20,25 +20,30 @@ instance). The loop:
 4. When a human comments, resume the coding-agent session with the new comment
    as user input, post the result, repeat.
 
-There is no web UI, no API, no database. State lives in `state.json` in the
-workspace dir. The only external services are the issue tracker (Linear or
-GitHub, accessed via GraphQL) and the selected coding agent (launched as a
-subprocess inside `bwrap`).
+There is no database. State lives in `state.json` in the workspace dir, and the
+built-in tracker keeps one JSON file per ticket under `<workspace>/tickets/`.
+The external services are the issue tracker (Linear or GitHub, accessed via
+GraphQL, or none with the built-in backend), the optional Anthropic Messages
+API for automatic titles, and the selected coding agent (launched as a
+subprocess inside `bwrap`). The only HTTP servers are the optional web UI for
+the built-in backend and the optional Linear webhook receiver.
 
 ## Stack
 
 - Python 3.11+, packaged with `hatchling` (see `pyproject.toml`).
 - `uv` for dependency management (`uv.lock` is committed). The venv is at
   `.venv/` — use `.venv/bin/python` and `.venv/bin/pytest` directly.
-- Runtime deps: `pyyaml`, `pydantic` v2, `httpx`.
+- Runtime deps: `pyyaml`, `pydantic` v2, `httpx`, `jinja2` and
+  `markdown-it-py` (the last two only for the built-in backend's web UI).
 - Dev deps: `pytest`.
 - External binaries required at runtime: `bwrap`, `git`, and the selected
   coding-agent CLI (`opencode`, `omp`, or `pi`).
 - CLI entry point: `symphony` → `symphony_linear.cli:main`.
 - Backends: the orchestrator talks to a `Tracker` protocol (see `tracker.py`).
-  Concrete implementations exist for Linear (`linear_tracker.py`) and
-  GitHub Projects v2 (`github_tracker.py`). Exactly one backend is active
-  per daemon, selected at config time.
+  Concrete implementations exist for Linear (`linear_tracker.py`), GitHub
+  Projects v2 (`github_tracker.py`) and the built-in on-disk tracker
+  (`local_tracker.py`), whose pages are served by `webui/`. Exactly one
+  backend is active per daemon, selected at config time.
 - Coding-agent adapters: OpenCode (`opencode.py`) and the pi family: OMP
   (`omp.py`) and pi (`pi.py`), sharing `pi_protocol.py`. Exactly one
   coding-agent CLI is active per daemon, selected at config time.
@@ -55,6 +60,12 @@ symphony_linear/
   linear_tracker.py Linear backend adapter implementing the Tracker protocol
   github.py         GitHub GraphQL client (httpx, sync); typed exceptions
   github_tracker.py GitHub Projects v2 backend adapter implementing the Tracker protocol
+  local_tracker.py  Built-in tracker: on-disk ticket store under <workspace>/tickets/, fixed workflow states
+  webui/            Web UI for the built-in tracker: server.py (the single dispatch choke point),
+                    routes.py (route table), api.py (JSON endpoints), views.py / editor.py /
+                    ticket.py (list, editor and ticket pages), files.py (uploaded-file serving),
+                    markdown.py (safe Markdown), title.py (optional Anthropic titles),
+                    templates/ and static/
   sandbox.py        Single function: run_in_sandbox() → builds the bwrap argv and returns a Popen
   agent_runner.py   Shared sandbox process runner; drains pipes and enforces turn watchdogs
   opencode.py       OpenCode adapter: run_initial / run_resume; parses OpenCode NDJSON
@@ -79,10 +90,15 @@ shutting down, or the ticket is no longer triggered — see `_is_still_triggered
 
 - **TicketStatus is daemon-internal**, distinct from Linear workflow states.
   Don't conflate `TicketStatus.needs_input` (in `state.json`) with the Linear
-  state named "Needs Input". The same applies to GitHub: the daemon's internal
-  status is separate from the project's Status field value.
+  state named "Needs Input". The same applies to GitHub, where the internal
+  status is separate from the project's Status field value, and to the web UI
+  backend, whose *tracker* states are named `Draft`, `In Progress`,
+  `Needs Input`, `QA` and `Done` (fixed strings in `local_tracker.py`) but are
+  still a different thing from the internal status.
 - **The daemon polls tickets in `in_progress_state`, `needs_input_state`, and
-  (if configured) `qa_state`** (see `_fetch_triggered_issues`). When a human
+  (if configured) `qa_state`** (see `_fetch_triggered_issues`). The built-in
+  backend has no such config: `LocalTracker` always polls `In Progress`,
+  `Needs Input` and `QA`, and never `Draft` or `Done`. When a human
   comments on a `needs_input` ticket, `_resume_pipeline` transitions it back
   to `in_progress` itself — users don't need to do that manually. Human
   comments on a ticket in `qa_state` also trigger the normal resume pipeline:
@@ -438,11 +454,12 @@ shutting down, or the ticket is no longer triggered — see `_is_still_triggered
   workspace prep fails, and is cleared only when the user comments on the
   ticket. Don't clear it elsewhere.
 - **QA serve is a global singleton, in-memory only.** When `linear.qa_state`
-  (or `github.qa_status`) is configured and a ticket enters that state,
-  `_reconcile_serve` runs the repo's `.symphony/serve` script in the sandbox
-  and stores the Popen in `Orchestrator._active_serve` (an `_ActiveServe`
-  dataclass). At most one serve runs across the whole daemon. The newest QA
-  entrant always wins — incumbents are killed and bumped back to
+  (or `github.qa_status`) is configured and a ticket enters that state — for
+  the built-in backend QA is always enabled, `LocalTracker.qa_enabled` is
+  true — `_reconcile_serve` runs the repo's `.symphony/serve` script in the
+  sandbox and stores the Popen in `Orchestrator._active_serve` (an
+  `_ActiveServe` dataclass). At most one serve runs across the whole daemon.
+  The newest QA entrant always wins — incumbents are killed and bumped back to
   `needs_input_state`. When a winner has an in-flight agent turn,
   `_reconcile_serve` cancels it before starting the serve. For a `working` or
   `bootstrapping` state entry, the cancellation parks the internal status at
@@ -497,6 +514,81 @@ shutting down, or the ticket is no longer triggered — see `_is_still_triggered
   at all — Projects v2 has no project labels (`ProjectV2` has no `labels`
   field and does not implement `Labelable`), and its issue labels are
   per-repository while a project spans repos.
+- **The web UI is a third tracker backend, not an addition to Linear or
+  GitHub.** `AppConfig._exactly_one_tracker` allows exactly one of `linear`,
+  `github`, `webui`, and `cli._create_tracker` builds a `LocalTracker` for the
+  third. Web UI tickets are invisible to Linear and GitHub, and theirs are
+  invisible to the web UI, so using both means two daemons with separate
+  workspace directories. `LocalTracker` implements the `Tracker` protocol over
+  `LocalTicketStore`, which keeps one JSON file per ticket plus `counter.json`
+  and `files/` under `<workspace>/tickets/`, loaded into memory at startup and
+  written atomically. That directory deliberately lives in the workspace root:
+  the computed workspace-root masking (`_sandbox_hide_paths_for` hides every
+  entry except the current ticket's dir) then covers it. Move it and agents can
+  read other tickets.
+- **The web layer reads the orchestrator's state but never writes it.**
+  Handlers receive the shared `StateManager` and copy `state.tickets` for
+  lookups; they never call `save`/`upsert`/`remove` and never write
+  `state.json`. The ticket store is the only thing a web action mutates. Send
+  is the sharp case: `api_reply`/`post_reply` append a human comment and call
+  `on_wake()`, exactly like a comment on Linear or GitHub, and deliberately do
+  not change the tracker state — the orchestrator's resume pipeline moves the
+  ticket to In Progress when it picks the comment up. A Send that also
+  transitioned would move a ticket no turn is running for. Likewise the
+  `Send to QA` action is a pure transition and never posts the composer text: a
+  fresh human comment would be seen as pending input, resume the agent, and
+  pull the ticket out of QA before the serve starts.
+- **Every web UI request goes through one dispatch choke point.**
+  `_WebUIHandler.handle_one_request` parses the request and `_dispatch` does,
+  in order: HTTP Basic auth on every request, including static assets and
+  error responses (one constant-time `hmac.compare_digest` over the whole
+  `user:password` pair); same-origin enforcement on every non-GET/HEAD method;
+  route resolution; the per-route body cap (1 MiB by default) and body read.
+  `end_headers` adds the CSP, `X-Content-Type-Options: nosniff` and
+  `X-Frame-Options: DENY` to every response, error responses included. The
+  Origin check requires the Origin netloc to equal `Host` and rejects an
+  absent Origin; an `http` Origin is rejected when `X-Forwarded-Proto` says
+  `https`, which is why a proxy must forward the original Host. A new page is
+  an entry in `routes.py`; never add a `do_*` method or a second server that
+  skips this. GET and HEAD are not same-origin checked and HEAD runs the GET
+  view, so a GET view must never write the store, `state.json` or the seen
+  marker: saves, state actions and the seen marker are POSTs.
+- **Only registered uploads are readable, and only four image types are
+  inline.** `LocalTicketStore.read_file` serves a name only when it appears in
+  the ticket's `files`, its `pending_files` or a comment's `files`;
+  `_contained_file` realpath-checks the ticket directory and rejects symlinks,
+  and `/files/<ticket>/<stored-name>` is matched against the raw canonical
+  string only, so percent-encoded aliases, queries, fragments and absolute
+  URLs are not served. Serving and `LocalTracker.download_attachment` both
+  decide the type from the stored name's extension: only `.png`, `.jpg`,
+  `.jpeg`, `.gif` and `.webp` are inline, everything else is
+  `application/octet-stream` with `Content-Disposition: attachment`, because
+  inline HTML or SVG from this origin would run with the user's Basic
+  credentials. The client's file name is display metadata only; the stored
+  name is random-prefixed and sanitised by `stored_file_name`.
+- **The bot footer still marks a bot comment, and uploads cannot forge it.**
+  `LocalTracker.post_comment` appends the same `\n\n*Symphony · <kind>*`
+  footer as the Linear and GitHub adapters, so `is_bot_comment` and the
+  orchestrator's "new human comments" logic keep working. A file name is
+  untrusted, so `markdown_link_text` escapes `\`, `[`, `]`, `(` and `)` and
+  replaces `*` with U+2217: a file called `*Symphony · final*` must not make a
+  human reply look like a bot comment. Do not build upload link text anywhere
+  else.
+- **Markdown is rendered with raw HTML off, and only that output is marked
+  safe.** `webui/markdown.py` runs markdown-it-py with `html=False`, plus
+  tables and no linkify or syntax highlighting; link destinations go through
+  markdown-it's default `validateLink`, and section titles are escaped plain
+  text. `render_markdown` / `render_markdown_sections` are the only producers
+  of `|safe` HTML the templates use; everything else is escaped by Jinja
+  (`autoescape=True`, `StrictUndefined`). Do not add a second renderer or mark
+  user data safe.
+- **The web UI server is wired in `cli.py`, not the orchestrator.**
+  `cli.main` builds `WebUIServer` from the `LocalTracker`'s store and the
+  shared `StateManager`, starts it just before `orchestrator.run()`, and stops
+  it in a `finally` before any `os.execv` restart (so requests in flight end
+  cleanly and the port is free when the new process binds it). The orchestrator
+  holds no reference to the server and stays tracker-agnostic; keep it that
+  way so it can be tested without one.
 
 ## Running and testing
 

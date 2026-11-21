@@ -9,7 +9,9 @@ from unittest import mock
 
 import pytest
 
-from symphony_linear.cli import _reexec, main
+from symphony_linear.cli import _create_tracker, _reexec, main
+from symphony_linear.config import load_config
+from symphony_linear.local_tracker import LocalTracker
 
 
 # ---------------------------------------------------------------------------
@@ -34,6 +36,14 @@ linear:
   trigger_label: Agent
   in_progress_state: In Progress
   needs_input_state: Needs Input
+poll_interval_seconds: 10
+"""
+
+_CONFIG_WITH_WEBUI = """\
+webui:
+  port: 8080
+  username: admin
+  password: secret
 poll_interval_seconds: 10
 """
 
@@ -130,6 +140,120 @@ models:
   Cheap: openai/gpt-5-mini
 poll_interval_seconds: 10
 """
+
+
+class TestCliWebUIWiring:
+    def test_webui_block_starts_and_stops_server_around_run(
+        self, tmp_path: Path
+    ) -> None:
+        _write_config(tmp_path, _CONFIG_WITH_WEBUI)
+        events: list[str] = []
+
+        with (
+            mock.patch("symphony_linear.cli.load_state") as mock_load_state,
+            mock.patch("symphony_linear.cli._create_tracker") as mock_create_tracker,
+            mock.patch("symphony_linear.cli.Orchestrator") as mock_orch_class,
+            mock.patch("symphony_linear.cli.WebUIServer") as mock_webui_class,
+        ):
+            state = mock.MagicMock()
+            mock_load_state.return_value = state
+            tracker = LocalTracker(tmp_path)
+            mock_create_tracker.return_value = tracker
+            orch = mock.MagicMock()
+            orch.run.side_effect = lambda: events.append("run")
+            mock_orch_class.return_value = orch
+            server = mock.MagicMock()
+            server.start.side_effect = lambda: events.append("start")
+            server.stop.side_effect = lambda: events.append("stop")
+            mock_webui_class.return_value = server
+
+            main(["--workspace", str(tmp_path)])
+
+        assert events == ["start", "run", "stop"]
+        kwargs = mock_webui_class.call_args.kwargs
+        assert kwargs["store"] is tracker.store
+        assert kwargs["state"] is state
+        assert kwargs["config"].webui.port == 8080
+        assert kwargs["on_wake"] == orch.wake
+
+    def test_webui_server_stops_when_run_raises(self, tmp_path: Path) -> None:
+        _write_config(tmp_path, _CONFIG_WITH_WEBUI)
+
+        with (
+            mock.patch("symphony_linear.cli.load_state"),
+            mock.patch("symphony_linear.cli._create_tracker") as mock_create_tracker,
+            mock.patch("symphony_linear.cli.Orchestrator") as mock_orch_class,
+            mock.patch("symphony_linear.cli.WebUIServer") as mock_webui_class,
+        ):
+            mock_create_tracker.return_value = LocalTracker(tmp_path)
+            orch = mock.MagicMock()
+            orch.run.side_effect = RuntimeError("boom")
+            mock_orch_class.return_value = orch
+            server = mock.MagicMock()
+            mock_webui_class.return_value = server
+
+            with pytest.raises(RuntimeError, match="boom"):
+                main(["--workspace", str(tmp_path)])
+
+        server.stop.assert_called_once()
+
+    def test_webui_server_stops_before_reexec(self, tmp_path: Path) -> None:
+        _write_config(tmp_path, _CONFIG_WITH_WEBUI)
+        events: list[str] = []
+
+        with (
+            mock.patch("symphony_linear.cli.load_state"),
+            mock.patch("symphony_linear.cli._create_tracker") as mock_create_tracker,
+            mock.patch("symphony_linear.cli.Orchestrator") as mock_orch_class,
+            mock.patch("symphony_linear.cli.WebUIServer") as mock_webui_class,
+            mock.patch("symphony_linear.cli.os.execv") as mock_execv,
+        ):
+            mock_create_tracker.return_value = LocalTracker(tmp_path)
+            orch = mock.MagicMock()
+            orch.run.return_value = True
+            mock_orch_class.return_value = orch
+            server = mock.MagicMock()
+            server.stop.side_effect = lambda: events.append("stop")
+            mock_webui_class.return_value = server
+            mock_execv.side_effect = lambda *_args: events.append("execv")
+
+            main(["--workspace", str(tmp_path)])
+
+        assert events == ["stop", "execv"]
+
+    def test_webui_server_stops_when_start_fails(self, tmp_path: Path) -> None:
+        _write_config(tmp_path, _CONFIG_WITH_WEBUI)
+
+        with (
+            mock.patch("symphony_linear.cli.load_state"),
+            mock.patch("symphony_linear.cli._create_tracker") as mock_create_tracker,
+            mock.patch("symphony_linear.cli.Orchestrator") as mock_orch_class,
+            mock.patch("symphony_linear.cli.WebUIServer") as mock_webui_class,
+        ):
+            mock_create_tracker.return_value = LocalTracker(tmp_path)
+            orch = mock.MagicMock()
+            mock_orch_class.return_value = orch
+            server = mock.MagicMock()
+            server.start.side_effect = RuntimeError("bind failed")
+            mock_webui_class.return_value = server
+
+            with pytest.raises(RuntimeError, match="bind failed"):
+                main(["--workspace", str(tmp_path)])
+
+        server.stop.assert_called_once()
+        orch.run.assert_not_called()
+
+    def test_no_webui_block_no_server_instantiated(self, tmp_path: Path) -> None:
+        _write_config(tmp_path, _CONFIG_WITHOUT_WEBHOOK)
+
+        with (
+            mock.patch("symphony_linear.cli.load_state"),
+            mock.patch("symphony_linear.cli.Orchestrator"),
+            mock.patch("symphony_linear.cli.WebUIServer") as mock_webui_class,
+        ):
+            main(["--workspace", str(tmp_path)])
+
+        mock_webui_class.assert_not_called()
 
 
 class TestModelLabelProvisioningWiring:
@@ -347,3 +471,38 @@ class TestCheckoutRestartReexec:
             sys.executable,
             [sys.executable, "-m", "symphony_linear", "--workspace", "/ws"],
         )
+
+
+# ---------------------------------------------------------------------------
+# Tracker backend construction
+# ---------------------------------------------------------------------------
+
+
+class TestCreateTracker:
+    def test_webui_backend_builds_local_tracker(self, tmp_path: Path) -> None:
+        _write_config(tmp_path, _CONFIG_WITH_WEBUI)
+        config = load_config(tmp_path)
+
+        tracker = _create_tracker(config, tmp_path)
+
+        assert isinstance(tracker, LocalTracker)
+        assert (tmp_path / "tickets").is_dir()
+
+    def test_main_passes_workspace_to_tracker_factory(self, tmp_path: Path) -> None:
+        _write_config(tmp_path, _CONFIG_WITH_WEBUI)
+
+        with (
+            mock.patch("symphony_linear.cli.load_state") as mock_load_state,
+            mock.patch("symphony_linear.cli._create_tracker") as mock_create_tracker,
+            mock.patch("symphony_linear.cli.Orchestrator") as mock_orch_class,
+            mock.patch("symphony_linear.cli.WebUIServer") as mock_webui_class,
+        ):
+            mock_load_state.return_value = mock.MagicMock()
+            mock_create_tracker.return_value = LocalTracker(tmp_path)
+            mock_orch_class.return_value = mock.MagicMock()
+
+            main(["--workspace", str(tmp_path)])
+
+        mock_webui_class.assert_called_once()
+        args, _ = mock_create_tracker.call_args
+        assert args[1] == tmp_path

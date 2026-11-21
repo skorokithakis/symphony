@@ -1,0 +1,204 @@
+{# One copy of every repeated piece of markup.
+
+   The full pages and the JSON poll endpoints both render these macros, so a
+   change to an entry, a row or the action bar cannot drift between the two.
+   ``entry`` and ``ticket_row`` take a view dataclass; the rest take the page. #}
+
+{% macro file_icon() -%}
+<svg class="ic ic--sm" viewBox="0 0 20 20" aria-hidden="true"><path d="M5 3h7l3 3v11H5zM12 3v3h3"></path></svg>
+{%- endmacro %}
+
+{# Read-only files under a thread entry: images open the lightbox, everything
+   else is a download link.  The stored file name is never shown; only the
+   original name the user uploaded. #}
+{% macro file_list(files) -%}
+{% if files %}
+<ul class="files">
+  {% for f in files %}
+  <li>
+    {% if f.image %}
+    <button class="thumb" type="button" data-lightbox="{{ f.url }}" aria-label="Open the image {{ f.name }}" title="{{ f.name }}"><img src="{{ f.url }}" alt="" loading="lazy"><span class="sr">{{ f.name }}</span></button>
+    {% else %}
+    <a class="file" href="{{ f.url }}">{{ file_icon() }}<span class="file-name">{{ f.name }}</span><span class="file-size">{{ f.size }}</span></a>
+    {% endif %}
+  </li>
+  {% endfor %}
+</ul>
+{% endif %}
+{%- endmacro %}
+
+{# The composer's/editor's pending files.  Each chip carries the stored name
+   and delete URL the uploader script needs; the upload script adds the same
+   shape for files it is still sending. #}
+{% macro pending_files(files, target) -%}
+{% for f in files %}
+<li class="file" data-stored-name="{{ f.stored_name }}" data-delete-url="/api/tickets/{{ f.ticket_id }}/files/{{ f.stored_name }}?target={{ target }}">
+  {{ file_icon() }}
+  <span class="file-name">{{ f.name }}</span>
+  <span class="file-size">{{ f.size }}</span>
+  <button class="icon-btn" type="button" data-file-remove aria-label="Remove {{ f.name }}"><svg class="ic ic--sm" viewBox="0 0 20 20" aria-hidden="true"><path d="M5 5l10 10M15 5L5 15"></path></svg></button>
+</li>
+{% endfor %}
+{%- endmacro %}
+
+{% macro ticket_row(row) -%}<li>
+  <a class="row{% if row.failed %} row--failed{% endif %}{% if row.working %} row--working{% endif %}{% if row.unread and not row.failed and not row.working %} row--unread{% endif %}" href="/tickets/{{ row.id }}">
+    <span class="row-mark">
+      {%- if row.failed -%}
+      <svg class="ic mark mark--failed" viewBox="0 0 20 20" aria-hidden="true"><path d="M5 5l10 10M15 5L5 15"></path></svg>
+      {%- elif row.working -%}
+      <span class="mark mark--working"></span>
+      {%- elif row.unread -%}
+      <span class="mark mark--unread"></span><span class="sr">Unread.</span>
+      {%- endif -%}
+    </span>
+    <span class="row-title">{{ row.title }}</span>
+    <span class="row-sub">
+      <span class="row-id">{{ row.id }}</span>
+      <span class="row-repo">{{ row.repo }}</span>
+      {%- if row.working and row.working_for %}<span class="row-flag">Working, {{ row.working_for }}</span>{% endif -%}
+      {%- if row.failed %}<span class="row-flag row-flag--failed">Last turn failed</span>{% endif -%}
+    </span>
+    <span class="row-time"><time datetime="{{ row.updated_at }}" data-format="relative">{{ row.updated_text }}</time></span>
+  </a>
+</li>
+{%- endmacro %}
+
+{% macro state_tag(page) -%}
+<span class="state {{ page.state_class }}" id="state-tag">{{ page.state_label }}</span>
+{%- endmacro %}
+
+{% macro new_badge(entry) -%}
+{% if entry.new %}<span class="new">New</span>{% endif %}
+{%- endmacro %}
+
+{% macro entry(entry) -%}
+{% if entry.kind == "user" %}
+<article class="entry entry--user">
+  <header class="entry-h"><span class="who">{{ entry.who }}</span>{{ new_badge(entry) }}<time datetime="{{ entry.created_at }}" data-format="time">{{ entry.clock }}</time></header>
+  <div class="entry-b"><div class="md">{{ entry.html|safe }}</div>{{ file_list(entry.files) }}</div>
+</article>
+{% elif entry.kind == "agent" %}
+<article class="entry entry--agent" id="{{ entry.anchor }}">
+  <header class="entry-h">
+    <span class="who">{{ entry.who }}</span>
+    {{ new_badge(entry) }}
+    <time datetime="{{ entry.created_at }}" data-format="time">{{ entry.clock }}</time>
+    {% for item in entry.meta %}<span>{{ item }}</span>{% endfor %}
+    <span class="entry-tools">
+      <button class="link-btn" type="button" id="{{ entry.anchor }}-open" data-open-secs="{{ entry.anchor }}">Open all</button>
+      <button class="link-btn" type="button" id="{{ entry.anchor }}-close" data-close-secs="{{ entry.anchor }}">Close all</button>
+    </span>
+  </header>
+  <div class="md">{{ entry.html|safe }}</div>
+  {{ file_list(entry.files) }}
+</article>
+{% elif entry.kind == "notice" %}
+<p class="notice">{{ new_badge(entry) }}<span>{{ entry.notice }}</span><time datetime="{{ entry.created_at }}" data-format="time">{{ entry.clock }}</time></p>
+{% elif entry.kind == "error" %}
+<div class="alert alert--error" role="alert">
+  <svg class="ic" viewBox="0 0 20 20" aria-hidden="true"><path d="M10 3l8 14H2zM10 8.5v4M10 15v.2"></path></svg>
+  <p class="alert-t">Symphony error {{ new_badge(entry) }}</p>
+  {% if entry.html %}<div class="md">{{ entry.html|safe }}</div>{% endif %}
+  {% if entry.long %}
+  <details><summary>Show details</summary><div class="md">{{ entry.detail_html|safe }}</div></details>
+  {% endif %}
+</div>
+{% elif entry.kind == "warning" %}
+<div class="alert alert--warn" role="alert">
+  <svg class="ic" viewBox="0 0 20 20" aria-hidden="true"><path d="M10 3l8 14H2zM10 8.5v4M10 15v.2"></path></svg>
+  {{ new_badge(entry) }}
+  <div class="md">{{ entry.html|safe }}</div>
+</div>
+{% endif %}
+{%- endmacro %}
+
+{% macro working(page) -%}
+<p class="working" id="working" role="status">Working, {{ page.working_for }}</p>
+{%- endmacro %}
+
+{% macro state_forms(page) -%}
+{% for action in page.state_actions %}
+<form id="ticket-state-{{ action|replace('_', '-') }}" method="post" action="/tickets/{{ page.ticket.id }}/state" data-state-action="{{ action }}" data-api-state="/api/tickets/{{ page.ticket.id }}/state" hidden>
+  <input type="hidden" name="action" value="{{ action }}">
+</form>
+{% endfor %}
+{%- endmacro %}
+
+{% macro send_reason(page) -%}
+<span class="reason" id="send-reason"{% if not page.send_reason %} hidden{% endif %}>{{ page.send_reason or "" }}</span>
+{%- endmacro %}
+
+{% macro composer_actions(page) -%}
+  {% if page.ticket.state == "In Progress" %}
+  <button class="btn" type="submit" form="ticket-state-stop" id="act-stop"><svg class="ic ic--sm" viewBox="0 0 20 20" aria-hidden="true"><path d="M6 6h8v8H6z"></path></svg>Stop</button>
+  {{ send_reason(page) }}
+  <button class="btn btn--primary" type="submit" id="act-send" disabled aria-describedby="send-reason">Send</button>
+  {% elif page.ticket.state == "Needs Input" %}
+  <button class="btn" type="submit" form="ticket-state-done" id="act-done">Done</button>
+  <button class="btn" type="submit" form="ticket-state-qa" id="act-qa">Send to QA</button>
+  <span class="kbd-hint">Ctrl+Enter to send</span>
+  {{ send_reason(page) }}
+  <button class="btn btn--primary" type="submit" id="act-send">Send</button>
+  {% elif page.ticket.state == "QA" %}
+  <button class="btn" type="submit" form="ticket-state-done" id="act-done">Done</button>
+  <button class="btn" type="submit" form="ticket-state-needs-input" id="act-needs-input">Back to Needs Input</button>
+  <span class="kbd-hint">Ctrl+Enter to send</span>
+  {{ send_reason(page) }}
+  <button class="btn btn--primary" type="submit" id="act-send">Send</button>
+  {% endif %}
+{%- endmacro %}
+
+{% macro saved_indicator(saved_at) -%}
+<span class="saved" id="saved" data-state="saved" role="status"{% if not saved_at %} hidden{% endif %}>
+  <svg class="ic ic--sm saved-ok" viewBox="0 0 20 20" aria-hidden="true"><path d="M4 10.5l4 4 8-9"></path></svg>
+  <svg class="ic ic--sm saved-err" viewBox="0 0 20 20" aria-hidden="true"><path d="M5 5l10 10M15 5L5 15"></path></svg>
+  <span data-saved-text>{% if saved_at %}Saved <time datetime="{{ saved_at }}" data-format="time">just now</time>{% endif %}</span>
+</span>
+{%- endmacro %}
+
+{% macro home_body(page) -%}
+{% if page.open_count == 0 %}
+<div class="empty">
+  <h1 class="empty-t">Nothing open</h1>
+  <p>New tickets and anything waiting on you will appear here.</p>
+</div>
+{% else %}
+<h1 class="page-t">Tickets</h1>
+{% for group in page.groups %}
+<section class="group">
+  <h2 class="group-h">
+    <span class="state {{ group.state_class }}">{{ group.title }}</span>
+    <span class="group-n">{{ group.count }}</span>
+  </h2>
+  {% if group.rows %}
+  <ul class="rows">
+    {% for row in group.rows %}{{ ticket_row(row) }}{% endfor %}
+  </ul>
+  {% else %}
+  <p class="group-empty">{{ group.empty_text }}</p>
+  {% endif %}
+</section>
+{% endfor %}
+{% endif %}
+{%- endmacro %}
+
+{% macro archive_body(page) -%}
+<div>
+  <h1 class="page-t">Archive</h1>
+  <p class="page-sub">Done tickets, newest first.</p>
+</div>
+<section class="group">
+  <h2 class="group-h">
+    <span class="state state--done">Done</span>
+    <span class="group-n">{{ page.count }}</span>
+  </h2>
+  {% if page.rows %}
+  <ul class="rows">
+    {% for row in page.rows %}{{ ticket_row(row) }}{% endfor %}
+  </ul>
+  {% else %}
+  <p class="group-empty">No done tickets.</p>
+  {% endif %}
+</section>
+{%- endmacro %}

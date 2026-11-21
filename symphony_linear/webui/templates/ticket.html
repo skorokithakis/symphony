@@ -1,0 +1,103 @@
+{% extends "base.html" %}
+{% from "_macros.html" import composer_actions, entry, pending_files, saved_indicator, state_forms, state_tag, working %}
+
+{% block title %}{{ page.ticket.id }} · {{ page.title }} · symphony{% endblock %}
+
+{% block scripts %}<script src="/static/upload.js" defer></script><script src="/static/ticket.js" defer></script>{% endblock %}
+
+{% block content %}
+<header class="bar">
+  <a class="wordmark" href="/">symphony</a>
+</header>
+<main class="ticket" id="ticket"
+      data-ticket-id="{{ page.ticket.id }}"
+      data-api-poll="/api/tickets/{{ page.ticket.id }}"
+      data-api-seen="/api/tickets/{{ page.ticket.id }}/seen"
+      data-api-state="/api/tickets/{{ page.ticket.id }}/state"
+      data-api-reply="/api/tickets/{{ page.ticket.id }}/reply"
+      data-api-draft="/api/tickets/{{ page.ticket.id }}/draft"
+      data-api-upload="/api/tickets/{{ page.ticket.id }}/files">
+  <header class="thead">
+    <div class="thead-top">
+      <a class="back" href="/" aria-label="Back to tickets"><svg class="ic" viewBox="0 0 20 20" aria-hidden="true"><path d="M12 4l-6 6 6 6"></path></svg><span class="back-t">Tickets</span></a>
+      <span class="tid">{{ page.ticket.id }}</span>
+      {{ state_tag(page) }}
+      <p class="conn" id="conn" role="status" hidden>Connection lost. Retrying…</p>
+    </div>
+    <h1 class="ttitle" id="ticket-title">{{ page.title }}</h1>
+    <p class="trepo">{{ page.repo }}</p>
+    <details class="tmeta" open>
+      <summary>Details</summary>
+      <dl>
+        <div><dt>Branch</dt><dd>{{ page.branch or "—" }}</dd></div>
+        <div><dt>Model</dt><dd>{{ page.model }}</dd></div>
+        <div>
+          <dt>Workspace</dt>
+          <dd>{{ page.workspace or "—" }}</dd>
+          {% if page.workspace %}<button class="icon-btn" type="button" data-copy="{{ page.workspace }}" aria-label="Copy the workspace path"><svg class="ic ic--sm" viewBox="0 0 20 20" aria-hidden="true"><path d="M7 7h9v9H7zM4 13V4h9"></path></svg></button>{% endif %}
+        </div>
+        <div>
+          <dt>Session</dt>
+          <dd>{{ page.session or "—" }}</dd>
+          {% if page.session %}<button class="icon-btn" type="button" data-copy="{{ page.session }}" aria-label="Copy the session id"><svg class="ic ic--sm" viewBox="0 0 20 20" aria-hidden="true"><path d="M7 7h9v9H7zM4 13V4h9"></path></svg></button>{% endif %}
+        </div>
+      </dl>
+    </details>
+  </header>
+
+  <div class="thread" id="thread" data-last-comment-id="{{ page.last_comment_id }}" data-seen-comment-id="{{ page.seen_comment_id or '' }}">
+    {% for item in page.entries %}{{ entry(item) }}{% endfor %}
+    {% if page.working_for %}{{ working(page) }}{% endif %}
+  </div>
+
+  <div class="alert alert--warn" id="page-error" role="alert" hidden>
+    <svg class="ic" viewBox="0 0 20 20" aria-hidden="true"><path d="M10 3l8 14H2zM10 8.5v4M10 15v.2"></path></svg>
+    <p id="page-error-text"></p>
+  </div>
+
+  {% if page.has_composer %}
+  <form class="composer" id="composer" method="post" action="/tickets/{{ page.ticket.id }}/reply">
+    <p class="drop">Drop files to attach<small>Any file type, up to 50 MB each</small></p>
+    <button class="jump" type="button" id="jump" hidden>Jump to latest<svg class="ic ic--sm" viewBox="0 0 20 20" aria-hidden="true"><path d="M5 8l5 5 5-5"></path></svg></button>
+    <input type="hidden" name="token" value="{{ page.token }}">
+    <ul class="files" id="pending-files" data-target="reply"{% if not page.pending_files %} hidden{% endif %}>{{ pending_files(page.pending_files, "reply") }}</ul>
+    <label class="sr" for="reply">Reply</label>
+    <textarea id="reply" name="body" rows="3" required placeholder="Write a reply. You can also write notes while the agent works.">{% if page.reply_draft.startswith("\n") %}&#10;{% endif %}{{ page.reply_draft }}</textarea>
+    <div class="composer-foot">
+      <div class="composer-tools">
+        <input class="sr" id="composer-file" type="file" multiple tabindex="-1" aria-label="Attach files">
+        <button class="icon-btn" type="button" id="composer-attach" aria-label="Attach files">
+          <svg class="ic" viewBox="0 0 20 20" aria-hidden="true"><path d="M15 9.5l-5.6 5.6a2.6 2.6 0 01-3.7-3.7l6.2-6.2a1.8 1.8 0 012.5 2.5l-6 6"></path></svg>
+        </button>
+        <button class="icon-btn" type="button" id="composer-size" aria-pressed="false" aria-label="Make the composer large">
+          <svg class="ic ic-expand" viewBox="0 0 20 20" aria-hidden="true"><path d="M4 8V4h4M16 12v4h-4M4 4l5 5M16 16l-5-5"></path></svg>
+          <svg class="ic ic-shrink" viewBox="0 0 20 20" aria-hidden="true"><path d="M9 5v4H5M11 15v-4h4M9 9L4 4M11 11l5 5"></path></svg>
+        </button>
+        {{ saved_indicator(page.reply_draft_saved_at) }}
+      </div>
+      <div class="composer-actions" id="composer-actions">{{ composer_actions(page) }}</div>
+    </div>
+  </form>
+  <div id="state-forms">{{ state_forms(page) }}</div>
+  {% else %}
+  <div class="readonly">
+    <span>This ticket is done. Reopen it to work on it again.</span>
+    <form method="post" action="/tickets/{{ page.ticket.id }}/state" data-api-state="/api/tickets/{{ page.ticket.id }}/state">
+      <input type="hidden" name="action" value="reopen">
+      <button class="btn" type="submit" id="act-reopen">Reopen</button>
+    </form>
+  </div>
+  {% endif %}
+</main>
+<nav class="dock" aria-label="Main">
+  <a class="btn btn--primary" href="/new"><svg class="ic" viewBox="0 0 20 20" aria-hidden="true"><path d="M10 4v12M4 10h12"></path></svg>New ticket</a>
+  <div class="dock-links">
+    <a class="dock-link" href="/" aria-current="page">Tickets</a>
+    <a class="dock-link" href="/archive">Archive</a>
+  </div>
+</nav>
+{% endblock %}
+
+{% block overlay %}
+<dialog class="lightbox" id="lightbox" aria-label="Image viewer"><img alt=""></dialog>
+{% endblock %}

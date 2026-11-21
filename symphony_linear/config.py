@@ -232,10 +232,32 @@ class _WebhookConfig(BaseModel):
     )
 
 
+class _WebUIConfig(BaseModel):
+    """Built-in web UI and local tracker backend configuration."""
+
+    model_config = ConfigDict(extra="forbid")
+
+    port: int = Field(..., gt=0, le=65535, description="Port for the web UI server")
+    host: str = Field("127.0.0.1", description="Address the web UI server binds to")
+    username: str = Field(..., description="HTTP Basic auth username")
+    password: str = Field(..., description="HTTP Basic auth password")
+    anthropic_api_key: str | None = Field(
+        None,
+        description="Optional Anthropic API key for automatic ticket titles",
+    )
+
+    @field_validator("username", "password")
+    @classmethod
+    def _validate_non_empty(cls, v: str) -> str:
+        if not v.strip():
+            raise ValueError("must be a non-empty string")
+        return v
+
+
 class AppConfig(BaseModel):
     """Top-level application configuration.
 
-    Exactly one of ``linear`` or ``github`` must be set.
+    Exactly one of ``linear``, ``github`` or ``webui`` must be set.
     """
 
     model_config = ConfigDict(extra="forbid")
@@ -249,6 +271,9 @@ class AppConfig(BaseModel):
     )
     github: _GitHubConfig | None = Field(
         None, description="GitHub Projects v2 backend configuration block"
+    )
+    webui: _WebUIConfig | None = Field(
+        None, description="Built-in web UI and local ticket store configuration"
     )
     sandbox: _SandboxConfig = Field(default_factory=_SandboxConfig)
     webhook: _WebhookConfig | None = Field(
@@ -316,25 +341,38 @@ class AppConfig(BaseModel):
                 del data["sandbox"]
             if "webhook" in data and data["webhook"] is None:
                 del data["webhook"]
+            if "webui" in data and data["webui"] is None:
+                del data["webui"]
         return data
 
     @model_validator(mode="after")
     def _exactly_one_tracker(self) -> AppConfig:
         """Enforce that exactly one tracker backend block is configured."""
-        if self.linear is not None and self.github is not None:
-            raise ValueError(
-                "Both 'linear' and 'github' blocks are set in config.yaml. "
-                "Configure exactly one tracker backend."
+        configured = [
+            name
+            for name, block in (
+                ("linear", self.linear),
+                ("github", self.github),
+                ("webui", self.webui),
             )
-        if self.linear is None and self.github is None:
+            if block is not None
+        ]
+        if len(configured) > 1:
+            names = ", ".join(f"'{name}'" for name in configured)
+            raise ValueError(
+                f"More than one tracker backend is configured in config.yaml: "
+                f"{names}. Configure exactly one of 'linear', 'github' or 'webui'."
+            )
+        if not configured:
             raise ValueError(
                 "No tracker backend configured. "
-                "Add either a 'linear:' or 'github:' block to config.yaml."
+                "Add one of a 'linear:', 'github:' or 'webui:' block to "
+                "config.yaml."
             )
         if self.webhook is not None and self.linear is None:
             raise ValueError(
                 "webhook block requires a 'linear:' backend; "
-                "GitHub webhooks are not supported."
+                "webhooks are only supported for Linear."
             )
         return self
 
@@ -433,29 +471,39 @@ def load_config(workspace_dir: Path) -> AppConfig:
     expanded = _expand_values(raw)
 
     # Validate exactly-one-tracker constraint early, before credential
-    # fallbacks, so that setting both blocks (or neither) produces a clear
+    # fallbacks, so that setting several blocks (or none) produces a clear
     # error instead of a confusing "missing token" message.
     if isinstance(expanded, dict):
-        has_linear = expanded.get("linear") is not None
-        has_github = expanded.get("github") is not None
-        has_webhook = expanded.get("webhook") is not None
-        if has_linear and has_github:
-            raise ValueError(
-                "Both 'linear' and 'github' blocks are set in config.yaml. "
-                "Configure exactly one tracker backend."
+        configured = [
+            name
+            for name, present in (
+                ("linear", expanded.get("linear") is not None),
+                ("github", expanded.get("github") is not None),
+                ("webui", expanded.get("webui") is not None),
             )
-        if not has_linear and not has_github:
+            if present
+        ]
+        has_linear = "linear" in configured
+        has_webhook = expanded.get("webhook") is not None
+        if len(configured) > 1:
+            names = ", ".join(f"'{name}'" for name in configured)
+            raise ValueError(
+                f"More than one tracker backend is configured in config.yaml: "
+                f"{names}. Configure exactly one of 'linear', 'github' or 'webui'."
+            )
+        if not configured:
             raise ValueError(
                 "No tracker backend configured. "
-                "Add either a 'linear:' or 'github:' block to config.yaml."
+                "Add one of a 'linear:', 'github:' or 'webui:' block to "
+                "config.yaml."
             )
         # Run the webhook+linear-only check BEFORE the secret-fallback so that
-        # github+webhook configs produce the scope error, not a misleading
+        # non-linear+webhook configs produce the scope error, not a misleading
         # "missing webhook secret" error from the env fallback.
         if has_webhook and not has_linear:
             raise ValueError(
                 "webhook block requires a 'linear:' backend; "
-                "GitHub webhooks are not supported."
+                "webhooks are only supported for Linear."
             )
 
     # Environment variable fallbacks: if the config block is present but its

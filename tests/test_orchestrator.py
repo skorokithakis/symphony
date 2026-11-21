@@ -29,6 +29,11 @@ from symphony_linear.linear import (
     ProjectLink,
 )
 from symphony_linear.linear_tracker import LinearTracker
+from symphony_linear.local_tracker import (
+    STATE_DONE,
+    STATE_NEEDS_INPUT,
+    LocalTracker,
+)
 from symphony_linear.opencode import (
     OpenCodeCancelled,
     OpenCodeError,
@@ -11158,3 +11163,158 @@ class TestIntegration:
         from symphony_linear.workspace import remove
 
         remove("TEAM-1", str(ws_root))
+
+
+# ---------------------------------------------------------------------------
+# A user's Done survives a turn that already read its input
+# ---------------------------------------------------------------------------
+
+
+class TestLocalTrackerDoneDuringATurn:
+    def test_a_done_ticket_is_not_pulled_back_by_the_resume_turn(
+        self, tmp_path: Path
+    ) -> None:
+        """The *start* of a resume turn must not undo Done.
+
+        The resume worker reads its input and is inside the agent turn when the
+        user presses Done.  ``transition_to(in_progress)`` must not move it.
+        The end-of-turn ``needs_input`` transition is allowed from Done on
+        purpose (the dirty-workspace refusal depends on it), so the final
+        state is Needs Input; the state while the turn is blocked is what this
+        test protects.
+        """
+        config = _make_config(tmp_path)
+        tracker = LocalTracker(tmp_path / "local")
+        store = tracker.store
+        ticket = store.create_draft(
+            title="A ticket", description="Work", repo="owner/name"
+        )
+        store.set_state(ticket.id, STATE_NEEDS_INPUT)
+        previous = tracker.post_comment(ticket.id, "previous reply", "final")
+        store.add_human_comment(ticket.id, "please continue")
+
+        state_mgr = StateManager(tmp_path / "state.json")
+        state_mgr.load()
+        ticket_state = TicketState(
+            ticket_id=ticket.id,
+            ticket_identifier=ticket.id,
+            repo_url="git@github.com:owner/name.git",
+            workspace_path=str(tmp_path / "workspaces" / ticket.id / "repo"),
+            branch=f"symphony/{ticket.id}",
+            status=TicketStatus.needs_input,
+            session_id="ses-1",
+            last_seen_comment_id=previous.id,
+        )
+        state_mgr.upsert(ticket_state)
+        orchestrator = Orchestrator(
+            config=config,
+            state=state_mgr,
+            tracker=tracker,
+            workspace=tmp_path / "workspaces",
+        )
+
+        entered = threading.Event()
+        release = threading.Event()
+
+        def blocking_resume(**_kwargs: Any) -> tuple[str, None]:
+            entered.set()
+            assert release.wait(10), "the test never released the turn"
+            return "Done!", None
+
+        with (
+            mock.patch(
+                "symphony_linear.orchestrator.load_project_config",
+                return_value=ProjectConfig(),
+            ),
+            mock.patch(
+                "symphony_linear.orchestrator.run_resume",
+                side_effect=blocking_resume,
+            ),
+        ):
+            worker = threading.Thread(
+                target=orchestrator._resume_pipeline, args=(ticket_state,)
+            )
+            worker.start()
+            try:
+                assert entered.wait(10), "the resume turn never started"
+                # The user presses Done while the agent is working.
+                store.set_state(ticket.id, STATE_DONE)
+                blocked = store.get(ticket.id)
+                assert blocked is not None
+                # The turn's start transition was refused: Done is intact
+                # until the turn ends.
+                assert blocked.state == STATE_DONE
+            finally:
+                release.set()
+                worker.join(10)
+
+        assert not worker.is_alive()
+        # The end-of-turn needs_input transition is allowed from Done for the
+        # dirty-workspace refusal, so the completed turn parks it there.
+        stored = store.get(ticket.id)
+        assert stored is not None
+        assert stored.state == STATE_NEEDS_INPUT
+
+
+class TestLocalTrackerDirtyWorkspaceRefusal:
+    def test_one_done_click_never_deletes_uncommitted_work(
+        self, tmp_path: Path
+    ) -> None:
+        """Done with a dirty workspace: the refusal must be able to move it back.
+
+        The first tick on a Done ticket with a dirty workspace transitions it
+        to Needs Input and records that state.  If the transition is a no-op
+        the next tick sees a difference and deletes the dirty workspace.
+        """
+        config = _make_config(tmp_path)
+        tracker = LocalTracker(tmp_path / "local")
+        store = tracker.store
+        ticket = store.create_draft(
+            title="Dirty work", description="Work", repo="owner/name"
+        )
+        store.set_state(ticket.id, STATE_NEEDS_INPUT)
+
+        state_mgr = StateManager(tmp_path / "state.json")
+        state_mgr.load()
+        ws_root = tmp_path / "workspaces"
+        repo_dir = ws_root / ticket.id / "repo"
+        repo_dir.mkdir(parents=True)
+        (repo_dir / "sentinel").write_text("uncommitted work")
+        state_mgr.upsert(
+            TicketState(
+                ticket_id=ticket.id,
+                ticket_identifier=ticket.id,
+                repo_url="git@github.com:owner/name.git",
+                workspace_path=str(repo_dir),
+                branch=f"symphony/{ticket.id}",
+                status=TicketStatus.needs_input,
+            )
+        )
+        orchestrator = Orchestrator(
+            config=config,
+            state=state_mgr,
+            tracker=tracker,
+            workspace=ws_root,
+        )
+
+        # The user's single Done click.
+        store.set_state(ticket.id, STATE_DONE)
+
+        with mock.patch(
+            "symphony_linear.orchestrator.dirty_summary",
+            return_value="1 uncommitted file.",
+        ):
+            orchestrator._tick()
+            after_first = store.get(ticket.id)
+            recorded = state_mgr.get(ticket.id)
+            assert after_first is not None
+            assert after_first.state == STATE_NEEDS_INPUT
+            assert recorded is not None
+            assert recorded.cleanup_refused_state == STATE_NEEDS_INPUT
+            assert repo_dir.exists()
+
+            orchestrator._tick()
+            after_second = store.get(ticket.id)
+            assert after_second is not None
+            assert after_second.state == STATE_NEEDS_INPUT
+            assert repo_dir.exists()

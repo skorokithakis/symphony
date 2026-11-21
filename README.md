@@ -1,17 +1,17 @@
 # Symphony
 
-Symphony turns Linear or GitHub Projects into the front end for a fleet of
-AI coding agents. Label a ticket (or toggle a project field), walk away,
-and read the agent's reply when you have a moment; when you reply, the agent
-picks the thread back up. It runs as a single daemon on your own machine,
-clones each ticket's repo into its own sandbox, hands the work to
-[OpenCode](https://opencode.ai/) by default (or OMP if selected), and posts
-the result back as a comment.
+Symphony turns Linear, GitHub Projects or its own built-in web UI into the
+front end for a fleet of AI coding agents. Label a ticket (or toggle a project
+field, or press Start), walk away, and read the agent's reply when you have a
+moment; when you reply, the agent picks the thread back up. It runs as a
+single daemon on your own machine, clones each ticket's repo into its own
+sandbox, hands the work to [OpenCode](https://opencode.ai/) by default (or OMP
+if selected), and posts the result back as a comment.
 Several tickets can be in flight at once, so you can keep planning while the
 agents type.
 
-The daemon is small, self-hosted, and has no UI of its own. Your issue
-tracker is the UI.
+The daemon is small and self-hosted. With Linear or GitHub your issue tracker
+is the UI; the built-in backend has a small web UI of its own.
 
 ## Screenshots
 
@@ -49,8 +49,8 @@ uvx symphony-linear
 ```
 
 That gets you a running daemon. To actually trigger work you still need to
-set up your tracker: see [Linear setup](#linear-setup) or
-[GitHub setup](#github-setup).
+set up your tracker: see [Linear setup](#linear-setup),
+[GitHub setup](#github-setup) or [Web UI setup](#web-ui-setup).
 
 ## Installation
 
@@ -266,6 +266,136 @@ flattening the slash would otherwise let two different repositories collide:
 project can span repositories, both issues could be live at once and would
 then share a workspace directory.
 
+## Web UI setup
+
+Symphony can also be its own tracker. With the `webui:` block there is no
+Linear or GitHub account involved: tickets are stored as JSON files under
+`<workspace>/tickets/`, and a small web UI served by the daemon is the front
+end.
+
+Exactly one backend is active per daemon. Web UI tickets are not visible in
+Linear or GitHub, and Linear or GitHub tickets are not visible in the web UI.
+To use the web UI beside an existing Linear or GitHub daemon, run a second
+daemon with its own workspace directory and its own port.
+
+```yaml
+webui:
+  port: 8080
+  host: 127.0.0.1          # default
+  username: admin
+  password: change-me
+  # Optional. Enables automatic titles (see Titles below).
+  # anthropic_api_key: ${ANTHROPIC_API_KEY}
+```
+
+Open `http://127.0.0.1:8080/`. The browser asks for the username and password
+once, using HTTP Basic auth; there is no login page.
+
+**Put HTTPS in front of the port before exposing it.** Basic auth sends the
+password with every request, so plain HTTP is only reasonable on localhost.
+Keep `host` on `127.0.0.1` and terminate TLS in a reverse proxy (nginx, Caddy,
+Traefik, and so on).
+
+The proxy must forward the original `Host` header: the server's same-origin
+check compares it with the browser's `Origin`. Caddy and Traefik do this by
+default; with nginx, set `proxy_set_header Host $http_host` (not `$host`,
+which drops a non-default port and breaks every write) and
+`proxy_set_header X-Forwarded-Proto $scheme` next to it, so the daemon knows
+the browser is on TLS. `X-Forwarded-Proto: https` tells it to refuse posts
+that come from the plain-http origin of the same host name. No other
+forwarded header is trusted.
+
+A proxy login service that adds Basic credentials after its own login works
+without any Symphony change. For example, Tinyauth can inject an
+`Authorization: Basic ...` header from its `basic-auth` response labels, and
+the daemon sees an ordinary authenticated request.
+
+### Tickets and states
+
+Tickets are in one of five fixed states:
+
+| State | What it means | Actions |
+|---|---|---|
+| Draft | an idea in the editor; nothing has run | Start, Discard |
+| In Progress | the agent is working | Stop |
+| Needs Input | the agent has replied and is waiting for you | Send, Send to QA, Done |
+| QA | your `.symphony/serve` script is running | Send, Back to Needs Input, Done |
+| Done | finished and archived | Reopen |
+
+- **Start** validates the editor and moves the Draft to In Progress. The
+  daemon picks it up on the next poll tick. Start requires the ticket text and
+  a repository; a title too, unless automatic titles are enabled.
+- **Send** posts the composer's text as a human comment and wakes the daemon.
+  It does not change the state itself: the daemon resumes the session on the
+  next tick and moves the ticket to In Progress, exactly as it does for a
+  comment on Linear or GitHub.
+- **Stop** moves an In Progress ticket back to Needs Input. Any in-flight turn
+  is killed on the next tick.
+- **Send to QA** moves a Needs Input ticket to QA without posting the composer
+  text. If the repo has a `.symphony/serve` script, the daemon starts it, as
+  described under [Manual QA](#manual-qa); QA is always enabled for this
+  backend.
+- **Done** stops tracking the ticket and deletes its workspace. If the
+  workspace has uncommitted or unpushed work, the daemon refuses the first
+  time: it posts a comment telling you what is at risk and moves the ticket
+  back to Needs Input. Moving it to Done a second time deletes the workspace.
+- **Reopen** moves a Done ticket back to work. If the daemon still tracks the
+  ticket, it goes to Needs Input, so a reply resumes the session through the
+  normal path. If it does not (the cleanup tick already ran), it goes to In
+  Progress: the daemon's new-ticket pipeline picks it up and itself ends in
+  Needs Input, with or without a session snapshot. On that path Send is
+  unavailable until the first turn ends.
+- **Discard** deletes a Draft, its text and its uploaded files. Its number is
+  never reused.
+
+The editor autosaves a Draft on the server as you type. A ticket only comes
+into existence once the editor has some content or a file is attached, so an
+abandoned empty form leaves nothing behind.
+
+### Reply composer
+
+Every started ticket except a Done one has a reply box. It stays editable while
+the agent works, and its text is saved on the server, so a reload or another
+device sees the same draft. Only Send is unavailable while the ticket is In
+Progress; the page says so next to the disabled button and re-enables it when
+the turn finishes. In QA, sending resumes the agent, which pulls the ticket out
+of QA and stops the serve on the next tick.
+
+### Models
+
+The editor offers one chip per alias under the top-level `models:` map. What
+you pick is stored on the ticket and presented to the orchestrator as a
+`Model: <alias>` label, so the usual model resolution applies (see
+[Model override](#model-override)). Choosing nothing uses the agent's own
+default. The editor only edits Drafts, so the model cannot be changed after
+Start.
+
+### Attachments
+
+The editor and the reply box accept any file type, up to 50 MB each. PNG,
+JPEG, GIF and WebP files are passed to the agent as image input. Every other
+file is downloaded into the ticket's `attachments/` directory, which the
+sandbox sees at `/tmp/symphony-attachments`, and the agent opens it with its
+own tools. The daemon's existing per-message total of 50 MB applies: uploads
+beyond it are skipped and the daemon posts a "skipped attachments" comment
+naming them.
+
+Only the four image types are ever served inline. Every other upload downloads
+as an attachment; an HTML or SVG file served inline from the UI's origin would
+run with your credentials.
+
+### Titles
+
+With `webui.anthropic_api_key` set, the editor hides the Title field. Start
+stores an empty title and asks the Anthropic Messages API for one in the
+background, using a model id fixed in `symphony_linear/webui/title.py`. Until
+it arrives, and if the request fails, the first line of the ticket text is
+shown as the title. Nothing is retried and no error is shown; the fallback just
+stays.
+
+Without the key, the editor shows the Title field and Start refuses an empty
+one.
+
 ## Configuration
 
 Symphony reads `config.yaml` from its workspace directory, which defaults to
@@ -292,9 +422,18 @@ github:
   # qa_status: QA
 ```
 
-You can omit the credential entirely and let the daemon read the
-appropriate environment variable (`LINEAR_API_KEY` or `GITHUB_TOKEN`)
-directly; that is often nicer for systemd or secret managers.
+For the built-in web UI:
+
+```yaml
+webui:
+  port: 8080
+  username: admin
+  password: change-me
+```
+
+For Linear or GitHub, you can omit the credential entirely and let the daemon
+read the appropriate environment variable (`LINEAR_API_KEY` or
+`GITHUB_TOKEN`) directly; that is often nicer for systemd or secret managers.
 
 ### Coding agent
 
@@ -316,9 +455,9 @@ authenticating OMP does not authenticate pi.
 
 ### Full annotated config
 
-The annotated config below shows the Linear backend. For the GitHub
-version see `config.yaml.example` in the repo root — both blocks are
-documented there side by side.
+The annotated config below shows the Linear backend. The GitHub and `webui`
+blocks are also documented in `config.yaml.example` in the repo root, side by
+side.
 
 ```yaml
 # config.yaml (placed in the workspace directory)
@@ -326,7 +465,7 @@ documented there side by side.
 # Coding-agent CLI to run (default: opencode). Must be `opencode`, `omp`, or `pi`.
 agent: opencode
 
-# Choose exactly one backend — linear or github.
+# Choose exactly one backend — linear, github or webui.
 linear:
   # REQUIRED. Linear Personal API key.
   # Use ${LINEAR_API_KEY} to read from the environment, or omit this field
@@ -349,6 +488,19 @@ linear:
   # sandbox. Only one serve runs globally; the newest entrant wins. Omit to
   # disable the feature entirely.
   # qa_state: QA
+
+# Built-in tracker and web UI. Comment out `linear:` above and uncomment this
+# block to use it instead. See "Web UI setup".
+# webui:
+#   # REQUIRED. Port the web UI listens on.
+#   port: 8080
+#   # Bind address (default: 127.0.0.1).
+#   host: 127.0.0.1
+#   # REQUIRED. HTTP Basic auth credentials. There is no login page.
+#   username: admin
+#   password: change-me
+#   # Optional. Anthropic API key for automatic ticket titles.
+#   # anthropic_api_key: ${ANTHROPIC_API_KEY}
 
 # Optional. Model overrides for the primary agent, keyed by alias. See
 # "Model override" below.
@@ -622,11 +774,12 @@ subprocesses are killed, state is persisted, and the daemon exits.
 
 ## How it works
 
-Every `poll_interval_seconds`, Symphony queries the tracker (Linear or
-GitHub) for tickets that carry the trigger signal and live in one of the
-active workflow states. New tickets enter the **initial pipeline**:
+Every `poll_interval_seconds`, Symphony queries the configured tracker for
+tickets that carry the trigger signal and live in one of the active workflow
+states. New tickets enter the **initial pipeline**:
 
-1. Find the project's `Repo` link to discover the git URL.
+1. Find the ticket's git URL: the `Repo` link on its Linear or GitHub project,
+   or the repository field on a web UI ticket.
 2. Clone or update the repo into
    `<workspace>/<sanitised-identifier>/repo`.
 3. Switch to the ticket's branch, creating one if needed. If
@@ -722,7 +875,8 @@ credentials only.
 If you set `linear.qa_state` (or `github.qa_status`) and add an executable
 `.symphony/serve` script to your repo, moving a ticket into that workflow
 state launches the script inside the sandbox. Use it to run a dev server, a
-worker, or anything else you want to exercise by hand.
+worker, or anything else you want to exercise by hand. The web UI backend has
+a fixed QA state, so the feature is always on there.
 
 Only one serve runs across the whole daemon. Dropping a second ticket into
 QA bumps the first back to the needs-input state and starts the new one.
@@ -847,14 +1001,30 @@ session id.
   it is running. Comments you post mid-turn are not read: the daemon posts
   a short notice saying so, and you can comment again once the turn
   finishes.
+- **No live view of the agent's work.** The web UI shows the ticket's state
+  and how long it has been working, not the agent's steps, tool calls or
+  streamed output. You see the written reply when the turn ends.
+- **No notifications.** The web UI marks unread tickets in the list and puts
+  a `(N) Symphony` count in the browser tab title. There is no email, desktop,
+  mobile or webhook notification.
+- **No search and no named projects.** The web UI groups tickets by state.
+  Repositories are a free-text field with recent values offered as chips;
+  there is nothing to name or organise.
 - **No auto-retry.** A failed turn moves the ticket to `failed` and stays
   there. Comment on the ticket to re-trigger.
 - **Single workspace per ticket.** A ticket's workspace is reused across
   turns; the agent works in the same clone every time.
 - **Trigger-only enrolment.** The Linear trigger condition (a label by default,
   or active state plus a project Repo link with `linear.trigger_label: null`)
-  or trigger field (GitHub) is the only way to enrol a ticket. There is no
-  manual nudge, slash command, or webhook.
+  or trigger field (GitHub) is the only way to enrol a ticket. In the web UI,
+  Start is the only way. There is no manual nudge, slash command, or webhook.
+- **One tracker backend per daemon.** Web UI tickets are not visible in
+  Linear or GitHub, and Linear or GitHub tickets are not visible in the web
+  UI. Running both means two daemons with separate workspace directories.
+- **No migration.** There is no import from Linear or GitHub; web UI tickets
+  stay in their own store.
+- **The model is fixed after Start.** The web UI editor only edits Drafts, so
+  a model chosen there cannot be changed once the ticket starts.
 - **No priority.** Tickets are picked in whatever order the tracker returns
   them. There is no queue.
 - **One QA serve at a time.** A single `.symphony/serve` runs globally with
