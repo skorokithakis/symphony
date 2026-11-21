@@ -69,13 +69,25 @@
 
   /* ---------- scroll ---------- */
 
+  /* At 800px and up the app fills the window and <main> is the scroll
+   * container; below that the window scrolls.  Read the layout on every call:
+   * it changes with the width. */
+  function scrollElement() {
+    var style = window.getComputedStyle(main);
+    if (style.overflowY === "auto" || style.overflowY === "scroll") {
+      return main;
+    }
+    return document.scrollingElement || document.documentElement;
+  }
+
   function nearBottom() {
-    var doc = document.documentElement;
-    return window.innerHeight + window.scrollY >= doc.scrollHeight - 120;
+    var el = scrollElement();
+    return el.scrollTop + el.clientHeight >= el.scrollHeight - 120;
   }
 
   function scrollToBottom() {
-    window.scrollTo(0, document.documentElement.scrollHeight);
+    var el = scrollElement();
+    el.scrollTop = el.scrollHeight;
     if (jump) {
       jump.hidden = true;
     }
@@ -500,6 +512,9 @@
   if (sizeButton) {
     sizeButton.addEventListener("click", function () {
       var large = main.getAttribute("data-composer") !== "large";
+      // Large mode can make <main> stop scrolling (at 1240 px up it sets
+      // overflow: hidden), so pick the container before switching.
+      var scroller = scrollElement();
       if (large) {
         main.setAttribute("data-composer", "large");
       } else {
@@ -512,7 +527,7 @@
       );
       showJump(false);
       if (large) {
-        window.scrollTo(0, 0);
+        scroller.scrollTop = 0;
       }
     });
   }
