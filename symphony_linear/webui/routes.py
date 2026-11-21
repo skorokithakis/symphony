@@ -57,6 +57,11 @@ from symphony_linear.webui.editor import (
 )
 from symphony_linear.webui.files import serve_file
 from symphony_linear.webui.http_types import Route
+from symphony_linear.webui.repos import (
+    post_add_repo,
+    post_remove_repo,
+    repos_page,
+)
 from symphony_linear.webui.static import serve_static
 from symphony_linear.webui.ticket import post_reply, post_state, ticket_page
 from symphony_linear.webui.views import archive, home
@@ -83,6 +88,9 @@ _FILES = re.compile(r"^/files/(?P<ticket_id>[^/]+)/(?P<name>[^/]+)$")
 ROUTES: tuple[Route, ...] = (
     Route("GET", re.compile(r"^/$"), home),
     Route("GET", re.compile(r"^/archive$"), archive),
+    Route("GET", re.compile(r"^/repos$"), repos_page),
+    Route("POST", re.compile(r"^/repos$"), post_add_repo),
+    Route("POST", re.compile(r"^/repos/remove$"), post_remove_repo),
     Route("GET", re.compile(r"^/new$"), new_page),
     Route("GET", _TICKET_EDIT, edit_page),
     Route("GET", re.compile(r"^/tickets/(?P<ticket_id>[^/]+)$"), ticket_page),

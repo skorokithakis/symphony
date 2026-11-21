@@ -62,26 +62,30 @@
     <div class="editor-side">
       <div class="field">
         <label for="repo">Repository</label>
-        <input class="input mono" id="repo" name="repo" type="text" list="repos" placeholder="owner/name" value="{{ page.repo }}"{% if page.errors.get("repo") %} aria-invalid="true" aria-describedby="repo-err"{% endif %}>
-        {% if page.recent_repos %}
-        <datalist id="repos">
-          {% for repo in page.recent_repos %}<option value="{{ repo.value }}"></option>{% endfor %}
-        </datalist>
-        {% endif %}
+        <select class="input mono" id="repo" name="repo"{% if page.errors.get("repo") %} aria-invalid="true" aria-describedby="repo-err"{% endif %}>
+          {% for option in page.repos %}<option value="{{ option.url }}"{% if option.url == page.repo %} selected{% endif %}>{{ option.name }}</option>{% endfor %}
+          {% if page.repo_extra %}<option value="{{ page.repo_extra.url }}" selected>{{ page.repo_extra.name }}</option>{% endif %}
+          <option value=""{% if not page.repo or page.repo_new_url %} selected{% endif %}>Add a repository…</option>
+        </select>
         {% if page.errors.get("repo") %}
         <p class="field-err" id="repo-err"><svg class="ic ic--sm" viewBox="0 0 20 20" aria-hidden="true"><path d="M10 3l8 14H2zM10 8.5v4M10 15v.2"></path></svg>{{ page.errors["repo"] }}</p>
         {% endif %}
-        {% if page.recent_repos %}
-        <div class="recent"><span>Recent</span>{% for repo in page.recent_repos %}<button class="chip" type="button" data-repo-chip="{{ repo.value }}" title="{{ repo.value }}">{{ repo.label }}</button>{% endfor %}</div>
-        {% endif %}
+        <div class="repo-new" id="repo-new-fields">
+          <label for="repo_new_url">New repository URL</label>
+          <input class="input mono" id="repo_new_url" name="repo_new_url" type="text" placeholder="owner/name or a clone URL" value="{{ page.repo_new_url }}">
+          <label for="repo_new_name">Name <span class="field-note">optional</span></label>
+          <input class="input" id="repo_new_name" name="repo_new_name" type="text" placeholder="owner/name" value="{{ page.repo_new_name }}">
+          <p class="field-note">Starting the ticket adds it to the list. <a href="/repos">Manage repositories</a>.</p>
+        </div>
       </div>
 
       {% if page.models %}
       <div class="field">
-        <span class="label" id="model-label">Model</span>
-        <div class="model-chips" role="radiogroup" aria-labelledby="model-label">
-          {% for model in page.models %}<input class="sr" type="radio" name="model" id="model-{{ loop.index }}" value="{{ model.alias }}"{% if model.selected %} checked{% endif %}><label class="chip" for="model-{{ loop.index }}" aria-pressed="{{ 'true' if model.selected else 'false' }}">{{ model.alias }}</label>{% endfor %}
-        </div>
+        <label for="model">Model</label>
+        <select class="input" id="model" name="model">
+          <option value=""{% if not page.model %} selected{% endif %}>Default</option>
+          {% for alias in page.models %}<option value="{{ alias }}"{% if alias == page.model %} selected{% endif %}>{{ alias }}</option>{% endfor %}
+        </select>
       </div>
       {% endif %}
     </div>
@@ -99,6 +103,7 @@
   <div class="dock-links">
     <a class="dock-link" href="/">Tickets</a>
     <a class="dock-link" href="/archive">Archive</a>
+    <a class="dock-link" href="/repos">Repositories</a>
   </div>
 </nav>
 {% endblock %}

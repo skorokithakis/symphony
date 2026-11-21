@@ -117,7 +117,7 @@ def _get(port: int, path: str) -> tuple[int, str]:
 
 
 def _tickets(tmp_path: Path) -> list[Path]:
-    return sorted((tmp_path / "tickets").glob("*.json"))
+    return sorted((tmp_path / "tickets").glob("SYM-*.json"))
 
 
 def _created(tmp_path: Path) -> LocalTracker:
@@ -166,18 +166,23 @@ class TestNewPage:
         assert 'id="title"' not in text
         assert "You do not write a title. Symphony writes it from your text" in text
 
-    def test_model_chips_are_aliases_and_none_is_selected(self, tmp_path: Path) -> None:
-        with _server(tmp_path, models=_ALIASES) as (port, _tracker, _wake):
+    def test_model_select_offers_default_then_the_aliases_in_order(
+        self, tmp_path: Path
+    ) -> None:
+        aliases = {
+            "sonnet-4.5": "anthropic/claude-sonnet-4.5",
+            "opus": "anthropic/claude-opus-5",
+        }
+        with _server(tmp_path, models=aliases) as (port, _tracker, _wake):
             _status, text = _get(port, "/new")
 
-        assert 'name="model"' in text
-        assert 'value="sonnet-4.5"' in text
-        assert ">sonnet-4.5</label>" in text
-        assert 'aria-pressed="false"' in text
+        assert '<select class="input" id="model" name="model">' in text
+        assert '<option value="" selected>Default</option>' in text
+        # Configured aliases follow Default, in configuration order.
+        assert text.index(">Default</option>") < text.index(">sonnet-4.5</option>")
+        assert text.index(">sonnet-4.5</option>") < text.index(">opus</option>")
         assert "checked" not in text
-        # The mock's select and its "Default (name)" option are rejected.
-        assert "<select" not in text
-        assert "Default (" not in text
+        assert "aria-pressed" not in text
 
     def test_no_aliases_means_no_model_control(self, tmp_path: Path) -> None:
         with _server(tmp_path) as (port, _tracker, _wake):
@@ -186,9 +191,24 @@ class TestNewPage:
         assert 'name="model"' not in text
         assert "Model" not in text
 
-    def test_recent_repos_are_most_recent_first_and_deduplicated(
-        self, tmp_path: Path
-    ) -> None:
+    def test_an_empty_model_alias_is_never_an_option(self, tmp_path: Path) -> None:
+        models = {"": "anthropic/empty", "opus": "anthropic/claude-opus-5"}
+        with _server(tmp_path, models=models) as (port, tracker, _wake):
+            _status, text = _get(port, "/new")
+            ticket = tracker.store.create_draft(description="x", model="opus")
+            _post(
+                port,
+                f"/tickets/{ticket.id}/edit",
+                {"description": "x", "model": ""},
+            )
+            stored = tracker.store.get(ticket.id)
+
+        assert '<option value=""></option>' not in text
+        assert text.count(">Default</option>") == 1
+        assert stored is not None
+        assert stored.model is None
+
+    def test_repository_select_lists_names_and_add_last(self, tmp_path: Path) -> None:
         _write_ticket(
             tmp_path,
             "SYM-1",
@@ -214,13 +234,21 @@ class TestNewPage:
         with _server(tmp_path) as (port, _tracker, _wake):
             _status, text = _get(port, "/new")
 
-        assert text.index('data-repo-chip="new/repo"') < text.index(
-            'data-repo-chip="old/repo"'
+        # Seeded from the tickets, newest first, de-duplicated by URL.
+        assert text.index('<option value="new/repo" selected>new/repo</option>') < (
+            text.index('<option value="old/repo">old/repo</option>')
         )
-        assert text.count('data-repo-chip="old/repo"') == 1
-        assert text.count("<option ") == 2
+        assert text.count('value="old/repo"') == 1
+        # The "Add a repository…" option is last, and the fields work without JS.
+        assert text.index(">Add a repository…</option>") > text.index(
+            'value="old/repo"'
+        )
+        assert '<option value=""' in text
+        assert 'name="repo_new_url"' in text
+        assert 'name="repo_new_name"' in text
+        assert 'href="/repos"' in text
 
-    def test_a_full_url_is_the_chip_value_and_a_short_label(
+    def test_a_full_url_is_the_option_value_and_a_short_name(
         self, tmp_path: Path
     ) -> None:
         url = "https://gitlab.example.com/team/project.git"
@@ -229,17 +257,38 @@ class TestNewPage:
         with _server(tmp_path) as (port, _tracker, _wake):
             _status, text = _get(port, "/new")
 
-        assert f'data-repo-chip="{url}"' in text
-        assert f'<option value="{url}">' in text
-        assert ">team/project</button>" in text
-        assert ">team/project<" in text
+        assert f'<option value="{url}" selected>team/project</option>' in text
 
-    def test_no_recent_block_without_repositories(self, tmp_path: Path) -> None:
+    def test_new_ticket_falls_back_to_the_first_repo_still_in_the_list(
+        self, tmp_path: Path
+    ) -> None:
+        _write_ticket(
+            tmp_path,
+            "SYM-1",
+            state=STATE_DRAFT,
+            repo="old/repo",
+            updated_at="2026-11-19T10:00:00+00:00",
+        )
+        _write_ticket(
+            tmp_path,
+            "SYM-2",
+            state=STATE_DRAFT,
+            repo="new/repo",
+            updated_at="2026-11-21T10:00:00+00:00",
+        )
+
+        with _server(tmp_path) as (port, tracker, _wake):
+            tracker.store.remove_repo("new/repo")
+            _status, text = _get(port, "/new")
+
+        assert '<option value="old/repo" selected>old/repo</option>' in text
+        assert 'value="new/repo"' not in text
+
+    def test_no_repositories_selects_add_a_repository(self, tmp_path: Path) -> None:
         with _server(tmp_path) as (port, _tracker, _wake):
             _status, text = _get(port, "/new")
 
-        assert 'id="repos"' not in text
-        assert 'class="recent"' not in text
+        assert '<option value="" selected>Add a repository…</option>' in text
 
 
 # ---------------------------------------------------------------------------
@@ -261,12 +310,35 @@ class TestEditPage:
         assert status == 200
         assert 'value="A title"' in text
         assert "Body **text**" in text
-        assert 'value="owner/name"' in text
-        assert 'value="sonnet-4.5" checked' in text
-        assert 'aria-pressed="true"' in text
+        assert '<option value="owner/name" selected>owner/name</option>' in text
+        assert '<option value="sonnet-4.5" selected>sonnet-4.5</option>' in text
+        assert '<option value="" selected>' not in text
         assert f'action="/tickets/{ticket.id}/edit"' in text
         assert f'formaction="/tickets/{ticket.id}/start"' in text
         assert 'id="editor-tid">' + ticket.id + "</span>" in text
+
+    def test_a_stored_model_that_is_no_longer_configured_reads_as_default(
+        self, tmp_path: Path
+    ) -> None:
+        with _server(tmp_path, models={"opus": "anthropic/claude-opus-5"}) as (
+            port,
+            tracker,
+            _wake,
+        ):
+            ticket = tracker.store.create_draft(description="x", model="sonnet-4.5")
+            _status, text = _get(port, f"/tickets/{ticket.id}/edit")
+
+        assert '<option value="" selected>Default</option>' in text
+        assert '<option value="sonnet-4.5"' not in text
+
+    def test_a_draft_repo_not_in_the_list_is_an_extra_option(
+        self, tmp_path: Path
+    ) -> None:
+        with _server(tmp_path) as (port, tracker, _wake):
+            ticket = tracker.store.create_draft(description="x", repo="gone/repo")
+            _status, text = _get(port, f"/tickets/{ticket.id}/edit")
+
+        assert '<option value="gone/repo" selected>gone/repo</option>' in text
 
     def test_a_started_ticket_redirects_to_its_page(self, tmp_path: Path) -> None:
         with _server(tmp_path) as (port, tracker, _wake):
@@ -390,6 +462,84 @@ class TestSave:
         assert stored is not None
         assert stored.model is None
 
+    def test_default_saves_a_stored_model_back_to_none(self, tmp_path: Path) -> None:
+        with _server(tmp_path, models=_ALIASES) as (port, tracker, _wake):
+            ticket = tracker.store.create_draft(description="x", model="sonnet-4.5")
+            _post(
+                port,
+                f"/tickets/{ticket.id}/edit",
+                {"description": "x", "model": ""},
+            )
+            stored = tracker.store.get(ticket.id)
+
+        assert stored is not None
+        assert stored.model is None
+
+    def test_saving_a_new_repo_url_only_stores_it_on_the_draft(
+        self, tmp_path: Path
+    ) -> None:
+        with _server(tmp_path) as (port, tracker, _wake):
+            ticket = tracker.store.create_draft(description="x", repo="old/repo")
+            _post(
+                port,
+                f"/tickets/{ticket.id}/edit",
+                {
+                    "description": "x",
+                    "repo": "old/repo",
+                    "repo_new_url": "  new/repo  ",
+                    "repo_new_name": "  A name  ",
+                },
+            )
+            stored = tracker.store.get(ticket.id)
+            repos = tracker.store.list_repos()
+
+        assert stored is not None
+        assert stored.repo == "new/repo"
+        # Save and autosave must not fill the list with typed URLs; Start does.
+        assert repos == []
+
+    def test_saving_a_new_url_without_a_name_stores_only_the_url(
+        self, tmp_path: Path
+    ) -> None:
+        url = "https://example.com/team/project.git"
+        with _server(tmp_path) as (port, tracker, _wake):
+            ticket = tracker.store.create_draft(description="x")
+            _post(
+                port,
+                f"/tickets/{ticket.id}/edit",
+                {
+                    "description": "x",
+                    "repo": "",
+                    "repo_new_url": url,
+                    "repo_new_name": " ",
+                },
+            )
+            stored = tracker.store.get(ticket.id)
+            repos = tracker.store.list_repos()
+
+        assert stored is not None
+        assert stored.repo == url
+        assert repos == []
+
+    def test_starting_the_same_new_url_twice_does_not_duplicate_it(
+        self, tmp_path: Path
+    ) -> None:
+        with _server(tmp_path) as (port, tracker, _wake):
+            for description in ("first", "second"):
+                _post(
+                    port,
+                    "/new/start",
+                    {
+                        "title": "A title",
+                        "description": description,
+                        "repo": "",
+                        "repo_new_url": "owner/name",
+                    },
+                )
+            repos = tracker.store.list_repos()
+
+        assert [entry.url for entry in repos] == ["owner/name"]
+
     def test_variant_a_save_preserves_a_stored_title(self, tmp_path: Path) -> None:
         # With an API key the title input is absent, so the form cannot carry
         # one.  A title stored earlier (another config, or a later automatic
@@ -509,6 +659,85 @@ class TestStart:
         assert headers["Location"] == f"/tickets/{stored[0].id}"
         assert stored[0].state == STATE_IN_PROGRESS
         assert stored[0].title == "A title"
+        wake.assert_called_once()
+
+    def test_invalid_start_preserves_the_inline_repository_fields(
+        self, tmp_path: Path
+    ) -> None:
+        fields = {
+            "title": "A title",
+            "description": "",
+            "repo": "",
+            "repo_new_url": "owner/new",
+            "repo_new_name": "Widgets",
+        }
+        with _server(tmp_path) as (port, tracker, _wake):
+            status, _headers, body = _post(port, "/new/start", fields)
+            text = body.decode()
+            repos_after_error = tracker.store.list_repos()
+
+            # Fixing the only error and starting again registers the name.
+            fields["description"] = "Body"
+            start_status, _h, _b = _post(port, "/new/start", fields)
+            repos = tracker.store.list_repos()
+
+        assert status == 400
+        assert '<option value="" selected>Add a repository…</option>' in text
+        assert 'value="owner/new"' in text
+        assert 'value="Widgets"' in text
+        assert repos_after_error == []
+        assert start_status == 303
+        assert [(entry.url, entry.name) for entry in repos] == [
+            ("owner/new", "Widgets")
+        ]
+
+    def test_a_rejected_start_leaves_the_repository_list_unchanged(
+        self, tmp_path: Path
+    ) -> None:
+        with _server(tmp_path) as (port, tracker, _wake):
+            ticket = tracker.store.create_draft(description="Body")
+            with mock.patch.object(
+                tracker.store, "start_draft", side_effect=ValueError("started")
+            ):
+                status, _headers, _body = _post(
+                    port,
+                    f"/tickets/{ticket.id}/start",
+                    {
+                        "title": "A title",
+                        "description": "Body",
+                        "repo": "",
+                        "repo_new_url": "owner/new",
+                        "repo_new_name": "Widgets",
+                    },
+                )
+            repos = tracker.store.list_repos()
+
+        assert status == 303
+        assert repos == []
+
+    def test_start_adds_the_new_repository_and_stores_it(self, tmp_path: Path) -> None:
+        with _server(tmp_path) as (port, _tracker, wake):
+            status, _headers, _body = _post(
+                port,
+                "/new/start",
+                {
+                    "title": "A title",
+                    "description": "Some text",
+                    "repo": "",
+                    "repo_new_url": "https://example.com/team/project.git",
+                },
+            )
+
+        tracker = _created(tmp_path)
+        stored = tracker.store.list_tickets()
+        repos = tracker.store.list_repos()
+        assert status == 303
+        assert [(entry.url, entry.name) for entry in repos] == [
+            ("https://example.com/team/project.git", "team/project")
+        ]
+        assert [ticket.repo for ticket in stored] == [
+            "https://example.com/team/project.git"
+        ]
         wake.assert_called_once()
 
     def test_missing_fields_are_rendered_as_field_errors_without_creating(
@@ -739,7 +968,7 @@ class TestDiscard:
 # ---------------------------------------------------------------------------
 
 
-def test_stylesheet_marks_the_selected_model_chip_and_hides_a_closed_dialog(
+def test_stylesheet_hides_a_closed_dialog_and_has_no_model_chip_rules(
     tmp_path: Path,
 ) -> None:
     with _server(tmp_path) as (port, _tracker, _wake):
@@ -751,4 +980,5 @@ def test_stylesheet_marks_the_selected_model_chip_and_hides_a_closed_dialog(
     # Section 12 gives .confirm a display value, which would otherwise override
     # the browser's dialog:not([open]) rule.
     assert "dialog.confirm:not([open]) { display: none; }" in text
-    assert ".model-chips input:checked + .chip" in text
+    # The model control is a native select now, so the chip rules are gone.
+    assert ".model-chips" not in text

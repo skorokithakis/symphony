@@ -728,16 +728,51 @@ class TestEditorApi:
         assert payload["redirect"] == "/"
         assert remaining == []
 
-    def test_at_most_five_recent_repos_are_offered(self, tmp_path: Path) -> None:
+    def test_autosave_stores_a_new_repo_url_without_adding_it(
+        self, tmp_path: Path
+    ) -> None:
         with _server(tmp_path) as (port, tracker, _state, _wake):
-            for index in range(1, 7):
-                tracker.store.create_draft(description="x", repo=f"owner/repo{index}")
+            status, payload = _post_json(
+                port,
+                "/api/new",
+                {
+                    "description": "Body",
+                    "repo": "owner/new",
+                    "repo_new_url": "owner/new",
+                    "repo_new_name": "Name",
+                },
+            )
+            stored = tracker.store.get("SYM-1")
+            repos = tracker.store.list_repos()
 
-            text = _request(port, "GET", "/new")[2].decode()
+        assert status == 200
+        assert payload["id"] == "SYM-1"
+        assert stored is not None
+        assert stored.repo == "owner/new"
+        assert repos == []
 
-        assert text.count("data-repo-chip=") == 5
-        assert 'data-repo-chip="owner/repo6"' in text
-        assert 'data-repo-chip="owner/repo1"' not in text
+    def test_api_start_adds_the_new_repository(self, tmp_path: Path) -> None:
+        with _server(tmp_path) as (port, tracker, _state, _wake):
+            status, _payload = _post_json(
+                port,
+                "/api/new/start",
+                {
+                    "title": "Title",
+                    "description": "Body",
+                    "repo": "",
+                    "repo_new_url": "https://example.com/team/project.git",
+                },
+            )
+            stored = tracker.store.list_tickets()
+            repos = tracker.store.list_repos()
+
+        assert status == 200
+        assert [ticket.repo for ticket in stored] == [
+            "https://example.com/team/project.git"
+        ]
+        assert [(entry.url, entry.name) for entry in repos] == [
+            ("https://example.com/team/project.git", "team/project")
+        ]
 
 
 # ---------------------------------------------------------------------------

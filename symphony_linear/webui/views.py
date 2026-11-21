@@ -10,7 +10,6 @@ import hashlib
 import json
 from dataclasses import asdict, dataclass
 from datetime import datetime, timezone
-from urllib.parse import urlsplit
 
 from symphony_linear.local_tracker import (
     STATE_DONE,
@@ -21,6 +20,7 @@ from symphony_linear.local_tracker import (
     LocalComment,
     LocalTicket,
     display_title as _display_title,
+    repo_short_name,
 )
 from symphony_linear.state import TicketState, TicketStatus
 from symphony_linear.webui.http_types import Request, Response
@@ -134,39 +134,12 @@ class ArchiveList:
 
 
 def short_repo(repo: str) -> str:
-    """Derive the ``owner/name`` display form from a stored repository value.
+    """The ``owner/name`` display form, or "No repository" for an empty value.
 
-    Accepts the store's ``owner/name`` shorthand, HTTPS/SSH URLs and
-    ``git@host:owner/name`` scp-style syntax.  Credentials embedded in a URL
-    are never shown.  An empty value reads as "No repository".
+    The derivation lives in the store module because the managed repository
+    list seeds its names from it; this is only the page-facing label.
     """
-    value = repo.strip()
-    if not value:
-        return "No repository"
-    if value.endswith(".git"):
-        value = value[: -len(".git")]
-
-    if "://" in value:
-        try:
-            path = urlsplit(value).path
-        except ValueError:
-            # Malformed URL (for example an unclosed IPv6 bracket).  Render
-            # the raw value: Jinja autoescapes it, and a page must never fail
-            # because a ticket has a bad repository string.
-            return value
-    elif value.startswith("git@") and ":" in value:
-        path = value.split(":", 1)[1]
-    else:
-        path = value
-
-    parts = [part for part in path.strip("/").split("/") if part]
-    if not parts:
-        return "No repository"
-    if parts[-1].endswith(".git"):
-        parts[-1] = parts[-1][: -len(".git")]
-    if len(parts) == 1:
-        return parts[0]
-    return f"{parts[-2]}/{parts[-1]}"
+    return repo_short_name(repo) or "No repository"
 
 
 def display_title(ticket: LocalTicket) -> str:

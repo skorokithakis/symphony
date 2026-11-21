@@ -668,13 +668,19 @@ textarea.input--big { flex: 1 0 auto; min-height: 13rem; field-sizing: content; 
 .field-err { display: flex; align-items: center; gap: 6px; font-size: var(--t-sm); font-weight: 600; color: var(--danger); }
 .field-tools { display: flex; flex-wrap: wrap; align-items: center; justify-content: space-between; gap: 0 var(--s2); }
 .field-tools .btn { margin-left: -8px; }
-.recent { display: flex; flex-wrap: wrap; align-items: center; gap: var(--s2); font: 400 var(--t-xs)/1 var(--font-mono); color: var(--ink-2); }
-.chip {
-  min-height: 36px; padding: 0 10px;
-  border: 1px solid var(--ink-3); border-radius: var(--r2); background: transparent;
-  font: 400 var(--t-xs)/1 var(--font-mono); color: var(--ink); cursor: pointer;
+.repo-new { display: flex; flex-direction: column; gap: 6px; }
+.repo-list { display: flex; flex-direction: column; }
+.repo-row {
+  display: grid; grid-template-columns: minmax(0, 1fr) auto;
+  grid-template-areas: "name remove" "url remove";
+  column-gap: var(--s3); align-items: center;
+  padding: var(--s3) 0; border-bottom: 1px solid var(--rule);
 }
-.chip:hover { background: var(--sunken); }
+.repo-name { grid-area: name; font-weight: 600; line-height: 1.35; overflow-wrap: anywhere; }
+.repo-url { grid-area: url; font-size: var(--t-xs); color: var(--ink-2); overflow-wrap: anywhere; }
+.repo-row form { grid-area: remove; }
+.repo-form { display: flex; flex-direction: column; gap: var(--s4); padding: var(--s4) 0; }
+.repo-form > div:last-child { display: flex; }
 .form-actions {
   position: sticky; bottom: 0; z-index: 2;
   display: flex; align-items: center; gap: var(--s3);
@@ -748,19 +754,7 @@ dialog.confirm::backdrop { background: var(--scrim); }
   src: url("fonts/atkinson-hyperlegible-next.woff2") format('woff2');
 }
 
-/* ---------- Additions to the design ----------
-
-   The design has no selected state for a chip, but the editor's model control
-   is a group of radio inputs styled as chips (it has to work without
-   JavaScript).  Selecting one fills it like a primary button. */
-
-.model-chips { display: flex; flex-wrap: wrap; gap: var(--s2); }
-.model-chips input:checked + .chip {
-  background: var(--ink); color: var(--paper); border-color: var(--ink);
-}
-.model-chips input:focus-visible + .chip {
-  outline: 2px solid var(--ink); outline-offset: 2px;
-}
+/* ---------- Additions to the design ---------- */
 
 /* Section 12 gives .confirm a display value, which overrides the browser's
    built-in `dialog:not([open]) { display: none }`.  Restore it so a closed
@@ -773,7 +767,7 @@ dialog.confirm:not([open]) { display: none; }
    design's own `display` rules would win over the browser's `[hidden]` rule,
    so restore it for them. */
 
-.conn[hidden], .saved[hidden], .jump[hidden], .alert[hidden] { display: none; }
+.conn[hidden], .saved[hidden], .jump[hidden], .alert[hidden], #repo-new-fields[hidden] { display: none; }
 
 /* The saved indicator is quiet until it has something to say.  Its two icons
    are toggled rather than swapped in the script. */

@@ -247,6 +247,8 @@ def _form(payload: dict[str, Any]) -> dict[str, list[str]]:
         "title": [_text(payload, "title")],
         "description": [_text(payload, "description")],
         "repo": [_text(payload, "repo")],
+        "repo_new_url": [_text(payload, "repo_new_url")],
+        "repo_new_name": [_text(payload, "repo_new_name")],
         "model": [_text(payload, "model")],
     }
 
@@ -331,7 +333,8 @@ def api_start_new(request: Request) -> Response:
     payload = _body(request)
     if payload is None:
         return _error("Bad request.", status=400)
-    values = editor.editor_values(request, _form(payload), None)
+    form = _form(payload)
+    values = editor.editor_values(request, form, None)
     title, description, repo, model = values
     errors = editor.validation_errors(request, title, description, repo)
     if errors:
@@ -342,6 +345,7 @@ def api_start_new(request: Request) -> Response:
             description=description,
             repo=repo,
             model=model,
+            new_repo=editor.new_repo_from_form(form),
         )
     except TrackerNotFoundError:
         # A Start that races the Draft's deletion is a 404, not a 500.
@@ -361,7 +365,8 @@ def api_start_draft(request: Request) -> Response:
     payload = _body(request)
     if payload is None:
         return _error("Bad request.", status=400)
-    values = editor.editor_values(request, _form(payload), ticket)
+    form = _form(payload)
+    values = editor.editor_values(request, form, ticket)
     title, description, repo, model = values
     errors = editor.validation_errors(request, title, description, repo)
     if errors:
@@ -373,6 +378,7 @@ def api_start_draft(request: Request) -> Response:
             description=description,
             repo=repo,
             model=model,
+            new_repo=editor.new_repo_from_form(form),
         )
     except TrackerNotFoundError:
         # A Start that races the Draft's deletion is a 404, not a 500.

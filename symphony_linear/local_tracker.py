@@ -25,6 +25,7 @@ from dataclasses import dataclass
 from datetime import datetime, timezone
 from pathlib import Path
 from typing import Any
+from urllib.parse import urlsplit
 
 from pydantic import BaseModel, ConfigDict, Field, field_validator
 
@@ -86,6 +87,11 @@ _TICKET_ID_RE = re.compile(r"^SYM-(\d+)$")
 _REPO_SHORTHAND_RE = re.compile(r"^[A-Za-z0-9_.-]+/[A-Za-z0-9_.-]+$")
 
 _COUNTER_FILE = "counter.json"
+
+#: The managed repository list: ``{"repos": [{"url": ..., "name": ...}]}``.
+#: It lives beside the ticket files so the sandbox's workspace-root masking
+#: covers it, and it is seeded once from the tickets that exist at startup.
+_REPOS_FILE = "repos.json"
 
 #: How many accepted Send idempotency tokens a ticket keeps.  A token is only
 #: useful while its request may still be retried, so an old one can go.
@@ -271,6 +277,54 @@ def _ticket_number(ticket_id: str) -> int:
     return int(match.group(1)) if match else 0
 
 
+def _parse_timestamp(value: str) -> datetime:
+    """Parse a stored ISO timestamp, treating anything unparseable as oldest."""
+    try:
+        parsed = datetime.fromisoformat(value)
+    except (TypeError, ValueError):
+        return datetime.min.replace(tzinfo=timezone.utc)
+    if parsed.tzinfo is None:
+        parsed = parsed.replace(tzinfo=timezone.utc)
+    return parsed
+
+
+def repo_short_name(url: str) -> str:
+    """Derive the ``owner/name`` display name from a repository value.
+
+    Accepts the store's ``owner/name`` shorthand, HTTPS/SSH URLs and
+    ``git@host:owner/name`` scp-style syntax.  Credentials embedded in a URL
+    are never shown.  Returns an empty string for an empty value or one with
+    no path part; the web layer turns that into its "No repository" label.
+    """
+    value = url.strip()
+    if not value:
+        return ""
+    if value.endswith(".git"):
+        value = value[: -len(".git")]
+
+    if "://" in value:
+        try:
+            path = urlsplit(value).path
+        except ValueError:
+            # Malformed URL (for example an unclosed IPv6 bracket).  Render
+            # the raw value: Jinja autoescapes it, and a page must never fail
+            # because a ticket has a bad repository string.
+            return value
+    elif value.startswith("git@") and ":" in value:
+        path = value.split(":", 1)[1]
+    else:
+        path = value
+
+    parts = [part for part in path.strip("/").split("/") if part]
+    if not parts:
+        return ""
+    if parts[-1].endswith(".git"):
+        parts[-1] = parts[-1][: -len(".git")]
+    if len(parts) == 1:
+        return parts[0]
+    return f"{parts[-2]}/{parts[-1]}"
+
+
 def _write_json(path: Path, payload: dict[str, Any]) -> None:
     """Write *payload* to *path* atomically, in the style of ``StateManager``."""
     path.parent.mkdir(parents=True, exist_ok=True)
@@ -315,6 +369,18 @@ class LocalFile(BaseModel):
         if _STORED_NAME_RE.fullmatch(v) is None or v in (".", ".."):
             raise ValueError(f"Invalid stored file name {v!r}")
         return v
+
+
+class RepoEntry(BaseModel):
+    """One entry in the managed repository list.
+
+    ``url`` is the clone URL stored verbatim on the ticket; ``name`` is the
+    label the editor shows.  URLs are unique and compared after stripping
+    whitespace.
+    """
+
+    url: str
+    name: str = ""
 
 
 class LocalComment(BaseModel):
@@ -459,6 +525,7 @@ class LocalTicketStore:
         self._dir = directory
         self._lock = threading.Lock()
         self._tickets: dict[str, LocalTicket] = {}
+        self._repos: list[RepoEntry] = []
         self._next_id = 1
         self._load()
 
@@ -476,6 +543,52 @@ class LocalTicketStore:
         """Return copies of every ticket, lowest id first."""
         with self._lock:
             return [t.model_copy(deep=True) for t in self._sorted_tickets()]
+
+    # ------------------------------------------------------------------
+    # Managed repository list
+    # ------------------------------------------------------------------
+
+    def list_repos(self) -> list[RepoEntry]:
+        """Return copies of the managed repositories, in list order."""
+        with self._lock:
+            return [entry.model_copy(deep=True) for entry in self._repos]
+
+    def add_repo(self, url: str, name: str = "") -> RepoEntry:
+        """Add *url* to the list unless it is already there.
+
+        A duplicate URL is a no-op, keeping the name it was first added with.
+        An empty *name* is derived from the URL as ``owner/name``.
+        """
+        with self._lock:
+            return self._add_repo_locked(url, name)
+
+    def _add_repo_locked(self, url: str, name: str = "") -> RepoEntry:
+        """Add one repository; the caller holds the store lock."""
+        url = url.strip()
+        if not url:
+            raise ValueError("A repository URL is required")
+        for entry in self._repos:
+            if entry.url == url:
+                return entry.model_copy(deep=True)
+        entry = RepoEntry(url=url, name=name.strip() or repo_short_name(url) or url)
+        entries = [*self._repos, entry]
+        self._persist_repos(entries)
+        self._repos = entries
+        return entry.model_copy(deep=True)
+
+    def remove_repo(self, url: str) -> None:
+        """Remove *url* from the list; an unknown URL is a no-op.
+
+        Tickets are never touched: a ticket keeps the repository string it was
+        created with even after the list entry is gone.
+        """
+        url = url.strip()
+        with self._lock:
+            remaining = [entry for entry in self._repos if entry.url != url]
+            if len(remaining) == len(self._repos):
+                return
+            self._persist_repos(remaining)
+            self._repos = remaining
 
     # ------------------------------------------------------------------
     # Uploaded files
@@ -710,6 +823,7 @@ class LocalTicketStore:
         description: str = "",
         repo: str = "",
         model: str | None = None,
+        new_repo: tuple[str, str] | None = None,
     ) -> LocalTicket:
         """Create a ticket already in In Progress, in one locked write.
 
@@ -717,15 +831,25 @@ class LocalTicketStore:
         transition as one operation.  A new ticket has no earlier state to
         interleave with, but going through the same store path as
         :meth:`start_draft` keeps one definition of "started".
+
+        *new_repo* is an optional ``(url, name)`` inline repository to add to
+        the managed list under the same lock.  Only Start passes one, so a
+        Save can never fill the list with URLs typed along the way.  The
+        ticket is persisted first: a failed ticket write leaves the list
+        untouched, while a failed list write after a started ticket is
+        harmless.
         """
         with self._lock:
-            return self._create_ticket_locked(
+            ticket = self._create_ticket_locked(
                 title=title,
                 description=description,
                 repo=repo,
                 model=model,
                 state=STATE_IN_PROGRESS,
             )
+            if new_repo is not None:
+                self._add_repo_locked(*new_repo)
+            return ticket
 
     def _create_ticket_locked(
         self,
@@ -795,6 +919,7 @@ class LocalTicketStore:
         description: str,
         repo: str,
         model: str | None,
+        new_repo: tuple[str, str] | None = None,
     ) -> LocalTicket:
         """Commit a Draft's fields and move it to In Progress, atomically.
 
@@ -803,6 +928,12 @@ class LocalTicketStore:
         before (and be overwritten by these validated fields) or after (and be
         refused, because the ticket is no longer a Draft).  It can never land
         between the two and start a ticket with an emptied repository or text.
+
+        *new_repo* is an optional ``(url, name)`` inline repository, added to
+        the managed list under the same lock and only after the Draft-state
+        check, so a Start that loses its race must not change the list.  The
+        ticket write happens first too: if it fails, the list is untouched;
+        if the list write fails afterwards, the started ticket is harmless.
         """
         with self._lock:
             ticket = self._require(ticket_id)
@@ -825,6 +956,8 @@ class LocalTicketStore:
             )
             self._persist(started)
             self._tickets[ticket_id] = started
+            if new_repo is not None:
+                self._add_repo_locked(*new_repo)
             return started.model_copy(deep=True)
 
     def delete_draft(self, ticket_id: str) -> None:
@@ -1146,6 +1279,47 @@ class LocalTicketStore:
         highest_existing = max((_ticket_number(tid) for tid in tickets), default=0)
         self._tickets = tickets
         self._next_id = max(counter_next, highest_existing + 1)
+        self._load_repos()
+
+    def _load_repos(self) -> None:
+        """Load the managed repository list, seeding it on first startup.
+
+        Seeding is a write, so it happens here (store construction) and never
+        in a GET handler: once ``repos.json`` exists it is never reseeded, and
+        an empty list stays empty.
+        """
+        path = self._dir / _REPOS_FILE
+        if path.exists():
+            raw = json.loads(path.read_text())
+            entries = raw.get("repos", []) if isinstance(raw, dict) else []
+            self._repos = [RepoEntry.model_validate(entry) for entry in entries]
+            return
+
+        self._repos = self._seed_repos()
+        self._persist_repos(self._repos)
+
+    def _seed_repos(self) -> list[RepoEntry]:
+        """Build the initial list from the tickets' repositories, newest first."""
+        ordered = sorted(
+            self._tickets.values(),
+            key=lambda ticket: _parse_timestamp(ticket.updated_at),
+            reverse=True,
+        )
+        seen: set[str] = set()
+        entries: list[RepoEntry] = []
+        for ticket in ordered:
+            value = ticket.repo.strip()
+            if not value or value in seen:
+                continue
+            seen.add(value)
+            entries.append(RepoEntry(url=value, name=repo_short_name(value) or value))
+        return entries
+
+    def _persist_repos(self, entries: list[RepoEntry]) -> None:
+        _write_json(
+            self._dir / _REPOS_FILE,
+            {"repos": [entry.model_dump(mode="json") for entry in entries]},
+        )
 
     def _require(self, ticket_id: str) -> LocalTicket:
         ticket = self._tickets.get(ticket_id)

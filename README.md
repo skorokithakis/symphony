@@ -361,12 +361,29 @@ Progress; the page says so next to the disabled button and re-enables it when
 the turn finishes. In QA, sending resumes the agent, which pulls the ticket out
 of QA and stops the serve on the next tick.
 
+### Repositories
+
+The editor's Repository field is a dropdown of the repositories you have
+stored, managed from the **Repositories** page (`/repos`, also linked from the
+editor). Each entry has a name and a clone URL; the ticket stores the URL
+exactly as before, and the name is only what the dropdown shows. On a new
+ticket the dropdown starts at the repository of the most recent ticket that is
+still in the list, or at the first entry.
+
+To add one while writing a ticket, choose **Add a repository…** and type the
+URL (and optionally a name); Start adds it to the list. Saving or autosaving
+the Draft only stores the URL on the ticket, so the list is never filled with
+the partial URLs typed along the way; on reload the Draft shows its repository
+as an extra option. Removing an entry from `/repos` never changes tickets that
+already use it. The list is stored in `<workspace>/tickets/repos.json`, so the
+sandbox's workspace masking keeps it out of the agent's reach.
+
 ### Models
 
-The editor offers one chip per alias under the top-level `models:` map. What
-you pick is stored on the ticket and presented to the orchestrator as a
-`Model: <alias>` label, so the usual model resolution applies (see
-[Model override](#model-override)). Choosing nothing uses the agent's own
+The editor's Model dropdown lists the aliases under the top-level `models:`
+map. What you pick is stored on the ticket and presented to the orchestrator
+as a `Model: <alias>` label, so the usual model resolution applies (see
+[Model override](#model-override)). Choosing "Default" uses the agent's own
 default. The editor only edits Drafts, so the model cannot be changed after
 Start.
 

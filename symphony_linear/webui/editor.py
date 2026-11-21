@@ -16,9 +16,15 @@ The page is a plain HTML form, so it works without JavaScript:
   with the design's ``<dialog class="confirm">`` already open.  The dialog's
   own form carries ``confirm=1`` and is the request that deletes the Draft.
   With JavaScript, ``app.js`` opens the dialog in place instead of posting.
-* The model control is a group of radio inputs styled as chips, because it
-  has to work without JavaScript.  A selected alias is stored on the ticket;
-  no selection means the agent's default.
+* The repository control is a ``<select>`` over the managed repository list,
+  with an "Add a repository…" option that reveals two text fields.  Without
+  JavaScript both fields stay visible; either way a non-empty new URL wins
+  over the select.  Starting the ticket adds it to the managed list; saving
+  and autosave only store it on the Draft.  Any stored repository that is not
+  in the list is shown as an extra option, so it is never lost.
+* The model control is a native ``<select>``, so it works without JavaScript.
+  Its first option, Default, stores no model and means the agent's default;
+  the rest are the configured aliases in configuration order.
 
 The title field is shown only when ``webui.anthropic_api_key`` is unset, in
 which case Start requires a title (the design's variant B).  With a key, the
@@ -37,20 +43,19 @@ from urllib.parse import parse_qs
 from symphony_linear.local_tracker import (
     STATE_DRAFT,
     LocalTicket,
+    RepoEntry,
+    repo_short_name,
 )
 from symphony_linear.webui.files import FileChip, chips_for
 from symphony_linear.tracker import TrackerNotFoundError
 from symphony_linear.webui.http_types import Request, Response
 from symphony_linear.webui.templates import render
 from symphony_linear.webui.title import schedule_generation
-from symphony_linear.webui.views import needs_input_count, short_repo
+from symphony_linear.webui.views import needs_input_count
 
 #: The states the editor may save, start or discard.  Anything else redirects
 #: to the ticket page; a started ticket's description is fixed from then on.
 _EDITABLE_STATES = frozenset({STATE_DRAFT})
-
-#: How many Recent repository chips the editor offers.
-_MAX_RECENT_REPOS = 5
 
 #: The two title variants.  The mock's wording is copied verbatim.
 _TITLE_NOTE = "You do not write a title. Symphony writes it from your text after Start."
@@ -64,19 +69,11 @@ _EPOCH = datetime.min.replace(tzinfo=timezone.utc)
 
 
 @dataclass(frozen=True)
-class ModelChoice:
-    """One selectable model alias, named as it appears in ``models:``."""
+class RepoOption:
+    """One repository select option: the stored URL and its display name."""
 
-    alias: str
-    selected: bool
-
-
-@dataclass(frozen=True)
-class RecentRepo:
-    """One Recent chip: the stored value to fill in and its short label."""
-
-    value: str
-    label: str
+    url: str
+    name: str
 
 
 @dataclass(frozen=True)
@@ -88,8 +85,18 @@ class EditorPage:
     title: str
     description: str
     repo: str
-    models: tuple[ModelChoice, ...]
-    recent_repos: tuple[RecentRepo, ...]
+    #: The stored repository list, in list order.
+    repos: tuple[RepoOption, ...]
+    #: The current value when it is not in the list, so an old Draft keeps it.
+    repo_extra: RepoOption | None
+    #: A submitted inline repository, preserved when Start validation failed.
+    #: When set, the select shows "Add a repository…" instead of ``repo_extra``.
+    repo_new_url: str
+    repo_new_name: str
+    #: The selected model alias, or "" for Default (no model stored).
+    model: str
+    #: The selectable aliases, in ``models:`` configuration order.
+    models: tuple[str, ...]
     has_title_field: bool
     save_action: str
     start_action: str
@@ -127,29 +134,24 @@ def _sort_key(value: str) -> datetime:
     return _parse_datetime(value) or _EPOCH
 
 
-def recent_repos(
-    tickets: list[LocalTicket], limit: int = _MAX_RECENT_REPOS
-) -> tuple[RecentRepo, ...]:
-    """Return the distinct non-empty repositories, most recently used first.
+def default_repo(tickets: list[LocalTicket], repos: list[RepoEntry]) -> str:
+    """Pick the repository a new ticket should start with.
 
-    Ties keep the store's id order.  The value is stored verbatim, because a
-    full clone URL must not silently become an ``owner/name`` GitHub
-    shorthand; only the chip's label is shortened.
+    The most recent ticket's repository is preferred, but only while it is
+    still in the managed list; otherwise the first list entry is used, and an
+    empty list leaves the select on "Add a repository…".
     """
+    by_url = {entry.url for entry in repos}
     ordered = sorted(tickets, key=lambda ticket: _sort_key(ticket.updated_at))
-    ordered.reverse()
-
-    seen: set[str] = set()
-    repos: list[RecentRepo] = []
-    for ticket in ordered:
+    for ticket in reversed(ordered):
         value = ticket.repo.strip()
-        if not value or value in seen:
-            continue
-        seen.add(value)
-        repos.append(RecentRepo(value=value, label=short_repo(value)))
-        if len(repos) >= limit:
-            break
-    return tuple(repos)
+        if value and value in by_url:
+            return value
+    return repos[0].url if repos else ""
+
+
+def _repo_options(repos: list[RepoEntry]) -> tuple[RepoOption, ...]:
+    return tuple(RepoOption(url=entry.url, name=entry.name) for entry in repos)
 
 
 def _title_editable(request: Request) -> bool:
@@ -158,13 +160,6 @@ def _title_editable(request: Request) -> bool:
     if webui is None:  # WebUIServer cannot be built without the block.
         return True
     return not (webui.anthropic_api_key or "").strip()
-
-
-def _model_choices(request: Request, selected: str | None) -> tuple[ModelChoice, ...]:
-    return tuple(
-        ModelChoice(alias=alias, selected=alias == selected)
-        for alias in request.app.config.models
-    )
 
 
 def action_paths(ticket_id: str | None) -> tuple[str, str, str, str]:
@@ -191,16 +186,31 @@ def _page(
     discard_open: bool = False,
     saved_at: str | None = None,
     files: tuple[FileChip, ...] = (),
+    repo_new_url: str = "",
+    repo_new_name: str = "",
 ) -> EditorPage:
     save_action, start_action, discard_action, keep_action = action_paths(ticket_id)
+    # An empty alias is not a selectable choice: "" is the Default option.
+    aliases = tuple(alias for alias in request.app.config.models if alias)
+    repos = _repo_options(request.app.store.list_repos())
+    repo_extra = (
+        RepoOption(url=repo, name=repo_short_name(repo) or repo)
+        if repo and not repo_new_url and all(option.url != repo for option in repos)
+        else None
+    )
     return EditorPage(
         ticket_id=ticket_id,
         heading="New ticket",
         title=title,
         description=description,
         repo=repo,
-        models=_model_choices(request, model),
-        recent_repos=recent_repos(request.app.store.list_tickets()),
+        repos=repos,
+        repo_extra=repo_extra,
+        repo_new_url=repo_new_url,
+        repo_new_name=repo_new_name,
+        # A stored alias the configuration no longer defines reads as Default.
+        model=model if model is not None and model in aliases else "",
+        models=aliases,
         has_title_field=_title_editable(request),
         save_action=save_action,
         start_action=start_action,
@@ -223,6 +233,8 @@ def _page_for_ticket(
     errors: dict[str, str] | None = None,
     discard_open: bool = False,
     values: tuple[str, str, str, str | None] | None = None,
+    repo_new_url: str = "",
+    repo_new_name: str = "",
 ) -> EditorPage:
     title, description, repo, model = (
         values if values is not None else _ticket_values(ticket)
@@ -239,6 +251,8 @@ def _page_for_ticket(
         # An autosaved Draft's last write is its "Saved" time on page open.
         saved_at=ticket.updated_at if ticket.state == STATE_DRAFT else None,
         files=chips_for(ticket.id, ticket.files),
+        repo_new_url=repo_new_url,
+        repo_new_name=repo_new_name,
     )
 
 
@@ -268,6 +282,28 @@ def _field(form: dict[str, list[str]], name: str) -> str:
     return values[0] if values else ""
 
 
+def new_repo_from_form(form: dict[str, list[str]]) -> tuple[str, str] | None:
+    """Return the inline new repository's ``(url, name)``, if a URL was typed."""
+    url = _field(form, "repo_new_url").strip()
+    if not url:
+        return None
+    return url, _field(form, "repo_new_name").strip()
+
+
+def _selected_repo(form: dict[str, list[str]]) -> str:
+    """Resolve the repository from the select and the inline add fields.
+
+    A non-empty ``repo_new_url`` wins over the select.  The select's
+    "Add a repository…" option has an empty value, so it resolves to an empty
+    string until a new URL is typed.  This stores the value on the ticket
+    only; the list write happens inside the store's Start methods.
+    """
+    new_repo = new_repo_from_form(form)
+    if new_repo is not None:
+        return new_repo[0]
+    return _field(form, "repo").strip()
+
+
 def editor_values(
     request: Request,
     form: dict[str, list[str]],
@@ -284,15 +320,16 @@ def editor_values(
     else:
         title = ticket.title if ticket is not None else ""
 
-    repo = _field(form, "repo").strip()
     description = _field(form, "description")
+    repo = _selected_repo(form)
 
     aliases = request.app.config.models
     # Store the alias, not the provider/model id: LocalTracker turns it into
     # the ``Model: <alias>`` label the orchestrator resolves through the same
-    # ``models:`` map.
+    # ``models:`` map.  An empty alias is never a choice: it is how the
+    # Default option says "no model".
     model = next(
-        (value for value in form.get("model", []) if value in aliases),
+        (value for value in form.get("model", []) if value and value in aliases),
         None,
     )
     return title, description, repo, model
@@ -365,7 +402,9 @@ def new_page(request: Request) -> Response:
             None,
             title="",
             description="",
-            repo="",
+            repo=default_repo(
+                request.app.store.list_tickets(), request.app.store.list_repos()
+            ),
             model=None,
         ),
     )
@@ -457,6 +496,8 @@ def post_start_new(request: Request) -> Response:
                 repo=repo,
                 model=_model,
                 errors=errors,
+                repo_new_url=_field(form, "repo_new_url").strip(),
+                repo_new_name=_field(form, "repo_new_name").strip(),
             ),
             status=400,
         )
@@ -467,6 +508,7 @@ def post_start_new(request: Request) -> Response:
             description=description,
             repo=repo,
             model=_model,
+            new_repo=new_repo_from_form(form),
         )
     except TrackerNotFoundError:
         # A Start that races the Draft's deletion is a 404, not a 500.
@@ -499,6 +541,8 @@ def post_start_draft(request: Request) -> Response:
                 ticket,
                 errors=errors,
                 values=values,
+                repo_new_url=_field(form, "repo_new_url").strip(),
+                repo_new_name=_field(form, "repo_new_name").strip(),
             ),
             status=400,
         )
@@ -510,6 +554,7 @@ def post_start_draft(request: Request) -> Response:
             description=description,
             repo=repo,
             model=model,
+            new_repo=new_repo_from_form(form),
         )
     except TrackerNotFoundError:
         # A Start that races the Draft's deletion is a 404, not a 500.

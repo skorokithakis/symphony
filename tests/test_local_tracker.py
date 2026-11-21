@@ -5,7 +5,7 @@ from __future__ import annotations
 import threading
 from datetime import datetime
 from pathlib import Path
-from unittest.mock import MagicMock
+from unittest.mock import MagicMock, patch
 
 import pytest
 
@@ -20,6 +20,7 @@ from symphony_linear.local_tracker import (
     STATE_NEEDS_INPUT,
     STATE_QA,
     LocalFile,
+    LocalTicket,
     LocalTicketStore,
     LocalTracker,
     image_content_type,
@@ -208,7 +209,7 @@ class TestPersistence:
 
         names = sorted(path.name for path in (tmp_path / "tickets").iterdir())
 
-        assert names == ["SYM-2.json", "counter.json"]
+        assert names == ["SYM-2.json", "counter.json", "repos.json"]
 
     def test_concurrent_creates_get_unique_ids(self, store: LocalTicketStore) -> None:
         ids: list[str] = []
@@ -234,6 +235,159 @@ class TestPersistence:
         assert len(ids) == 20
         assert len(set(ids)) == 20
         assert len(store.list_tickets()) == 20
+
+
+# ---------------------------------------------------------------------------
+# Managed repository list
+# ---------------------------------------------------------------------------
+
+
+def _write_ticket_file(directory: Path, ticket: LocalTicket) -> None:
+    directory.mkdir(parents=True, exist_ok=True)
+    (directory / f"{ticket.id}.json").write_text(ticket.model_dump_json())
+
+
+class TestRepos:
+    def test_seeded_from_existing_tickets_newest_first(self, tmp_path: Path) -> None:
+        tickets = tmp_path / "tickets"
+        for ticket_id, repo, updated_at in (
+            ("SYM-1", "old/repo", "2026-11-19T10:00:00+00:00"),
+            (
+                "SYM-2",
+                "https://example.com/team/new.git",
+                "2026-11-21T10:00:00+00:00",
+            ),
+            ("SYM-3", "old/repo", "2026-11-20T10:00:00+00:00"),
+        ):
+            _write_ticket_file(
+                tickets,
+                LocalTicket(id=ticket_id, repo=repo, updated_at=updated_at),
+            )
+
+        repos = LocalTracker(tmp_path).store.list_repos()
+
+        assert [(entry.url, entry.name) for entry in repos] == [
+            ("https://example.com/team/new.git", "team/new"),
+            ("old/repo", "old/repo"),
+        ]
+        assert (tickets / "repos.json").exists()
+
+    def test_an_empty_list_is_not_reseeded(self, tmp_path: Path) -> None:
+        tracker = LocalTracker(tmp_path)
+        assert tracker.store.list_repos() == []
+
+        tracker.store.create_draft(description="x", repo="owner/name")
+        tracker.store.add_repo("extra/repo", "Extra")
+
+        reloaded = LocalTracker(tmp_path)
+        assert [(entry.url, entry.name) for entry in reloaded.store.list_repos()] == [
+            ("extra/repo", "Extra")
+        ]
+
+    def test_add_strips_the_url_and_derives_an_empty_name(self, tmp_path: Path) -> None:
+        store = LocalTracker(tmp_path).store
+
+        entry = store.add_repo("  https://example.com/team/project.git  ")
+
+        assert entry.url == "https://example.com/team/project.git"
+        assert entry.name == "team/project"
+        assert LocalTracker(tmp_path).store.list_repos()[0].name == "team/project"
+
+    def test_add_with_the_same_url_is_a_no_op(self, tmp_path: Path) -> None:
+        store = LocalTracker(tmp_path).store
+        first = store.add_repo("owner/name", "First")
+
+        second = store.add_repo(" owner/name ", "Second")
+
+        assert second.url == first.url
+        assert second.name == "First"
+        assert [entry.url for entry in store.list_repos()] == ["owner/name"]
+
+    def test_add_rejects_an_empty_url(self, store: LocalTicketStore) -> None:
+        with pytest.raises(ValueError):
+            store.add_repo("   ")
+
+    def test_remove_leaves_tickets_unchanged(self, tmp_path: Path) -> None:
+        tracker = LocalTracker(tmp_path)
+        tracker.store.add_repo("owner/name")
+        ticket = tracker.store.create_draft(description="x", repo="owner/name")
+
+        tracker.store.remove_repo("owner/name")
+
+        assert tracker.store.list_repos() == []
+        stored = tracker.store.get(ticket.id)
+        assert stored is not None
+        assert stored.repo == "owner/name"
+
+    def test_a_refused_start_does_not_add_the_new_repository(
+        self, tmp_path: Path
+    ) -> None:
+        tracker = LocalTracker(tmp_path)
+        ticket = tracker.store.create_draft(description="x")
+        tracker.store.set_state(ticket.id, STATE_IN_PROGRESS)
+
+        with pytest.raises(ValueError):
+            tracker.store.start_draft(
+                ticket.id,
+                title="",
+                description="x",
+                repo="owner/name",
+                model=None,
+                new_repo=("owner/name", "Widgets"),
+            )
+
+        assert tracker.store.list_repos() == []
+
+    def test_a_failed_ticket_write_leaves_the_repository_list_untouched(
+        self, tmp_path: Path
+    ) -> None:
+        tracker = LocalTracker(tmp_path)
+        ticket = tracker.store.create_draft(description="x")
+        repos_path = tmp_path / "tickets" / "repos.json"
+        before = repos_path.read_bytes()
+
+        with patch.object(tracker.store, "_persist", side_effect=OSError("disk full")):
+            with pytest.raises(OSError):
+                tracker.store.start_draft(
+                    ticket.id,
+                    title="",
+                    description="x",
+                    repo="owner/new",
+                    model=None,
+                    new_repo=("owner/new", "Widgets"),
+                )
+
+        stored = tracker.store.get(ticket.id)
+        assert stored is not None
+        assert stored.state == STATE_DRAFT
+        assert tracker.store.list_repos() == []
+        assert repos_path.read_bytes() == before
+
+    def test_a_failed_ticket_create_leaves_the_repository_list_untouched(
+        self, tmp_path: Path
+    ) -> None:
+        tracker = LocalTracker(tmp_path)
+        repos_path = tmp_path / "tickets" / "repos.json"
+        before = repos_path.read_bytes()
+
+        with patch.object(tracker.store, "_persist", side_effect=OSError("disk full")):
+            with pytest.raises(OSError):
+                tracker.store.create_started_draft(
+                    description="x",
+                    repo="owner/new",
+                    new_repo=("owner/new", "Widgets"),
+                )
+
+        assert tracker.store.list_tickets() == []
+        assert tracker.store.list_repos() == []
+        assert repos_path.read_bytes() == before
+
+    def test_removing_an_unknown_url_is_a_no_op(self, store: LocalTicketStore) -> None:
+        store.add_repo("owner/name")
+
+        store.remove_repo("other/repo")
+
+        assert [entry.url for entry in store.list_repos()] == ["owner/name"]
 
 
 # ---------------------------------------------------------------------------

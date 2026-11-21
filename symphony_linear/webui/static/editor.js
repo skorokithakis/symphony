@@ -18,6 +18,8 @@
   var title = document.getElementById("title");
   var description = document.getElementById("description");
   var repo = document.getElementById("repo");
+  var repoNewUrl = document.getElementById("repo_new_url");
+  var repoNewName = document.getElementById("repo_new_name");
   var tid = document.getElementById("editor-tid");
   var dialog = document.getElementById("discard-dialog");
   var startButton = document.getElementById("act-start");
@@ -48,12 +50,20 @@
   var submitting = false;
 
   function fields() {
-    var checked = form.querySelector('input[name="model"]:checked');
+    var repoSelect = form.querySelector('select[name="repo"]');
+    var newRepoUrl = form.querySelector('input[name="repo_new_url"]');
+    var newRepoName = form.querySelector('input[name="repo_new_name"]');
+    var modelSelect = form.querySelector('select[name="model"]');
+    var selectedRepo = repoSelect ? repoSelect.value : "";
+    var newUrl = newRepoUrl ? newRepoUrl.value.trim() : "";
     return {
       title: title ? title.value : "",
       description: description ? description.value : "",
-      repo: repo ? repo.value : "",
-      model: checked ? checked.value : "",
+      // "Add a repository…" has an empty value: the typed value is the repo.
+      repo: selectedRepo === "" ? newUrl : selectedRepo,
+      repo_new_url: newUrl,
+      repo_new_name: newRepoName ? newRepoName.value.trim() : "",
+      model: modelSelect ? modelSelect.value : "",
     };
   }
 
@@ -324,14 +334,16 @@
     doDiscard();
   }
 
-  [title, description, repo].forEach(function (field) {
+  [title, description, repo, repoNewUrl, repoNewName].forEach(function (field) {
     if (field) {
       field.addEventListener("input", schedule);
     }
   });
-  form.querySelectorAll('input[name="model"]').forEach(function (radio) {
-    radio.addEventListener("change", schedule);
-  });
+  form.querySelectorAll('select[name="repo"], select[name="model"]').forEach(
+    function (select) {
+      select.addEventListener("change", schedule);
+    }
+  );
 
   form.addEventListener("submit", function (event) {
     if (event.submitter && event.submitter.id === "act-start") {

@@ -1,0 +1,66 @@
+{% extends "base.html" %}
+
+{% block title %}Repositories · symphony{% endblock %}
+
+{% block content %}
+<header class="bar">
+  <a class="wordmark" href="/">symphony</a>
+</header>
+<main class="home">
+  <h1 class="page-t">Repositories</h1>
+  <p class="page-sub">The editor offers these repositories when you write a ticket. Removing one does not change tickets that already use it.</p>
+
+  {% if page.error %}
+  <div class="alert alert--warn" role="alert">
+    <svg class="ic" viewBox="0 0 20 20" aria-hidden="true"><path d="M10 3l8 14H2zM10 8.5v4M10 15v.2"></path></svg>
+    <p>{{ page.error }}</p>
+  </div>
+  {% endif %}
+
+  <section class="group">
+    <h2 class="group-h">
+      <span class="page-sub">Saved repositories</span>
+      <span class="group-n">{{ page.repos|length }}</span>
+    </h2>
+    {% if page.repos %}
+    <ul class="repo-list">
+      {% for repo in page.repos %}
+      <li class="repo-row">
+        <span class="repo-name">{{ repo.name }}</span>
+        <span class="repo-url mono">{{ repo.url }}</span>
+        <form method="post" action="/repos/remove">
+          <input type="hidden" name="url" value="{{ repo.url }}">
+          <button class="btn btn--quiet" type="submit">Remove</button>
+        </form>
+      </li>
+      {% endfor %}
+    </ul>
+    {% else %}
+    <p class="group-empty">No repositories yet. Add one below.</p>
+    {% endif %}
+  </section>
+
+  <section class="group">
+    <h2 class="group-h"><span class="page-sub">Add a repository</span></h2>
+    <form class="repo-form" method="post" action="/repos">
+      <div class="field">
+        <label for="repo-url">URL</label>
+        <input class="input mono" id="repo-url" name="url" type="text" placeholder="owner/name or a clone URL" value="{{ page.new_url }}">
+      </div>
+      <div class="field">
+        <label for="repo-name">Name <span class="field-note">optional</span></label>
+        <input class="input" id="repo-name" name="name" type="text" placeholder="owner/name" value="{{ page.new_name }}">
+      </div>
+      <div><button class="btn btn--primary" type="submit">Add</button></div>
+    </form>
+  </section>
+</main>
+<nav class="dock" aria-label="Main">
+  <a class="btn btn--primary" href="/new"><svg class="ic" viewBox="0 0 20 20" aria-hidden="true"><path d="M10 4v12M4 10h12"></path></svg>New ticket</a>
+  <div class="dock-links">
+    <a class="dock-link" href="/">Tickets</a>
+    <a class="dock-link" href="/archive">Archive</a>
+    <a class="dock-link" href="/repos" aria-current="page">Repositories</a>
+  </div>
+</nav>
+{% endblock %}

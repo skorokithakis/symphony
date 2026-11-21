@@ -235,17 +235,31 @@
     dialog.showModal();
   });
 
-  // Recent repository chips fill the input without a page load.
-  var repoInput = document.getElementById("repo");
-  document.querySelectorAll("[data-repo-chip]").forEach(function (chip) {
-    chip.addEventListener("click", function () {
-      if (!repoInput) {
-        return;
+  // The editor's repository select reveals the two "new repository" fields
+  // only while "Add a repository…" is chosen.  Without JavaScript both fields
+  // stay visible, which is why they are never hidden on the server.
+  var repoSelect = document.getElementById("repo");
+  var newRepoFields = document.getElementById("repo-new-fields");
+  if (repoSelect && repoSelect.tagName === "SELECT" && newRepoFields) {
+    var repoNewUrl = document.getElementById("repo_new_url");
+    var repoNewName = document.getElementById("repo_new_name");
+    var newRepoValue = "";
+    var syncNewRepoFields = function () {
+      var adding = repoSelect.value === newRepoValue;
+      newRepoFields.hidden = !adding;
+      if (!adding) {
+        // A stale URL must not win over the repository the user picked.
+        if (repoNewUrl) {
+          repoNewUrl.value = "";
+        }
+        if (repoNewName) {
+          repoNewName.value = "";
+        }
       }
-      repoInput.value = chip.getAttribute("data-repo-chip") || "";
-      repoInput.focus();
-    });
-  });
+    };
+    repoSelect.addEventListener("change", syncNewRepoFields);
+    syncNewRepoFields();
+  }
 
   // Image thumbnails in the thread open in a native dialog.  Delegated, so
   // entries appended by the poll work without rebinding.
@@ -269,19 +283,6 @@
       }
     });
   }
-
-  // Keep the model labels' aria-pressed in sync with their radio inputs.
-  var modelRadios = document.querySelectorAll('input[type="radio"][name="model"]');
-  modelRadios.forEach(function (radio) {
-    radio.addEventListener("change", function () {
-      modelRadios.forEach(function (peer) {
-        var label = document.querySelector('label[for="' + peer.id + '"]');
-        if (label) {
-          label.setAttribute("aria-pressed", peer.checked ? "true" : "false");
-        }
-      });
-    });
-  });
 
   /* ---------- the "Saved 14:38" indicator ---------- */
 
