@@ -11,7 +11,7 @@ from pathlib import Path
 
 from jinja2 import Environment, FileSystemLoader, StrictUndefined
 
-from symphony_linear.local_tracker import PUBLIC_ICON_PATH
+from symphony_linear.local_tracker import ICON_PATH
 
 _TEMPLATE_DIR = Path(__file__).resolve().parent / "templates"
 
@@ -20,8 +20,9 @@ _ENV = Environment(
     autoescape=True,
     undefined=StrictUndefined,
 )
-# The favicon and the ntfy icon must not drift apart; both read this constant.
-_ENV.globals["icon_url"] = PUBLIC_ICON_PATH
+# The favicon and the title-bar logo both read this one global, so they cannot
+# point at different files.
+_ENV.globals["icon_url"] = ICON_PATH
 
 
 def render(template_name: str, **context: object) -> str:

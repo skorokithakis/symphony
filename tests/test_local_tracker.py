@@ -18,6 +18,7 @@ from symphony_linear.attachments import (
 )
 from symphony_linear.config import _NtfyConfig
 from symphony_linear.local_tracker import (
+    NTFY_ICON_URL,
     STATE_DONE,
     STATE_DRAFT,
     STATE_IN_PROGRESS,
@@ -1431,11 +1432,14 @@ class TestNtfyNotifications:
         assert str(request.url) == "https://example.com/ntfy/"
         assert request.headers["Authorization"] == "Bearer tk_secret"
         body = json.loads(request.content)
-        # Only the final segment is percent-decoded into the topic name.
+        # Only the final segment is percent-decoded into the topic name.  The
+        # icon is always present, even with no public_url, because ntfy fetches
+        # it from GitHub rather than from the credential-protected UI.
         assert body == {
             "topic": "déployer",
             "title": "Needs Input",
             "message": "SYM-1: Fix the frobnicator",
+            "icon": NTFY_ICON_URL,
         }
 
     def test_non_ascii_title_and_click_link(self, store: LocalTicketStore) -> None:
@@ -1454,8 +1458,8 @@ class TestNtfyNotifications:
         # body is UTF-8.
         assert body["message"] == "SYM-1: Déployer — 日本語"
         assert body["click"] == "https://symphony.example.com/tickets/SYM-1"
-        # Same base URL as the click target, so the icon cannot drift from it.
-        assert body["icon"] == "https://symphony.example.com/public/icon.png"
+        # public_url drives the click target only; the icon never depends on it.
+        assert body["icon"] == NTFY_ICON_URL
 
     def test_the_display_title_fallback_is_used(self, store: LocalTicketStore) -> None:
         ticket = store.create_draft(description="First line\nsecond line")

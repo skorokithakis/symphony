@@ -286,8 +286,8 @@ webui:
   password: change-me
   # Optional. Enables automatic titles (see Titles below).
   # anthropic_api_key: ${ANTHROPIC_API_KEY}
-  # Optional. Public base URL of this UI. Notifications use it for the tap
-  # target and the icon (see Notifications below).
+  # Optional. Public base URL of this UI. A notification taps through to it
+  # (see Notifications below).
   # public_url: https://symphony.example.com
   # Optional. Push notifications when a ticket needs input (see
   # Notifications below).
@@ -444,15 +444,15 @@ webui:
 `url` is the full topic URL; publishing uses ntfy's JSON API against the
 server root, so a self-hosted server behind a path prefix works too. `token`
 is sent as `Authorization: Bearer`. With `webui.public_url` set, tapping the
-notification opens `<public_url>/tickets/<ticket-id>` in this web UI, and the
-notification shows the Symphony icon from
-`<public_url>/public/icon.png`; both are only useful if the UI is reachable at
-that address. The icon path needs no credentials, unlike the rest of the UI.
-ntfy renders notification icons on Android only; on iOS the notification
-simply arrives without one.
+notification opens `<public_url>/tickets/<ticket-id>` in this web UI, which is
+only useful if the UI is reachable at that address. Every notification
+includes the URL of the Symphony icon on the `master` branch of the Symphony
+GitHub repository, because the UI itself requires Basic auth and ntfy does not
+send credentials. ntfy shows the icon on Android only; on iOS the
+notification arrives without one.
 
-The notification carries the ticket identifier and title (for example
-`SYM-4: Fix the frobnicator`) and nothing else. Comment and reply text is
+Of the ticket's content, the notification carries only the identifier and
+title (for example `SYM-4: Fix the frobnicator`). Comment and reply text is
 deliberately never sent: it does not exist at the moment of the transition,
 and it would go to a third party. Delivery is best-effort: a failure is one
 WARNING in the daemon log, with a short timeout, and never affects the turn.
@@ -562,11 +562,13 @@ linear:
 #   password: change-me
 #   # Optional. Anthropic API key for automatic ticket titles.
 #   # anthropic_api_key: ${ANTHROPIC_API_KEY}
+#   # Optional. Public base URL of this UI, so a notification taps through to
+#   # <public_url>/tickets/<id>.
+#   # public_url: https://symphony.example.com
 #   # Optional. ntfy notifications when a ticket moves to Needs Input.
 #   # ntfy:
 #   #   url: https://ntfy.sh/my-symphony-topic
 #   #   token: ${NTFY_TOKEN}
-#   #   public_url: https://symphony.example.com
 
 # Optional. Model overrides for the primary agent, keyed by alias. See
 # "Model override" below.

@@ -320,7 +320,7 @@ class _WebUIConfig(BaseModel):
         None,
         description=(
             "Optional public base URL of this web UI; when set, a notification's "
-            "Click opens <public_url>/tickets/<id> and it shows the Symphony icon"
+            "Click opens <public_url>/tickets/<id>"
         ),
     )
     ntfy: _NtfyConfig | None = Field(

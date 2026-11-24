@@ -10,10 +10,7 @@ parsed it -- including verbs with no ``do_*`` method and malformed/legacy
 request lines:
 
 * HTTP Basic auth on every request, including static assets (constant-time
-  ``hmac.compare_digest`` comparison), except a GET or HEAD request that
-  resolves to a route marked ``public`` — the package icon is the only one;
-  every other request, including unknown paths and other methods on a public
-  path, still gets 401;
+  ``hmac.compare_digest`` comparison);
 * same-origin enforcement on every non-GET/HEAD request (browsers attach
   Basic credentials to cross-site requests, so auth alone is not CSRF
   protection);
@@ -167,17 +164,7 @@ class _WebUIHandler(BaseHTTPRequestHandler):
     # ------------------------------------------------------------------
 
     def _dispatch(self) -> None:
-        # The route is resolved before authenticating because a public route
-        # must be reachable without credentials; everything about resolution is
-        # pure, so this cannot leak a response ahead of the auth check.
-        path, query = self._split_target()
-        route: Route | None = None
-        match: re.Match[str] | None = None
-        allowed: list[str] = []
-        if path is not None:
-            route, match, allowed = self._resolve(path)
-
-        if not self._is_public(route) and not self._authenticated():
+        if not self._authenticated():
             self._send(_UNAUTHORIZED)
             return
 
@@ -188,12 +175,15 @@ class _WebUIHandler(BaseHTTPRequestHandler):
             self._send(Response.text("Forbidden\n", status=403))
             return
 
+        path, query = self._split_target()
         if path is None:
             self._send(Response.text("Bad Request\n", status=400))
             return
 
-        # An unknown POST must get its 404/405 immediately, not after waiting
-        # for a body that may never arrive.
+        # Resolve the route before touching the body: an unknown POST must get
+        # its 404/405 immediately, not after waiting for a body that may never
+        # arrive.
+        route, match, allowed = self._resolve(path)
         if route is None:
             if allowed:
                 self._send(
@@ -254,16 +244,6 @@ class _WebUIHandler(BaseHTTPRequestHandler):
         server = self.server
         assert isinstance(server, _WebUIServer)
         return server.routes
-
-    def _is_public(self, route: Route | None) -> bool:
-        """Return True only for a safe request to a route marked ``public``.
-
-        Basic auth is skipped for exactly this case, so the icon and other
-        package assets can be fetched by a browser or an ntfy client.  A POST
-        to the same path resolves to no route, so it still gets 401 without
-        credentials, and an unknown path does too.
-        """
-        return route is not None and route.public and self.command in ("GET", "HEAD")
 
     def _authenticated(self) -> bool:
         username, password = self._credentials

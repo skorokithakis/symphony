@@ -1384,11 +1384,16 @@ class LocalTicketStore:
 #: turn's reply, and the message itself is already on the ticket.
 _NTFY_TIMEOUT_SECONDS = 10.0
 
-#: The one place the icon's URL path is written down.  The web UI serves it as
-#: a public asset and both the favicon in ``templates/base.html`` and the ntfy
-#: ``icon`` field point at it, so replacing ``static/public/icon.png`` changes
-#: the icon everywhere without touching code.
-PUBLIC_ICON_PATH = "/public/icon.png"
+#: The icon's two spellings, both naming ``webui/static/icon.png`` in the
+#: package.  The web UI serves it at ICON_PATH to the favicon and the title-bar
+#: logo, which are fetched by an authenticated browser.  ntfy cannot send the
+#: UI's Basic credentials, so its payload points at the same file in the public
+#: GitHub repository instead.  Moving or renaming the file changes both.
+ICON_PATH = "/static/icon.png"
+NTFY_ICON_URL = (
+    "https://raw.githubusercontent.com/skorokithakis/symphony/master/"
+    "symphony_linear/webui/static/icon.png"
+)
 
 
 def publish_needs_input(
@@ -1414,8 +1419,9 @@ def publish_needs_input(
 
     *public_url* is the configured ``webui.public_url``.  It lives in
     ``_WebUIConfig`` rather than the ntfy block because it describes the web
-    UI, not the topic; when it is absent neither the click target nor the icon
-    can be built, so both fields are omitted.
+    UI, not the topic.  It only drives the tap target; the icon is always sent
+    from :data:`NTFY_ICON_URL`, because ntfy fetches it without credentials and
+    the web UI requires them.
     """
     try:
         root, topic = config.endpoint()
@@ -1423,12 +1429,12 @@ def publish_needs_input(
             "topic": topic,
             "title": "Needs Input",
             "message": f"{ticket.identifier}: {display_title(ticket)}",
+            # ntfy renders this on Android only; iOS ignores the field and the
+            # notification still works without one.
+            "icon": NTFY_ICON_URL,
         }
         if public_url:
             payload["click"] = f"{public_url}/tickets/{ticket.id}"
-            # ntfy only renders this on Android; iOS ignores it.  A notification
-            # without an icon still works, so this is not worth gating further.
-            payload["icon"] = f"{public_url}{PUBLIC_ICON_PATH}"
         headers = {"Authorization": f"Bearer {config.token}"} if config.token else {}
         with httpx.Client(timeout=_NTFY_TIMEOUT_SECONDS, transport=transport) as client:
             response = client.post(root, json=payload, headers=headers)
