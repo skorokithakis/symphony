@@ -10,10 +10,11 @@
 
 {# Read-only files under a thread entry: images open the lightbox, everything
    else is a download link.  The stored file name is never shown; only the
-   original name the user uploaded. #}
-{% macro file_list(files) -%}
+   original name the user uploaded.  ``large`` turns the images into
+   content-width previews; the agent reply keeps the compact thumbnails. #}
+{% macro file_list(files, large=false) -%}
 {% if files %}
-<ul class="files">
+<ul class="files{% if large %} files--large{% endif %}">
   {% for f in files %}
   <li>
     {% if f.image %}
@@ -76,7 +77,7 @@
 {% if entry.kind == "user" %}
 <article class="entry entry--user">
   <header class="entry-h"><span class="who">{{ entry.who }}</span>{{ new_badge(entry) }}<time datetime="{{ entry.created_at }}" data-format="time">{{ entry.clock }}</time></header>
-  <div class="entry-b"><div class="md">{{ entry.html|safe }}</div>{{ file_list(entry.files) }}</div>
+  <div class="entry-b"><div class="md">{{ entry.html|safe }}</div>{{ file_list(entry.files, large=true) }}</div>
 </article>
 {% elif entry.kind == "agent" %}
 <article class="entry entry--agent" id="{{ entry.anchor }}">

@@ -581,6 +581,23 @@ class TestTemplates:
         assert "onclick=" not in text
         assert ' style="' not in text
 
+    def test_list_continuation_loads_only_on_the_text_box_pages(
+        self, tmp_path: Path
+    ) -> None:
+        # lists.js binds to #reply and #description by id, so it must load on
+        # exactly the pages that have one.  The home page has neither.
+        _write_ticket(tmp_path, "SYM-1", state=STATE_IN_PROGRESS, title="Running")
+
+        with _running_server(tmp_path) as (port, _tracker, _state):
+            _status, _headers, home = _request(port, "GET", "/")
+            _status, _headers, ticket = _request(port, "GET", "/tickets/SYM-1")
+            _status, _headers, editor = _request(port, "GET", "/new")
+
+        script = b'<script src="/static/lists.js" defer></script>'
+        assert script not in home
+        assert script in ticket
+        assert script in editor
+
     @pytest.mark.parametrize(
         "path",
         ["/", "/archive", "/repos", "/new", "/tickets/SYM-1"],
@@ -1233,6 +1250,14 @@ class TestStaticFiles:
         assert status == 200
         assert headers["Content-Type"].startswith("text/javascript")
         assert b"querySelectorAll" in body
+
+    def test_the_list_continuation_script_is_served(self, tmp_path: Path) -> None:
+        with _running_server(tmp_path) as (port, _tracker, _state):
+            status, headers, body = _request(port, "GET", "/static/lists.js")
+
+        assert status == 200
+        assert headers["Content-Type"].startswith("text/javascript")
+        assert b"insertText" in body
 
     @pytest.mark.parametrize(
         "path",

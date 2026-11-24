@@ -537,6 +537,10 @@ body.sym { min-height: 100dvh; }
 .md li + li { margin-top: var(--s1); }
 .md li::marker { color: var(--ink-3); }
 .md h3, .md h4 { font-size: var(--t-md); font-weight: 700; margin-top: var(--s2); }
+/* Markdown images stay inside the reading column.  Their own dimensions
+   decide the rest, so an image smaller than the column is not upscaled; the
+   lightbox in app.js opens the full-size source. */
+.md img { max-width: 100%; height: auto; cursor: zoom-in; }
 .md code {
   font: 400 0.875em/1.4 var(--font-mono);
   background: var(--sunken); border-radius: var(--r1); padding: 2px 5px;
@@ -613,6 +617,18 @@ a.file:hover { border-color: var(--ink-3); background: var(--sunken); }
 .thumb:hover { border-color: var(--ink-3); }
 .thumb:active { transform: scale(0.98); }
 .thumb img { width: 100%; height: 100%; object-fit: cover; }
+/* A user's attached images are previews, not thumbnails: natural size up to
+   the content width, with the same lightbox for the full image.  Agent
+   replies keep the compact thumbnails above.  Download chips keep the
+   wrapping row so they stay side by side; only an image takes a whole row,
+   because in the row an image item sizes to the image and overflows the
+   content column.  min-width: 0 lets that item shrink below the image. */
+.files--large > li:has(> .thumb) { flex-basis: 100%; min-width: 0; }
+.files--large .thumb {
+  width: auto; height: auto; max-width: 100%; padding: 0;
+  border: 0; background: none;
+}
+.files--large .thumb img { width: auto; height: auto; max-width: 100%; object-fit: contain; }
 
 @container sym (min-width: 800px) {
   .md { font-size: 17px; }

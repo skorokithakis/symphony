@@ -479,6 +479,11 @@
   if (reply) {
     reply.addEventListener("input", scheduleDraft);
     reply.addEventListener("keydown", function (event) {
+      /* Enter confirms an IME candidate, so it must not send the reply
+         mid-composition. */
+      if (event.isComposing) {
+        return;
+      }
       if (event.key === "Enter" && (event.ctrlKey || event.metaKey)) {
         event.preventDefault();
         var button = sendButton();

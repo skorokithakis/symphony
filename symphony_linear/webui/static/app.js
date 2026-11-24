@@ -290,25 +290,47 @@
     syncNewRepoFields();
   }
 
-  // Image thumbnails in the thread open in a native dialog.  Delegated, so
-  // entries appended by the poll work without rebinding.
+  // Image thumbnails and Markdown images in the thread open in a native
+  // dialog.  Delegated, so entries appended by the poll work without
+  // rebinding.  A Markdown image has no data-lightbox, so its own src and alt
+  // feed the dialog; preventDefault stops a linked image from navigating as
+  // well.  Only a same-origin source can go in the dialog: the CSP would
+  // block an external image anyway, and swallowing the click would break the
+  // link wrapped around it, so an off-site image is left entirely alone.
   var lightbox = document.getElementById("lightbox");
   if (lightbox) {
     var lightboxImage = lightbox.querySelector("img");
     document.addEventListener("click", function (event) {
-      var trigger = event.target.closest("[data-lightbox]");
-      if (trigger) {
-        if (lightboxImage) {
-          lightboxImage.src = trigger.getAttribute("data-lightbox") || "";
-          lightboxImage.alt = trigger.getAttribute("aria-label") || "";
-        }
-        if (typeof lightbox.showModal === "function") {
-          lightbox.showModal();
-        }
-        return;
-      }
       if (event.target === lightbox) {
         lightbox.close();
+        return;
+      }
+      var trigger = event.target.closest("[data-lightbox]");
+      var source;
+      var alt;
+      if (trigger) {
+        source = trigger.getAttribute("data-lightbox") || "";
+        alt = trigger.getAttribute("aria-label") || "";
+      } else if (event.target.matches(".md img")) {
+        var resolved = new URL(
+          event.target.getAttribute("src") || "",
+          window.location.href
+        );
+        if (resolved.origin !== window.location.origin) {
+          return;
+        }
+        source = resolved.href;
+        alt = event.target.getAttribute("alt") || "";
+        event.preventDefault();
+      } else {
+        return;
+      }
+      if (lightboxImage) {
+        lightboxImage.src = source;
+        lightboxImage.alt = alt;
+      }
+      if (typeof lightbox.showModal === "function") {
+        lightbox.showModal();
       }
     });
   }

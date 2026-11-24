@@ -602,6 +602,7 @@ class TestPages:
 
         text = body.decode()
         assert status == 200
+        assert 'class="files files--large"' in text
         assert 'class="thumb"' in text
         assert f'data-lightbox="{_file_of(response)["url"]}"' in text
 
@@ -631,6 +632,7 @@ class TestPages:
 
         text = body.decode()
         assert status == 200
+        assert 'class="files files--large"' in text
         assert 'class="thumb"' in text
         assert f'data-lightbox="{_file_of(image)["url"]}"' in text
         assert 'id="lightbox"' in text

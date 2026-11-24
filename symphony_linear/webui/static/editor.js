@@ -357,6 +357,28 @@
     }
   });
 
+  /* Ctrl+Enter (Cmd+Enter on a Mac) in the description starts the ticket, the
+   * same as the reply composer on the ticket page.  Clicking the button rather
+   * than calling doStart keeps this on the one submit path: formaction, the
+   * upload-busy guard and the disabled state all behave as they do for a real
+   * click. */
+  if (description) {
+    description.addEventListener("keydown", function (event) {
+      /* Enter confirms an IME candidate, so it must not start the ticket
+         mid-composition. */
+      if (event.isComposing) {
+        return;
+      }
+      if (event.key !== "Enter" || !(event.ctrlKey || event.metaKey)) {
+        return;
+      }
+      event.preventDefault();
+      if (startButton && !startButton.disabled) {
+        startButton.click();
+      }
+    });
+  }
+
   if (dialog) {
     var confirmForm = dialog.querySelector("form");
     if (confirmForm) {
