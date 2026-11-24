@@ -108,7 +108,20 @@ linear:
 #   # it, Start requires a title.  The key lives in config.yaml, which the
 #   # sandbox masks from the coding agents.
 #   # anthropic_api_key: ${ANTHROPIC_API_KEY}
-
+#
+#   # Optional. Push notifications via ntfy when a ticket actually moves to
+#   # Needs Input (a turn ending, a turn failing, a dirty-workspace refusal,
+#   # a QA serve dying).  `url` is the full topic URL.  Nothing is sent
+#   # without this block.  Only the ticket's identifier and title are sent,
+#   # never comment text.
+#   # ntfy:
+#   #   url: https://ntfy.sh/my-symphony-topic
+#   #   # Optional. Sent as `Authorization: Bearer <token>` for a protected
+#   #   # topic.
+#   #   token: ${NTFY_TOKEN}
+#   #   # Optional. Base URL of this web UI, so tapping the notification opens
+#   #   # the ticket at <public_url>/tickets/<id>.
+#   #   public_url: https://symphony.example.com
 
 # ---------------------------------------------------------------------------
 # Coding agent

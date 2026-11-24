@@ -286,6 +286,12 @@ webui:
   password: change-me
   # Optional. Enables automatic titles (see Titles below).
   # anthropic_api_key: ${ANTHROPIC_API_KEY}
+  # Optional. Push notifications when a ticket needs input (see
+  # Notifications below).
+  # ntfy:
+  #   url: https://ntfy.sh/my-symphony-topic
+  #   token: ${NTFY_TOKEN}
+  #   public_url: https://symphony.example.com
 ```
 
 Open `http://127.0.0.1:8080/`. The browser asks for the username and password
@@ -413,6 +419,38 @@ stays.
 Without the key, the editor shows the Title field and Start refuses an empty
 one.
 
+### Notifications
+
+With an optional `webui.ntfy` block, the daemon publishes one
+[ntfy](https://ntfy.sh) notification each time a ticket actually changes to
+Needs Input on the daemon's initiative: when a turn ends, when a turn fails,
+when a cleanup is refused because the workspace has uncommitted changes, and
+when a QA serve dies. Only those daemon-driven transitions notify: moving a
+ticket to Needs Input yourself with the web UI's Stop or Needs Input action
+sends nothing, and neither does a transition that changes nothing (a ticket
+already in Needs Input).
+
+```yaml
+webui:
+  # ... the rest of the webui block
+  ntfy:
+    url: https://ntfy.sh/my-symphony-topic
+    token: ${NTFY_TOKEN}               # optional, for a protected topic
+    public_url: https://symphony.example.com   # optional
+```
+
+`url` is the full topic URL; publishing uses ntfy's JSON API against the
+server root, so a self-hosted server behind a path prefix works too. `token`
+is sent as `Authorization: Bearer`. With `public_url` set, tapping the
+notification opens `<public_url>/tickets/<ticket-id>` in this web UI, which is
+only useful if the UI is reachable at that address.
+
+The notification carries the ticket identifier and title (for example
+`SYM-4: Fix the frobnicator`) and nothing else. Comment and reply text is
+deliberately never sent: it does not exist at the moment of the transition,
+and it would go to a third party. Delivery is best-effort: a failure is one
+WARNING in the daemon log, with a short timeout, and never affects the turn.
+
 ## Configuration
 
 Symphony reads `config.yaml` from its workspace directory, which defaults to
@@ -518,6 +556,11 @@ linear:
 #   password: change-me
 #   # Optional. Anthropic API key for automatic ticket titles.
 #   # anthropic_api_key: ${ANTHROPIC_API_KEY}
+#   # Optional. ntfy notifications when a ticket moves to Needs Input.
+#   # ntfy:
+#   #   url: https://ntfy.sh/my-symphony-topic
+#   #   token: ${NTFY_TOKEN}
+#   #   public_url: https://symphony.example.com
 
 # Optional. Model overrides for the primary agent, keyed by alias. See
 # "Model override" below.
@@ -1021,9 +1064,11 @@ session id.
 - **No live view of the agent's work.** The web UI shows the ticket's state
   and how long it has been working, not the agent's steps, tool calls or
   streamed output. You see the written reply when the turn ends.
-- **No notifications.** The web UI marks unread tickets in the list and puts
-  a `(N) Symphony` count in the browser tab title. There is no email, desktop,
-  mobile or webhook notification.
+- **No built-in push notifications.** The web UI marks unread tickets in the
+  list and puts a `(N) Symphony` count in the browser tab title. The optional
+  `webui.ntfy` block sends a push through ntfy when a ticket reaches Needs
+  Input; there is no email or webhook notification and nothing is sent for
+  other events (replies, QA, Done).
 - **No search and no named projects.** The web UI groups tickets by state.
   Repositories are a free-text field with recent values offered as chips;
   there is nothing to name or organise.

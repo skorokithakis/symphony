@@ -2,17 +2,21 @@
 
 from __future__ import annotations
 
+import json
+import logging
 import threading
 from datetime import datetime
 from pathlib import Path
 from unittest.mock import MagicMock, patch
 
+import httpx
 import pytest
 
 from symphony_linear.attachments import (
     extract_attachment_refs,
     process_attachments,
 )
+from symphony_linear.config import _NtfyConfig
 from symphony_linear.local_tracker import (
     STATE_DONE,
     STATE_DRAFT,
@@ -25,6 +29,7 @@ from symphony_linear.local_tracker import (
     LocalTracker,
     image_content_type,
     markdown_link_text,
+    publish_needs_input,
     stored_file_name,
 )
 from symphony_linear.tracker import (
@@ -652,6 +657,30 @@ class TestStates:
         stored = store.get(ticket.id)
         assert stored is not None
         assert stored.state == STATE_QA
+
+    def test_set_state_if_changed_reports_only_a_write(
+        self, store: LocalTicketStore
+    ) -> None:
+        """The notification gate must not fire for a refused or no-op move."""
+        ticket = store.create_draft(description="x")
+
+        assert (
+            store.set_state_if_changed(
+                ticket.id, frozenset({STATE_NEEDS_INPUT}), STATE_QA
+            )
+            is False
+        )
+        assert (
+            store.set_state_if_changed(ticket.id, frozenset({STATE_DRAFT}), STATE_QA)
+            is True
+        )
+        # Already in the target state: set_state_if says the action won, but
+        # nothing was written and there is nothing to notify about.
+        assert (
+            store.set_state_if_changed(ticket.id, frozenset({STATE_QA}), STATE_QA)
+            is False
+        )
+        assert store.set_state_if(ticket.id, frozenset({STATE_QA}), STATE_QA) is True
 
     def test_human_trigger_description_names_done(self, tracker: LocalTracker) -> None:
         assert STATE_DONE in tracker.human_trigger_description()
@@ -1361,6 +1390,211 @@ class TestOrchestratorTransitions:
         stored = store.get(ticket.id)
         assert stored is not None
         assert stored.state == expected
+
+
+# ---------------------------------------------------------------------------
+# ntfy notifications
+# ---------------------------------------------------------------------------
+
+
+def _recording_transport(
+    seen: list[httpx.Request], *, status: int = 200
+) -> httpx.MockTransport:
+    """Return a transport that records each request and answers with *status*."""
+
+    def handle(request: httpx.Request) -> httpx.Response:
+        seen.append(request)
+        return httpx.Response(status)
+
+    return httpx.MockTransport(handle)
+
+
+class TestNtfyNotifications:
+    def test_publish_posts_json_to_the_server_root(
+        self, store: LocalTicketStore
+    ) -> None:
+        ticket = store.create_draft(title="Fix the frobnicator", description="x")
+        seen: list[httpx.Request] = []
+
+        publish_needs_input(
+            _NtfyConfig(
+                url="https://example.com/ntfy/d%C3%A9ployer", token="tk_secret"
+            ),
+            ticket,
+            transport=_recording_transport(seen),
+        )
+
+        assert len(seen) == 1
+        request = seen[0]
+        # The JSON publish targets the server root, not the topic URL from the
+        # config, and the self-hosted path prefix stays exactly as written.
+        assert str(request.url) == "https://example.com/ntfy/"
+        assert request.headers["Authorization"] == "Bearer tk_secret"
+        body = json.loads(request.content)
+        # Only the final segment is percent-decoded into the topic name.
+        assert body == {
+            "topic": "déployer",
+            "title": "Needs Input",
+            "message": "SYM-1: Fix the frobnicator",
+        }
+
+    def test_non_ascii_title_and_click_link(self, store: LocalTicketStore) -> None:
+        ticket = store.create_draft(title="Déployer — 日本語", description="x")
+        seen: list[httpx.Request] = []
+
+        publish_needs_input(
+            _NtfyConfig(
+                url="https://ntfy.sh/mytopic",
+                public_url="https://symphony.example.com",
+            ),
+            ticket,
+            transport=_recording_transport(seen),
+        )
+
+        body = json.loads(seen[0].content)
+        # A Title header would be latin-1 and could not carry this; the JSON
+        # body is UTF-8.
+        assert body["message"] == "SYM-1: Déployer — 日本語"
+        assert body["click"] == "https://symphony.example.com/tickets/SYM-1"
+
+    def test_the_display_title_fallback_is_used(self, store: LocalTicketStore) -> None:
+        ticket = store.create_draft(description="First line\nsecond line")
+        seen: list[httpx.Request] = []
+
+        publish_needs_input(
+            _NtfyConfig(url="https://ntfy.sh/mytopic"),
+            ticket,
+            transport=_recording_transport(seen),
+        )
+
+        assert json.loads(seen[0].content)["message"] == "SYM-1: First line"
+
+    def test_a_non_2xx_response_only_warns(
+        self, store: LocalTicketStore, caplog: pytest.LogCaptureFixture
+    ) -> None:
+        ticket = store.create_draft(title="t", description="x")
+
+        with caplog.at_level(logging.WARNING, logger="symphony_linear.local_tracker"):
+            publish_needs_input(
+                _NtfyConfig(url="https://ntfy.sh/mytopic"),
+                ticket,
+                transport=_recording_transport([], status=500),
+            )
+
+        assert "HTTP 500" in caplog.text
+
+    def test_a_transport_error_only_warns(
+        self, store: LocalTicketStore, caplog: pytest.LogCaptureFixture
+    ) -> None:
+        ticket = store.create_draft(title="t", description="x")
+
+        def explode(request: httpx.Request) -> httpx.Response:
+            raise httpx.ConnectError("unreachable")
+
+        with caplog.at_level(logging.WARNING, logger="symphony_linear.local_tracker"):
+            publish_needs_input(
+                _NtfyConfig(url="https://ntfy.sh/mytopic"),
+                ticket,
+                transport=httpx.MockTransport(explode),
+            )
+
+        assert "ConnectError" in caplog.text
+
+    def test_a_broken_http_client_does_not_fail_the_transition(
+        self,
+        tmp_path: Path,
+        monkeypatch: pytest.MonkeyPatch,
+        caplog: pytest.LogCaptureFixture,
+    ) -> None:
+        """An OSError from client setup (e.g. a bad SSL_CERT_FILE) is contained."""
+        tracker = LocalTracker(tmp_path, ntfy=_NtfyConfig(url="https://ntfy.sh/t"))
+        ticket = tracker.store.create_draft(title="t", description="x")
+        tracker.store.set_state(ticket.id, STATE_IN_PROGRESS)
+
+        def explode(*_args: object, **_kwargs: object) -> None:
+            raise OSError("bad SSL_CERT_FILE")
+
+        monkeypatch.setattr("symphony_linear.local_tracker.httpx.Client", explode)
+
+        with caplog.at_level(logging.WARNING, logger="symphony_linear.local_tracker"):
+            tracker.transition_to(ticket.id, TransitionTarget.needs_input)
+
+        stored = tracker.store.get(ticket.id)
+        assert stored is not None
+        assert stored.state == STATE_NEEDS_INPUT
+        assert len(caplog.records) == 1
+        assert caplog.records[0].levelno == logging.WARNING
+        assert "OSError" in caplog.text
+
+    def test_transition_to_notifies_only_on_a_real_change(
+        self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        tracker = LocalTracker(tmp_path, ntfy=_NtfyConfig(url="https://ntfy.sh/t"))
+        ticket = tracker.store.create_draft(title="t", description="x")
+        tracker.store.set_state(ticket.id, STATE_IN_PROGRESS)
+        calls: list[str] = []
+        monkeypatch.setattr(
+            "symphony_linear.local_tracker.publish_needs_input",
+            lambda _config, notified: calls.append(notified.id),
+        )
+
+        tracker.transition_to(ticket.id, TransitionTarget.needs_input)
+        # The second call is the no-op a turn's failure path plus its normal
+        # end-of-turn transition would produce: one notification, not two.
+        tracker.transition_to(ticket.id, TransitionTarget.needs_input)
+
+        assert calls == [ticket.id]
+
+    def test_other_targets_do_not_notify(
+        self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        tracker = LocalTracker(tmp_path, ntfy=_NtfyConfig(url="https://ntfy.sh/t"))
+        ticket = tracker.store.create_draft(title="t", description="x")
+        tracker.store.set_state(ticket.id, STATE_IN_PROGRESS)
+        calls: list[str] = []
+        monkeypatch.setattr(
+            "symphony_linear.local_tracker.publish_needs_input",
+            lambda _config, notified: calls.append(notified.id),
+        )
+
+        tracker.transition_to(ticket.id, TransitionTarget.qa)
+        tracker.transition_to(ticket.id, TransitionTarget.in_progress)
+
+        assert calls == []
+
+    def test_a_refused_transition_does_not_notify(
+        self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        tracker = LocalTracker(tmp_path, ntfy=_NtfyConfig(url="https://ntfy.sh/t"))
+        ticket = tracker.store.create_draft(title="t", description="x")
+        calls: list[str] = []
+        monkeypatch.setattr(
+            "symphony_linear.local_tracker.publish_needs_input",
+            lambda _config, notified: calls.append(notified.id),
+        )
+
+        tracker.transition_to(ticket.id, TransitionTarget.needs_input)
+
+        assert calls == []
+        assert tracker.store.get(ticket.id).state == STATE_DRAFT  # type: ignore[union-attr]
+
+    def test_no_ntfy_block_never_publishes(
+        self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        """Without the config block nothing is sent, even on a real change."""
+        tracker = LocalTracker(tmp_path)
+        ticket = tracker.store.create_draft(title="t", description="x")
+        tracker.store.set_state(ticket.id, STATE_IN_PROGRESS)
+        calls: list[str] = []
+        monkeypatch.setattr(
+            "symphony_linear.local_tracker.publish_needs_input",
+            lambda _config, notified: calls.append(notified.id),
+        )
+
+        tracker.transition_to(ticket.id, TransitionTarget.needs_input)
+
+        assert calls == []
+        assert tracker.store.get(ticket.id).state == STATE_NEEDS_INPUT  # type: ignore[union-attr]
 
 
 # ---------------------------------------------------------------------------

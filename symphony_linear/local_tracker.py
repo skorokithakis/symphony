@@ -27,8 +27,10 @@ from pathlib import Path
 from typing import Any
 from urllib.parse import urlsplit
 
+import httpx
 from pydantic import BaseModel, ConfigDict, Field, field_validator
 
+from symphony_linear.config import _NtfyConfig
 from symphony_linear.linear import Comment, Issue
 from symphony_linear.state import StateManager
 from symphony_linear.tracker import (
@@ -1226,8 +1228,36 @@ class LocalTicketStore:
 
         Returns ``False`` without writing when another request has already
         changed the state, so a web action cannot win a race against a
-        concurrent one.  The state name is validated even when no transition
-        happens, since a typo in a route table is a programming error.
+        concurrent one.  ``True`` also covers a ticket that is already in
+        *state*: the question this answers is "did my action win?", not "did a
+        change happen?".  A caller with a side effect on the transition wants
+        :meth:`set_state_if_changed` instead.  The state name is validated even
+        when no transition happens, since a typo in a route table is a
+        programming error.
+        """
+        return self._move_state_if(ticket_id, expected, state) is not None
+
+    def set_state_if_changed(
+        self, ticket_id: str, expected: frozenset[str], state: str
+    ) -> bool:
+        """Like :meth:`set_state_if`, but report only a real state change.
+
+        ``set_state_if`` is also true when the ticket is already in *state*.
+        A notification must not fire for that no-op, so this variant returns
+        ``True`` only when it wrote.  The check and the write share one lock
+        acquisition, which is what makes the answer race-free: a separate read
+        before the write could see a different state than the write acted on.
+        """
+        return self._move_state_if(ticket_id, expected, state) is True
+
+    def _move_state_if(
+        self, ticket_id: str, expected: frozenset[str], state: str
+    ) -> bool | None:
+        """Move *ticket_id*; ``None`` when refused, else whether it wrote.
+
+        ``False`` means the ticket was already in *state* and nothing was
+        written.  Both public variants share this one locked transaction so
+        "refused" and "already there" cannot be confused by a second read.
         """
         if state not in TICKET_STATES:
             raise ValueError(
@@ -1237,9 +1267,9 @@ class LocalTicketStore:
         with self._lock:
             ticket = self._require(ticket_id)
             if ticket.state not in expected:
-                return False
+                return None
             if ticket.state == state:
-                return True
+                return False
             now = _iso_now()
             updated = ticket.model_copy(
                 update={"state": state, "state_changed_at": now, "updated_at": now}
@@ -1350,6 +1380,62 @@ class LocalTicketStore:
 # LocalTracker
 # ---------------------------------------------------------------------------
 
+#: A notification must not hold a turn for long: the human is waiting for the
+#: turn's reply, and the message itself is already on the ticket.
+_NTFY_TIMEOUT_SECONDS = 10.0
+
+
+def publish_needs_input(
+    config: _NtfyConfig,
+    ticket: LocalTicket,
+    *,
+    transport: httpx.BaseTransport | None = None,
+) -> None:
+    """Publish one ntfy notification that *ticket* reached Needs Input.
+
+    The message is the identifier and display title only: no comment or reply
+    text exists at transition time, and none may be sent to a third-party
+    server anyway.  The JSON publish to the server root is chosen over ntfy's
+    ``Title``/``Message`` headers because HTTP headers are latin-1, and a
+    ticket title is arbitrary UTF-8 text.
+
+    Losing a notification must never fail the turn that just ended, so the
+    whole notification — building the request and delivering it — is one
+    best-effort boundary: every failure is a single WARNING and a return, and
+    nothing is retried.  *transport* exists for tests, which pass
+    ``httpx.MockTransport`` so no request leaves the process.
+    """
+    try:
+        root, topic = config.endpoint()
+        payload: dict[str, Any] = {
+            "topic": topic,
+            "title": "Needs Input",
+            "message": f"{ticket.identifier}: {display_title(ticket)}",
+        }
+        if config.public_url:
+            payload["click"] = f"{config.public_url}/tickets/{ticket.id}"
+        headers = {"Authorization": f"Bearer {config.token}"} if config.token else {}
+        with httpx.Client(timeout=_NTFY_TIMEOUT_SECONDS, transport=transport) as client:
+            response = client.post(root, json=payload, headers=headers)
+        if not response.is_success:
+            logger.warning(
+                "ntfy notification for %s returned HTTP %s",
+                ticket.id,
+                response.status_code,
+            )
+    except Exception as exc:
+        # Deliberately broad.  This runs after the state change was already
+        # persisted and a turn has just ended, so a lost notification must not
+        # fail that turn.  httpx reports transport and TLS problems as several
+        # unrelated types (HTTPError, InvalidURL, and plain OSError for an
+        # unusable SSL certificate file), so any narrower list could still leak
+        # a raise.  The type is all that is logged: an exception message can
+        # echo the URL, and the token lives in the headers.
+        logger.warning(
+            "ntfy notification for %s failed: %s", ticket.id, type(exc).__name__
+        )
+
+
 _STATE_FOR_TARGET: dict[TransitionTarget, str] = {
     TransitionTarget.in_progress: STATE_IN_PROGRESS,
     TransitionTarget.needs_input: STATE_NEEDS_INPUT,
@@ -1382,8 +1468,12 @@ class LocalTracker:
     state is polled, and moving a ticket to ``Done`` un-triggers it.
     """
 
-    def __init__(self, workspace: Path) -> None:
+    def __init__(self, workspace: Path, *, ntfy: _NtfyConfig | None = None) -> None:
         self.store = LocalTicketStore(workspace / "tickets")
+        # Notifications hang off the tracker because transition_to is the one
+        # place a ticket reaches Needs Input, and it is only reachable from the
+        # orchestrator.  ``None`` means the config block was absent.
+        self._ntfy = ntfy
 
     # ------------------------------------------------------------------
     # Tracker protocol methods
@@ -1451,17 +1541,20 @@ class LocalTracker:
                 f"No state mapping configured for transition target '{target.value}'"
             )
         expected = _TRANSITION_EXPECTED[target]
-        if not self.store.set_state_if(id, expected, state):
+        if not self.store.set_state_if_changed(id, expected, state):
             ticket = self.store.get(id)
             logger.info(
-                "Not transitioning %s to '%s': it is in %r "
-                "(only a user action leaves Draft or Done for this target)",
+                "Not transitioning %s to '%s': it is in %r (refused, or already there)",
                 id,
                 state,
                 ticket.state if ticket is not None else "a deleted ticket",
             )
             return
         logger.info("Transitioned %s to '%s'", id, state)
+        if target is TransitionTarget.needs_input and self._ntfy is not None:
+            ticket = self.store.get(id)
+            if ticket is not None:
+                publish_needs_input(self._ntfy, ticket)
 
     def is_still_triggered(self, issue: Issue) -> bool:
         return issue.state in TRIGGERED_STATES

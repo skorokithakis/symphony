@@ -920,6 +920,63 @@ class TestWebUIConfig:
         assert config.linear is not None
 
 
+class TestNtfyConfig:
+    def test_token_expands_and_public_url_loses_trailing_slash(
+        self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        monkeypatch.setenv("NTFY_TOKEN", "tk_secret")
+        ntfy = {
+            "url": "https://ntfy.sh/mytopic",
+            "token": "$NTFY_TOKEN",
+            "public_url": "https://symphony.example.com/",
+        }
+        _write_yaml(tmp_path / "config.yaml", {"webui": _webui_block(ntfy=ntfy)})
+
+        config = load_config(tmp_path)
+        assert config.webui is not None
+        assert config.webui.ntfy is not None
+        assert config.webui.ntfy.token == "tk_secret"
+        assert config.webui.ntfy.public_url == "https://symphony.example.com"
+
+    def test_url_without_topic_raises(self, tmp_path: Path) -> None:
+        _write_yaml(
+            tmp_path / "config.yaml",
+            {"webui": _webui_block(ntfy={"url": "https://ntfy.sh/"})},
+        )
+
+        with pytest.raises(ValueError, match="must include a topic"):
+            load_config(tmp_path)
+
+    @pytest.mark.parametrize(
+        ("field", "value"),
+        [
+            ("url", "https://user:pass@example.com/mytopic"),
+            ("public_url", "https://user:pass@example.com"),
+        ],
+    )
+    def test_user_information_is_rejected(
+        self, tmp_path: Path, field: str, value: str
+    ) -> None:
+        """Credentials belong in the token field, not embedded in a URL."""
+        ntfy = {
+            "url": "https://ntfy.sh/mytopic",
+            "public_url": "https://symphony.example.com",
+        }
+        ntfy[field] = value
+
+        _write_yaml(tmp_path / "config.yaml", {"webui": _webui_block(ntfy=ntfy)})
+
+        with pytest.raises(ValueError, match="user information.*'token' field"):
+            load_config(tmp_path)
+
+    def test_unknown_key_raises(self, tmp_path: Path) -> None:
+        ntfy = {"url": "https://ntfy.sh/mytopic", "topic": "mytopic"}
+        _write_yaml(tmp_path / "config.yaml", {"webui": _webui_block(ntfy=ntfy)})
+
+        with pytest.raises(ValueError, match="Config validation failed"):
+            load_config(tmp_path)
+
+
 # ---------------------------------------------------------------------------
 # Webhook config tests
 # ---------------------------------------------------------------------------

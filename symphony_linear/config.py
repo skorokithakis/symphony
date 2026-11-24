@@ -10,6 +10,7 @@ import os
 import re
 from pathlib import Path
 from typing import Any, Literal
+from urllib.parse import unquote, urlsplit, urlunsplit
 
 import yaml
 from pydantic import (
@@ -232,6 +233,101 @@ class _WebhookConfig(BaseModel):
     )
 
 
+def _split_ntfy_topic_url(url: str) -> tuple[str, str]:
+    """Return ``(server_root, topic)`` for a full ntfy topic URL.
+
+    ntfy's JSON publish targets the server root and names the topic in the
+    request body, so a configured topic URL is split rather than posted to as
+    is.  A path prefix stays on the root because a self-hosted server may live
+    under one (``https://example.com/ntfy`` plus ``/mytopic``), and it is kept
+    exactly as written.  Only the final segment is percent-decoded: the topic
+    in the JSON body is the real name, while decoding the prefix could change
+    the path the server is served from.  A query or fragment would be silently
+    dropped by the split, so it is rejected instead.
+    """
+    parts = urlsplit(url.strip())
+    if parts.scheme not in ("http", "https") or not parts.netloc:
+        raise ValueError("must be an absolute http(s) URL")
+    if parts.username is not None or parts.password is not None:
+        raise ValueError(
+            "must not contain user information (user:pass@); "
+            "use the 'token' field instead"
+        )
+    if parts.query or parts.fragment:
+        raise ValueError("must not contain a query string or fragment")
+    root_path, _, topic = parts.path.rstrip("/").rpartition("/")
+    if not topic:
+        raise ValueError("must include a topic, e.g. https://ntfy.sh/mytopic")
+    return (
+        urlunsplit((parts.scheme, parts.netloc, root_path + "/", "", "")),
+        unquote(topic),
+    )
+
+
+class _NtfyConfig(BaseModel):
+    """Optional ntfy push notifications for the built-in backend.
+
+    Notifications are sent only when a ticket actually changes to Needs Input,
+    and carry the identifier and title only: comment text does not exist yet at
+    that point and must not be sent to a third-party server.
+    """
+
+    model_config = ConfigDict(extra="forbid")
+
+    url: str = Field(
+        ...,
+        description=(
+            "Full ntfy topic URL, e.g. https://ntfy.sh/mytopic. "
+            "Notifications are published to the server root as JSON."
+        ),
+    )
+    token: str | None = Field(
+        None, description="Optional bearer token sent as 'Authorization: Bearer'"
+    )
+    public_url: str | None = Field(
+        None,
+        description=(
+            "Optional base URL of the web UI; when set, a notification's Click "
+            "opens <public_url>/tickets/<id>"
+        ),
+    )
+
+    @field_validator("url")
+    @classmethod
+    def _validate_url(cls, v: str) -> str:
+        _split_ntfy_topic_url(v)
+        return v
+
+    @field_validator("token")
+    @classmethod
+    def _validate_token(cls, v: str | None) -> str | None:
+        if v is not None and not v.strip():
+            raise ValueError("must be a non-empty string when set")
+        return v
+
+    @field_validator("public_url")
+    @classmethod
+    def _validate_public_url(cls, v: str | None) -> str | None:
+        if v is None:
+            return None
+        base = v.strip().rstrip("/")
+        parts = urlsplit(base)
+        if parts.scheme not in ("http", "https") or not parts.netloc:
+            raise ValueError("must be an absolute http(s) URL")
+        if parts.username is not None or parts.password is not None:
+            raise ValueError(
+                "must not contain user information (user:pass@); "
+                "use the 'token' field instead"
+            )
+        if parts.query or parts.fragment:
+            raise ValueError("must not contain a query string or fragment")
+        return base
+
+    def endpoint(self) -> tuple[str, str]:
+        """Return the ``(server_root, topic)`` pair to publish to."""
+        return _split_ntfy_topic_url(self.url)
+
+
 class _WebUIConfig(BaseModel):
     """Built-in web UI and local tracker backend configuration."""
 
@@ -244,6 +340,9 @@ class _WebUIConfig(BaseModel):
     anthropic_api_key: str | None = Field(
         None,
         description="Optional Anthropic API key for automatic ticket titles",
+    )
+    ntfy: _NtfyConfig | None = Field(
+        None, description="Optional ntfy notifications when a ticket needs input"
     )
 
     @field_validator("username", "password")

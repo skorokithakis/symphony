@@ -11,7 +11,8 @@ import pytest
 
 from symphony_linear.cli import _create_tracker, _reexec, main
 from symphony_linear.config import load_config
-from symphony_linear.local_tracker import LocalTracker
+from symphony_linear.local_tracker import STATE_IN_PROGRESS, LocalTracker
+from symphony_linear.tracker import TransitionTarget
 
 
 # ---------------------------------------------------------------------------
@@ -44,6 +45,17 @@ webui:
   port: 8080
   username: admin
   password: secret
+poll_interval_seconds: 10
+"""
+
+_CONFIG_WITH_WEBUI_NTFY = """\
+webui:
+  port: 8080
+  username: admin
+  password: secret
+  ntfy:
+    url: https://ntfy.sh/mytopic
+    public_url: https://symphony.example.com
 poll_interval_seconds: 10
 """
 
@@ -487,6 +499,26 @@ class TestCreateTracker:
 
         assert isinstance(tracker, LocalTracker)
         assert (tmp_path / "tickets").is_dir()
+
+    def test_webui_backend_receives_the_ntfy_block(
+        self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        """cli must pass webui.ntfy through: it is what arms notifications."""
+        _write_config(tmp_path, _CONFIG_WITH_WEBUI_NTFY)
+        config = load_config(tmp_path)
+        tracker = _create_tracker(config, tmp_path)
+        assert isinstance(tracker, LocalTracker)
+        ticket = tracker.store.create_draft(title="t", description="x")
+        tracker.store.set_state(ticket.id, STATE_IN_PROGRESS)
+        calls: list[str] = []
+        monkeypatch.setattr(
+            "symphony_linear.local_tracker.publish_needs_input",
+            lambda _config, notified: calls.append(notified.id),
+        )
+
+        tracker.transition_to(ticket.id, TransitionTarget.needs_input)
+
+        assert calls == [ticket.id]
 
     def test_main_passes_workspace_to_tracker_factory(self, tmp_path: Path) -> None:
         _write_config(tmp_path, _CONFIG_WITH_WEBUI)
