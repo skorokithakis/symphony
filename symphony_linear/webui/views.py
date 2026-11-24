@@ -8,6 +8,7 @@ from __future__ import annotations
 
 import hashlib
 import json
+from collections.abc import Iterable, Mapping
 from dataclasses import asdict, dataclass
 from datetime import datetime, timezone
 
@@ -19,6 +20,7 @@ from symphony_linear.local_tracker import (
     STATE_QA,
     LocalComment,
     LocalTicket,
+    RepoEntry,
     display_title as _display_title,
     repo_short_name,
 )
@@ -89,6 +91,7 @@ class Row:
     id: str
     title: str
     repo: str
+    repo_url: str
     updated_at: str
     updated_text: str
     working: bool
@@ -133,13 +136,27 @@ class ArchiveList:
 # ---------------------------------------------------------------------------
 
 
-def short_repo(repo: str) -> str:
-    """The ``owner/name`` display form, or "No repository" for an empty value.
+def repo_names(repos: Iterable[RepoEntry]) -> dict[str, str]:
+    """Map each managed repository's URL to the name the user saved for it.
 
-    The derivation lives in the store module because the managed repository
-    list seeds its names from it; this is only the page-facing label.
+    Keys are stripped because the store compares repository URLs after
+    stripping, while a ticket keeps whatever string it was created with.
     """
-    return repo_short_name(repo) or "No repository"
+    return {entry.url.strip(): entry.name for entry in repos}
+
+
+def short_repo(repo: str, names: Mapping[str, str] | None = None) -> str:
+    """The repository label: its saved name, else ``owner/name``, else "No repository".
+
+    *names* is :func:`repo_names` for the current request, so a ticket's
+    repository shows the same label the repos page lists it under.  The
+    ``owner/name`` derivation lives in the store module because the managed
+    repository list seeds its names from it; this is only the page-facing
+    label.
+    """
+    stripped = repo.strip()
+    saved = names.get(stripped) if names and stripped else None
+    return saved or repo_short_name(stripped) or "No repository"
 
 
 def display_title(ticket: LocalTicket) -> str:
@@ -191,7 +208,12 @@ def _elapsed_text(start: str, now: datetime) -> str:
 # ---------------------------------------------------------------------------
 
 
-def _row(ticket: LocalTicket, state_entry: TicketState | None, now: datetime) -> Row:
+def _row(
+    ticket: LocalTicket,
+    state_entry: TicketState | None,
+    now: datetime,
+    names: Mapping[str, str],
+) -> Row:
     failed = state_entry is not None and (
         state_entry.status == TicketStatus.failed or bool(state_entry.setup_error)
     )
@@ -199,7 +221,8 @@ def _row(ticket: LocalTicket, state_entry: TicketState | None, now: datetime) ->
     return Row(
         id=ticket.id,
         title=display_title(ticket),
-        repo=short_repo(ticket.repo),
+        repo=short_repo(ticket.repo, names),
+        repo_url=ticket.repo.strip(),
         updated_at=ticket.updated_at,
         updated_text=_utc_text(ticket.updated_at),
         working=working,
@@ -238,13 +261,15 @@ def home_list(request: Request) -> HomeList:
     now = datetime.now(timezone.utc)
     tickets = request.app.store.list_tickets()
     state_entries = _state_entries(request)
+    names = repo_names(request.app.store.list_repos())
 
     groups: list[Group] = []
     for state, state_class, empty_text in _HOME_GROUPS:
         matching = [ticket for ticket in tickets if ticket.state == state]
         matching.sort(key=lambda ticket: _sort_key(ticket.updated_at), reverse=True)
         rows = tuple(
-            _row(ticket, state_entries.get(ticket.id), now) for ticket in matching
+            _row(ticket, state_entries.get(ticket.id), now, names)
+            for ticket in matching
         )
         groups.append(
             Group(
@@ -273,9 +298,10 @@ def archive_list(request: Request) -> ArchiveList:
         if ticket.state == STATE_DONE
     ]
     done.sort(key=lambda ticket: _sort_key(ticket.state_changed_at), reverse=True)
+    names = repo_names(request.app.store.list_repos())
     # The working/failed row variants belong to the home page; a finished
     # ticket is shown plainly even if a stale StateManager entry lingers.
-    rows = tuple(_row(ticket, None, now) for ticket in done)
+    rows = tuple(_row(ticket, None, now, names) for ticket in done)
     return ArchiveList(
         rows=rows,
         count=len(rows),

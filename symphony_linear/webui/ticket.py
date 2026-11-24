@@ -48,6 +48,7 @@ from symphony_linear.webui.views import (
     display_title,
     is_agent_kind,
     needs_input_count,
+    repo_names,
     short_repo,
 )
 
@@ -144,6 +145,7 @@ class TicketPage:
     ticket: LocalTicket
     title: str
     repo: str
+    repo_url: str
     state_class: str
     state_label: str
     branch: str
@@ -420,11 +422,13 @@ def page_for(
         _elapsed(ticket.state_changed_at) if ticket.state == STATE_IN_PROGRESS else None
     )
     title = display_title(ticket)
+    names = repo_names(request.app.store.list_repos())
     last_comment_id = ticket.comments[-1].id if ticket.comments else ""
     page = TicketPage(
         ticket=ticket,
         title=title,
-        repo=short_repo(ticket.repo),
+        repo=short_repo(ticket.repo, names),
+        repo_url=ticket.repo.strip(),
         state_class=state_class,
         state_label=state_label,
         branch=state_entry.branch if state_entry else "",

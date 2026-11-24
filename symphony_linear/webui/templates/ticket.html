@@ -25,7 +25,7 @@
       <p class="conn" id="conn" role="status" hidden>Connection lost. Retrying…</p>
     </div>
     <h1 class="ttitle" id="ticket-title">{{ page.title }}</h1>
-    <p class="trepo">{{ page.repo }}</p>
+    <p class="trepo"{% if page.repo_url %} title="{{ page.repo_url }}"{% endif %}>{{ page.repo }}</p>
     <details class="tmeta" open>
       <summary>Details</summary>
       <dl>

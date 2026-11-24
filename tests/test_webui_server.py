@@ -361,6 +361,38 @@ class TestHomePage:
         )
         assert "UTC" in text
 
+    def test_saved_repository_name_replaces_the_derived_one(
+        self, tmp_path: Path
+    ) -> None:
+        with _running_server(tmp_path) as (port, tracker, _state):
+            tracker.store.add_repo("https://github.com/acme/widgets.git", "Widgets")
+            saved = tracker.store.create_started_draft(
+                title="Saved name", repo="https://github.com/acme/widgets.git"
+            )
+            tracker.store.create_started_draft(
+                title="Unlisted repo", repo="https://github.com/acme/gadgets.git"
+            )
+            _status, _headers, body = _request(port, "GET", "/")
+            _status, _headers, ticket_body = _request(
+                port, "GET", f"/tickets/{saved.id}"
+            )
+
+        text = body.decode()
+        saved_row = (
+            '<span class="row-repo" title="https://github.com/acme/widgets.git">'
+            "Widgets</span>"
+        )
+        derived_row = (
+            '<span class="row-repo" title="https://github.com/acme/gadgets.git">'
+            "acme/gadgets</span>"
+        )
+        assert saved_row in text
+        assert derived_row in text
+        saved_header = (
+            '<p class="trepo" title="https://github.com/acme/widgets.git">Widgets</p>'
+        )
+        assert saved_header in ticket_body.decode()
+
     def test_working_row_shows_elapsed_time(self, tmp_path: Path) -> None:
         _write_ticket(
             tmp_path,
