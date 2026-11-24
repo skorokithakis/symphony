@@ -284,13 +284,6 @@ class _NtfyConfig(BaseModel):
     token: str | None = Field(
         None, description="Optional bearer token sent as 'Authorization: Bearer'"
     )
-    public_url: str | None = Field(
-        None,
-        description=(
-            "Optional base URL of the web UI; when set, a notification's Click "
-            "opens <public_url>/tickets/<id>"
-        ),
-    )
 
     @field_validator("url")
     @classmethod
@@ -304,24 +297,6 @@ class _NtfyConfig(BaseModel):
         if v is not None and not v.strip():
             raise ValueError("must be a non-empty string when set")
         return v
-
-    @field_validator("public_url")
-    @classmethod
-    def _validate_public_url(cls, v: str | None) -> str | None:
-        if v is None:
-            return None
-        base = v.strip().rstrip("/")
-        parts = urlsplit(base)
-        if parts.scheme not in ("http", "https") or not parts.netloc:
-            raise ValueError("must be an absolute http(s) URL")
-        if parts.username is not None or parts.password is not None:
-            raise ValueError(
-                "must not contain user information (user:pass@); "
-                "use the 'token' field instead"
-            )
-        if parts.query or parts.fragment:
-            raise ValueError("must not contain a query string or fragment")
-        return base
 
     def endpoint(self) -> tuple[str, str]:
         """Return the ``(server_root, topic)`` pair to publish to."""
@@ -341,6 +316,13 @@ class _WebUIConfig(BaseModel):
         None,
         description="Optional Anthropic API key for automatic ticket titles",
     )
+    public_url: str | None = Field(
+        None,
+        description=(
+            "Optional public base URL of this web UI; when set, a notification's "
+            "Click opens <public_url>/tickets/<id> and it shows the Symphony icon"
+        ),
+    )
     ntfy: _NtfyConfig | None = Field(
         None, description="Optional ntfy notifications when a ticket needs input"
     )
@@ -351,6 +333,27 @@ class _WebUIConfig(BaseModel):
         if not v.strip():
             raise ValueError("must be a non-empty string")
         return v
+
+    @field_validator("public_url")
+    @classmethod
+    def _validate_public_url(cls, v: str | None) -> str | None:
+        if v is None:
+            return None
+        stripped = v.strip()
+        # urlsplit reports an empty query or fragment for a URL ending in "?"
+        # or "#", indistinguishable from no marker at all, so the raw string is
+        # checked before splitting.
+        if stripped.endswith(("?", "#")):
+            raise ValueError("must not contain a query string or fragment")
+        base = stripped.rstrip("/")
+        parts = urlsplit(base)
+        if parts.scheme not in ("http", "https") or not parts.netloc:
+            raise ValueError("must be an absolute http(s) URL")
+        if parts.username is not None or parts.password is not None:
+            raise ValueError("must not contain user information (user:pass@)")
+        if parts.query or parts.fragment:
+            raise ValueError("must not contain a query string or fragment")
+        return base
 
 
 class AppConfig(BaseModel):

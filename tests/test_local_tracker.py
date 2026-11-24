@@ -1443,11 +1443,9 @@ class TestNtfyNotifications:
         seen: list[httpx.Request] = []
 
         publish_needs_input(
-            _NtfyConfig(
-                url="https://ntfy.sh/mytopic",
-                public_url="https://symphony.example.com",
-            ),
+            _NtfyConfig(url="https://ntfy.sh/mytopic"),
             ticket,
+            public_url="https://symphony.example.com",
             transport=_recording_transport(seen),
         )
 
@@ -1456,6 +1454,8 @@ class TestNtfyNotifications:
         # body is UTF-8.
         assert body["message"] == "SYM-1: Déployer — 日本語"
         assert body["click"] == "https://symphony.example.com/tickets/SYM-1"
+        # Same base URL as the click target, so the icon cannot drift from it.
+        assert body["icon"] == "https://symphony.example.com/public/icon.png"
 
     def test_the_display_title_fallback_is_used(self, store: LocalTicketStore) -> None:
         ticket = store.create_draft(description="First line\nsecond line")
@@ -1535,7 +1535,7 @@ class TestNtfyNotifications:
         calls: list[str] = []
         monkeypatch.setattr(
             "symphony_linear.local_tracker.publish_needs_input",
-            lambda _config, notified: calls.append(notified.id),
+            lambda _config, notified, **_kwargs: calls.append(notified.id),
         )
 
         tracker.transition_to(ticket.id, TransitionTarget.needs_input)
@@ -1554,7 +1554,7 @@ class TestNtfyNotifications:
         calls: list[str] = []
         monkeypatch.setattr(
             "symphony_linear.local_tracker.publish_needs_input",
-            lambda _config, notified: calls.append(notified.id),
+            lambda _config, notified, **_kwargs: calls.append(notified.id),
         )
 
         tracker.transition_to(ticket.id, TransitionTarget.qa)
@@ -1570,7 +1570,7 @@ class TestNtfyNotifications:
         calls: list[str] = []
         monkeypatch.setattr(
             "symphony_linear.local_tracker.publish_needs_input",
-            lambda _config, notified: calls.append(notified.id),
+            lambda _config, notified, **_kwargs: calls.append(notified.id),
         )
 
         tracker.transition_to(ticket.id, TransitionTarget.needs_input)
@@ -1588,7 +1588,7 @@ class TestNtfyNotifications:
         calls: list[str] = []
         monkeypatch.setattr(
             "symphony_linear.local_tracker.publish_needs_input",
-            lambda _config, notified: calls.append(notified.id),
+            lambda _config, notified, **_kwargs: calls.append(notified.id),
         )
 
         tracker.transition_to(ticket.id, TransitionTarget.needs_input)

@@ -174,6 +174,10 @@ def _create_tracker(config: AppConfig, workspace: Path) -> Tracker:
         )
         return GitHubTracker(client=github_client, config=github_tracker_config)
     if config.webui is not None:
-        return LocalTracker(workspace, ntfy=config.webui.ntfy)
+        return LocalTracker(
+            workspace,
+            ntfy=config.webui.ntfy,
+            public_url=config.webui.public_url,
+        )
     # The model_validator guarantees this is unreachable, but be defensive.
     raise RuntimeError("No tracker backend configured")

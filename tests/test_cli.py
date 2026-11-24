@@ -53,9 +53,9 @@ webui:
   port: 8080
   username: admin
   password: secret
+  public_url: https://symphony.example.com
   ntfy:
     url: https://ntfy.sh/mytopic
-    public_url: https://symphony.example.com
 poll_interval_seconds: 10
 """
 
@@ -510,15 +510,19 @@ class TestCreateTracker:
         assert isinstance(tracker, LocalTracker)
         ticket = tracker.store.create_draft(title="t", description="x")
         tracker.store.set_state(ticket.id, STATE_IN_PROGRESS)
-        calls: list[str] = []
+        calls: list[tuple[str, str | None]] = []
         monkeypatch.setattr(
             "symphony_linear.local_tracker.publish_needs_input",
-            lambda _config, notified: calls.append(notified.id),
+            lambda _config, notified, **kwargs: calls.append(
+                (notified.id, kwargs.get("public_url"))
+            ),
         )
 
         tracker.transition_to(ticket.id, TransitionTarget.needs_input)
 
-        assert calls == [ticket.id]
+        # The notification payload's links need the web UI's base URL, so cli
+        # must hand webui.public_url to the tracker alongside the ntfy block.
+        assert calls == [(ticket.id, "https://symphony.example.com")]
 
     def test_main_passes_workspace_to_tracker_factory(self, tmp_path: Path) -> None:
         _write_config(tmp_path, _CONFIG_WITH_WEBUI)

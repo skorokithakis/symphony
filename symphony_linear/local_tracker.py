@@ -1384,11 +1384,18 @@ class LocalTicketStore:
 #: turn's reply, and the message itself is already on the ticket.
 _NTFY_TIMEOUT_SECONDS = 10.0
 
+#: The one place the icon's URL path is written down.  The web UI serves it as
+#: a public asset and both the favicon in ``templates/base.html`` and the ntfy
+#: ``icon`` field point at it, so replacing ``static/public/icon.png`` changes
+#: the icon everywhere without touching code.
+PUBLIC_ICON_PATH = "/public/icon.png"
+
 
 def publish_needs_input(
     config: _NtfyConfig,
     ticket: LocalTicket,
     *,
+    public_url: str | None = None,
     transport: httpx.BaseTransport | None = None,
 ) -> None:
     """Publish one ntfy notification that *ticket* reached Needs Input.
@@ -1404,6 +1411,11 @@ def publish_needs_input(
     best-effort boundary: every failure is a single WARNING and a return, and
     nothing is retried.  *transport* exists for tests, which pass
     ``httpx.MockTransport`` so no request leaves the process.
+
+    *public_url* is the configured ``webui.public_url``.  It lives in
+    ``_WebUIConfig`` rather than the ntfy block because it describes the web
+    UI, not the topic; when it is absent neither the click target nor the icon
+    can be built, so both fields are omitted.
     """
     try:
         root, topic = config.endpoint()
@@ -1412,8 +1424,11 @@ def publish_needs_input(
             "title": "Needs Input",
             "message": f"{ticket.identifier}: {display_title(ticket)}",
         }
-        if config.public_url:
-            payload["click"] = f"{config.public_url}/tickets/{ticket.id}"
+        if public_url:
+            payload["click"] = f"{public_url}/tickets/{ticket.id}"
+            # ntfy only renders this on Android; iOS ignores it.  A notification
+            # without an icon still works, so this is not worth gating further.
+            payload["icon"] = f"{public_url}{PUBLIC_ICON_PATH}"
         headers = {"Authorization": f"Bearer {config.token}"} if config.token else {}
         with httpx.Client(timeout=_NTFY_TIMEOUT_SECONDS, transport=transport) as client:
             response = client.post(root, json=payload, headers=headers)
@@ -1468,12 +1483,21 @@ class LocalTracker:
     state is polled, and moving a ticket to ``Done`` un-triggers it.
     """
 
-    def __init__(self, workspace: Path, *, ntfy: _NtfyConfig | None = None) -> None:
+    def __init__(
+        self,
+        workspace: Path,
+        *,
+        ntfy: _NtfyConfig | None = None,
+        public_url: str | None = None,
+    ) -> None:
         self.store = LocalTicketStore(workspace / "tickets")
         # Notifications hang off the tracker because transition_to is the one
         # place a ticket reaches Needs Input, and it is only reachable from the
         # orchestrator.  ``None`` means the config block was absent.
         self._ntfy = ntfy
+        # The UI's base URL is a webui setting, not an ntfy one, but the only
+        # thing that consumes it is the notification payload here.
+        self._public_url = public_url
 
     # ------------------------------------------------------------------
     # Tracker protocol methods
@@ -1554,7 +1578,7 @@ class LocalTracker:
         if target is TransitionTarget.needs_input and self._ntfy is not None:
             ticket = self.store.get(id)
             if ticket is not None:
-                publish_needs_input(self._ntfy, ticket)
+                publish_needs_input(self._ntfy, ticket, public_url=self._public_url)
 
     def is_still_triggered(self, issue: Issue) -> bool:
         return issue.state in TRIGGERED_STATES

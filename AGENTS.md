@@ -540,10 +540,15 @@ shutting down, or the ticket is no longer triggered — see `_is_still_triggered
   pull the ticket out of QA before the serve starts.
 - **Every web UI request goes through one dispatch choke point.**
   `_WebUIHandler.handle_one_request` parses the request and `_dispatch` does,
-  in order: HTTP Basic auth on every request, including static assets and
-  error responses (one constant-time `hmac.compare_digest` over the whole
-  `user:password` pair); same-origin enforcement on every non-GET/HEAD method;
-  route resolution; the per-route body cap (1 MiB by default) and body read.
+  in order: route resolution, so a public route can be recognised before
+  authenticating; HTTP Basic auth on every request, including static assets
+  and error responses (one constant-time `hmac.compare_digest` over the whole
+  `user:password` pair), except a GET or HEAD request that resolves to a route
+  marked `public` — only `/public/icon.png` is, so the favicon and the ntfy
+  notification icon load without credentials — while unknown paths and
+  non-GET/HEAD methods on that path still get 401; same-origin enforcement
+  on every non-GET/HEAD method; the per-route body cap (1 MiB by default) and
+  body read.
   `end_headers` adds the CSP, `X-Content-Type-Options: nosniff` and
   `X-Frame-Options: DENY` to every response, error responses included. The
   Origin check requires the Origin netloc to equal `Host` and rejects an

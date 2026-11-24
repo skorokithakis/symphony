@@ -2,9 +2,9 @@
 
 This is the only place a new page needs to be registered.  Every route is
 resolved by the single request pipeline in :mod:`symphony_linear.webui.server`,
-which authenticates the request, enforces same-origin on non-GET/HEAD methods
-and adds the security headers to the response.  Adding an entry here cannot
-skip any of that.
+which authenticates the request (except GET/HEAD on a route marked ``public``),
+enforces same-origin on non-GET/HEAD methods and adds the security headers to
+the response.  Adding an entry here cannot skip any of that.
 
 A view is ``Callable[[Request], Response]``.  Use a named group in the pattern
 to read a path parameter, e.g. ``r"^/tickets/(?P<ticket_id>[^/]+)$"`` and
@@ -26,6 +26,7 @@ from __future__ import annotations
 
 import re
 
+from symphony_linear.local_tracker import PUBLIC_ICON_PATH
 from symphony_linear.webui.api import (
     MAX_UPLOAD_BYTES,
     api_archive,
@@ -62,7 +63,7 @@ from symphony_linear.webui.repos import (
     post_remove_repo,
     repos_page,
 )
-from symphony_linear.webui.static import serve_static
+from symphony_linear.webui.static import serve_public, serve_static
 from symphony_linear.webui.ticket import post_reply, post_state, ticket_page
 from symphony_linear.webui.views import archive, home
 
@@ -84,6 +85,12 @@ _API_TICKET_FILE = re.compile(
 )
 
 _FILES = re.compile(r"^/files/(?P<ticket_id>[^/]+)/(?P<name>[^/]+)$")
+
+# Built from the one URL constant rather than written out here, so the route
+# matches exactly the icon the favicon and the ntfy payload point at.  An
+# unknown /public/... path is not a route at all, and therefore still needs
+# credentials like everything else.
+_PUBLIC_ICON = re.compile(r"^" + re.escape(PUBLIC_ICON_PATH) + r"$")
 
 ROUTES: tuple[Route, ...] = (
     Route("GET", re.compile(r"^/$"), home),
@@ -137,5 +144,6 @@ ROUTES: tuple[Route, ...] = (
     Route("POST", _API_TICKET_SEEN, api_seen),
     Route("POST", _API_TICKET_REPLY, api_reply),
     Route("POST", _API_TICKET_STATE, api_state),
+    Route("GET", _PUBLIC_ICON, serve_public, public=True),
     Route("GET", re.compile(r"^/static/(?P<path>.+)$"), serve_static),
 )

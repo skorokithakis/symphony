@@ -1239,6 +1239,46 @@ class TestStaticFiles:
         assert b"TOP-SECRET" not in body
 
 
+class TestPublicAssets:
+    def test_the_icon_is_public_while_other_requests_need_credentials(
+        self, tmp_path: Path
+    ) -> None:
+        with _running_server(tmp_path) as (port, _tracker, _state):
+            status, headers, body = _request(
+                port, "GET", "/public/icon.png", auth=False
+            )
+            head_status, head_headers, head_body = _request(
+                port, "HEAD", "/public/icon.png", auth=False
+            )
+            home_status, _h, _b = _request(port, "GET", "/", auth=False)
+            static_status, _h, _b = _request(
+                port, "GET", "/static/symphony.css", auth=False
+            )
+            unknown_status, _h, _b = _request(
+                port, "GET", "/public/nope.png", auth=False
+            )
+            pathless_status, _h, _b = _request(port, "GET", "/nope", auth=False)
+            post_status, _h, _b = _request(port, "POST", "/public/icon.png", auth=False)
+
+        assert status == 200
+        assert headers["Content-Type"] == "image/png"
+        assert body.startswith(b"\x89PNG")
+        # HEAD is dispatched to the GET view and is exempt too, so it succeeds
+        # without a body.
+        assert head_status == 200
+        assert head_body == b""
+        assert int(head_headers["Content-Length"]) > 0
+        # Only the one icon path is a public route; other /public/... paths are
+        # unknown routes, and every other request still demands credentials.
+        assert home_status == 401
+        assert static_status == 401
+        assert unknown_status == 401
+        assert pathless_status == 401
+        assert post_status == 401
+        # The security headers are sent on the unauthenticated success too.
+        assert headers["X-Content-Type-Options"] == "nosniff"
+
+
 class TestServerLifecycle:
     def test_stop_is_safe_before_start(self, tmp_path: Path) -> None:
         server = WebUIServer(

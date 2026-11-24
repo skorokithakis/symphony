@@ -919,24 +919,51 @@ class TestWebUIConfig:
         assert config.webui is None
         assert config.linear is not None
 
+    def test_public_url_loses_trailing_slash(self, tmp_path: Path) -> None:
+        _write_yaml(
+            tmp_path / "config.yaml",
+            {"webui": _webui_block(public_url="https://symphony.example.com/")},
+        )
+
+        config = load_config(tmp_path)
+        assert config.webui is not None
+        assert config.webui.public_url == "https://symphony.example.com"
+
+    def test_public_url_user_information_is_rejected(self, tmp_path: Path) -> None:
+        _write_yaml(
+            tmp_path / "config.yaml",
+            {"webui": _webui_block(public_url="https://user:pass@example.com")},
+        )
+
+        with pytest.raises(ValueError, match="user information"):
+            load_config(tmp_path)
+
+    @pytest.mark.parametrize("separator", ["?", "#"])
+    def test_public_url_trailing_empty_query_or_fragment_is_rejected(
+        self, tmp_path: Path, separator: str
+    ) -> None:
+        """urlsplit hides a bare '?' or '#', so the validator must see it."""
+        _write_yaml(
+            tmp_path / "config.yaml",
+            {"webui": _webui_block(public_url=f"https://example.com{separator}")},
+        )
+
+        with pytest.raises(ValueError, match="query string or fragment"):
+            load_config(tmp_path)
+
 
 class TestNtfyConfig:
-    def test_token_expands_and_public_url_loses_trailing_slash(
+    def test_token_expands(
         self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
     ) -> None:
         monkeypatch.setenv("NTFY_TOKEN", "tk_secret")
-        ntfy = {
-            "url": "https://ntfy.sh/mytopic",
-            "token": "$NTFY_TOKEN",
-            "public_url": "https://symphony.example.com/",
-        }
+        ntfy = {"url": "https://ntfy.sh/mytopic", "token": "$NTFY_TOKEN"}
         _write_yaml(tmp_path / "config.yaml", {"webui": _webui_block(ntfy=ntfy)})
 
         config = load_config(tmp_path)
         assert config.webui is not None
         assert config.webui.ntfy is not None
         assert config.webui.ntfy.token == "tk_secret"
-        assert config.webui.ntfy.public_url == "https://symphony.example.com"
 
     def test_url_without_topic_raises(self, tmp_path: Path) -> None:
         _write_yaml(
@@ -947,24 +974,16 @@ class TestNtfyConfig:
         with pytest.raises(ValueError, match="must include a topic"):
             load_config(tmp_path)
 
-    @pytest.mark.parametrize(
-        ("field", "value"),
-        [
-            ("url", "https://user:pass@example.com/mytopic"),
-            ("public_url", "https://user:pass@example.com"),
-        ],
-    )
-    def test_user_information_is_rejected(
-        self, tmp_path: Path, field: str, value: str
-    ) -> None:
+    def test_topic_url_user_information_is_rejected(self, tmp_path: Path) -> None:
         """Credentials belong in the token field, not embedded in a URL."""
-        ntfy = {
-            "url": "https://ntfy.sh/mytopic",
-            "public_url": "https://symphony.example.com",
-        }
-        ntfy[field] = value
-
-        _write_yaml(tmp_path / "config.yaml", {"webui": _webui_block(ntfy=ntfy)})
+        _write_yaml(
+            tmp_path / "config.yaml",
+            {
+                "webui": _webui_block(
+                    ntfy={"url": "https://user:pass@example.com/mytopic"}
+                )
+            },
+        )
 
         with pytest.raises(ValueError, match="user information.*'token' field"):
             load_config(tmp_path)

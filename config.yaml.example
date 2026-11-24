@@ -109,6 +109,12 @@ linear:
 #   # sandbox masks from the coding agents.
 #   # anthropic_api_key: ${ANTHROPIC_API_KEY}
 #
+#   # Optional. Public base URL of this web UI, e.g. behind your reverse
+#   # proxy.  Notifications use it to open the ticket at
+#   # <public_url>/tickets/<id> and to show the Symphony icon.  Needs no
+#   # credentials for the icon route.  ntfy renders the icon on Android only.
+#   # public_url: https://symphony.example.com
+#
 #   # Optional. Push notifications via ntfy when a ticket actually moves to
 #   # Needs Input (a turn ending, a turn failing, a dirty-workspace refusal,
 #   # a QA serve dying).  `url` is the full topic URL.  Nothing is sent
@@ -119,9 +125,6 @@ linear:
 #   #   # Optional. Sent as `Authorization: Bearer <token>` for a protected
 #   #   # topic.
 #   #   token: ${NTFY_TOKEN}
-#   #   # Optional. Base URL of this web UI, so tapping the notification opens
-#   #   # the ticket at <public_url>/tickets/<id>.
-#   #   public_url: https://symphony.example.com
 
 # ---------------------------------------------------------------------------
 # Coding agent

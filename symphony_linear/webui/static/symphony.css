@@ -183,8 +183,9 @@ body.sym { min-height: 100dvh; }
 .wordmark {
   font: 600 var(--t-md)/1 var(--font-mono); letter-spacing: -0.01em;
   color: var(--ink); text-decoration: none;
-  min-height: var(--tap); display: inline-flex; align-items: center;
+  min-height: var(--tap); display: inline-flex; align-items: center; gap: var(--s2);
 }
+.wordmark-logo { display: block; flex: none; border-radius: 6px; }
 .conn {
   display: inline-flex; align-items: center; gap: var(--s2);
   font: 400 var(--t-xs)/1.3 var(--font-mono); color: var(--ink-2);

@@ -123,6 +123,13 @@ class Route:
     consume a large body itself: the view then receives ``body_stream`` and
     ``content_length`` and must read exactly ``content_length`` bytes; the
     server does not buffer the body first.
+
+    ``public=True`` exempts the route from Basic auth, but only for GET and
+    HEAD: the server resolves the route before authenticating and skips the
+    check when the request is a safe method on a public route.  A POST to the
+    same path, or any other unauthenticated request, still gets 401.  The
+    security headers are still sent.  Use it only for package assets that
+    contain no ticket data.
     """
 
     method: str
@@ -130,3 +137,4 @@ class Route:
     view: View
     max_body_bytes: int = DEFAULT_MAX_BODY_BYTES
     stream_body: bool = False
+    public: bool = False
