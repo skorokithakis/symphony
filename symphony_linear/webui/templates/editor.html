@@ -112,4 +112,12 @@
     <button class="btn btn--danger" type="submit">Discard</button>
   </form>
 </dialog>
+<dialog class="confirm repo-picker" id="repo-picker" aria-labelledby="repo-picker-t">
+  <p class="confirm-t" id="repo-picker-t">Pick a repository</p>
+  <input class="input" id="repo-picker-input" type="text" role="combobox"
+         aria-expanded="true" aria-controls="repo-picker-list" aria-autocomplete="list"
+         aria-labelledby="repo-picker-t" autocomplete="off" spellcheck="false"
+         placeholder="Type to filter">
+  <ul class="repo-picker-list" id="repo-picker-list" role="listbox" aria-labelledby="repo-picker-t"></ul>
+</dialog>
 {% endblock %}

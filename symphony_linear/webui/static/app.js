@@ -240,6 +240,30 @@
     dialog.showModal();
   });
 
+  // The shortcuts help is in base.html, so every page has it.  It is a native
+  // <dialog>: Esc closes it and its form is method="dialog", so only the
+  // backdrop needs script.  A click on the backdrop is the one whose target is
+  // the dialog itself, but so is a click on the dialog's own padding, hence
+  // the position check.
+  var helpDialog = document.getElementById("help-dialog");
+  if (helpDialog) {
+    helpDialog.addEventListener("click", function (event) {
+      if (event.target !== helpDialog) {
+        return;
+      }
+      var rect = helpDialog.getBoundingClientRect();
+      if (
+        event.clientX >= rect.left &&
+        event.clientX <= rect.right &&
+        event.clientY >= rect.top &&
+        event.clientY <= rect.bottom
+      ) {
+        return;
+      }
+      helpDialog.close();
+    });
+  }
+
   // The editor's repository select reveals the two "new repository" fields
   // only while "Add a repository…" is chosen.  Without JavaScript both fields
   // stay visible, which is why they are never hidden on the server.
@@ -342,6 +366,16 @@
     rows[next].focus();
   }
 
+  /* "?" needs Shift, which is why the handler above ignores the other
+     modifiers but never shiftKey.  The dialog is in base.html. */
+  function openHelp() {
+    if (!helpDialog || typeof helpDialog.showModal !== "function") {
+      return false;
+    }
+    helpDialog.showModal();
+    return true;
+  }
+
   var stateSequenceStart = 0;
   var STATE_SEQUENCE_MS = 1500;
 
@@ -378,6 +412,10 @@
     }
     if (key === "s") {
       stateSequenceStart = now;
+    } else if (key === "?") {
+      if (openHelp()) {
+        event.preventDefault();
+      }
     } else if (key === "c") {
       if (activate("new", false)) {
         event.preventDefault();

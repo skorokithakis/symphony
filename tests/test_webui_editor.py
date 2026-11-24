@@ -290,6 +290,37 @@ class TestNewPage:
 
         assert '<option value="" selected>Add a repository…</option>' in text
 
+    def test_the_repository_picker_is_a_combobox_over_the_same_select(
+        self, tmp_path: Path
+    ) -> None:
+        with _server(tmp_path) as (port, _tracker, _wake):
+            _status, text = _get(port, "/new")
+
+        # The picker is an enhancement only: the select still carries every
+        # option, so the no-JavaScript form and the phone's native picker work.
+        assert '<select class="input mono" id="repo" name="repo"' in text
+        assert '<dialog class="confirm repo-picker" id="repo-picker"' in text
+        assert 'id="repo-picker-input"' in text
+        assert 'role="combobox"' in text
+        assert 'aria-controls="repo-picker-list"' in text
+        assert 'id="repo-picker-list"' in text
+        assert 'role="listbox"' in text
+        assert '<script src="/static/editor.js" defer></script>' in text
+
+    def test_the_repository_picker_is_only_on_the_editor(self, tmp_path: Path) -> None:
+        _write_ticket(tmp_path, "SYM-1", state=STATE_IN_PROGRESS, title="Running")
+
+        with _server(tmp_path) as (port, _tracker, _wake):
+            _status, _headers, home = _request(port, "GET", "/")
+            _status, _headers, ticket = _request(port, "GET", "/tickets/SYM-1")
+
+        # Ctrl+K is bound in editor.js, which only the editor loads.  A page
+        # that carried the dialog would advertise a shortcut that does nothing.
+        assert b'id="repo-picker"' not in home
+        assert b'id="repo-picker"' not in ticket
+        assert b"/static/editor.js" not in home
+        assert b"/static/editor.js" not in ticket
+
 
 # ---------------------------------------------------------------------------
 # GET /tickets/<id>/edit

@@ -855,6 +855,36 @@ dialog.confirm::backdrop { background: var(--scrim); }
   .confirm-actions .btn { flex: none; }
 }
 
+/* shortcuts help: the shared confirmation dialog with a two-column list. The
+   key column is fixed so the descriptions line up, and <kbd> gets the only
+   key styling in the sheet. */
+.help-list { display: flex; flex-direction: column; gap: var(--s2); margin: 0; padding: 0; list-style: none; }
+.help-list li { display: flex; align-items: baseline; gap: var(--s3); font-size: var(--t-sm); line-height: var(--lh-tight); }
+.help-keys { flex: none; width: 7rem; display: flex; flex-wrap: wrap; align-items: baseline; gap: var(--s1); font-size: var(--t-xs); color: var(--ink-2); }
+.help-keys kbd {
+  padding: 2px 5px; border: 1px solid var(--rule-2); border-bottom-width: 2px;
+  border-radius: var(--r1); background: var(--sunken); color: var(--ink);
+  font: 600 var(--t-xs)/1.4 var(--font-mono);
+}
+
+/* repository picker: the shared confirmation dialog with a filtered list.  The
+   list scrolls inside the dialog so a long repository list cannot push the
+   filter input off screen. */
+.repo-picker { max-height: min(78dvh, 34rem); }
+.repo-picker-list {
+  flex: 1 1 auto; min-height: 0; overflow-y: auto;
+  display: flex; flex-direction: column;
+  margin: 0; padding: 0; list-style: none;
+  border: 1px solid var(--rule); border-radius: var(--r2);
+}
+.repo-picker-option { display: flex; flex-direction: column; gap: 2px; padding: var(--s2) var(--s3); cursor: pointer; }
+/* Hover is a weaker fill than the keyboard highlight, so the two cannot be
+   mistaken for two selected rows when the mouse rests on another row. */
+.repo-picker-option:hover { background: color-mix(in srgb, var(--sunken) 45%, transparent); }
+.repo-picker-option[aria-selected="true"] { background: var(--sunken); }
+.repo-picker-name { font-weight: 600; overflow-wrap: anywhere; }
+.repo-picker-url { font: var(--t-xs)/1.4 var(--font-mono); color: var(--ink-2); overflow-wrap: anywhere; }
+
 /* image viewer: a native <dialog class="lightbox"> that fills the screen */
 .lightbox { max-width: 100vw; max-height: 100dvh; padding: 0; border: 0; background: transparent; }
 .lightbox img { display: block; max-width: 100vw; max-height: 100dvh; }

@@ -31,6 +31,7 @@ from symphony_linear.webui.server import WebUIServer
 from tests.test_webui_server import (
     _config,
     _origin,
+    _page_body,
     _request,
     _state_entry,
 )
@@ -319,7 +320,7 @@ class TestTicketPage:
 
         assert "state--qa" in text
         assert "Back to Needs Input" in text
-        assert "Send to QA" not in text
+        assert "Send to QA" not in _page_body(text)
 
     @pytest.mark.parametrize(
         ("state", "buttons"),

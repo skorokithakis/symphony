@@ -364,6 +364,250 @@
     }
   }
 
+  /* ---------- Ctrl+K: the repository picker ----------
+   *
+   * A filtered view over the existing #repo <select>; the select stays the
+   * source of truth, so the no-JavaScript form and the phone's native picker
+   * are untouched.  Picking sets the option and dispatches a real change
+   * event, which is what makes the autosave and the "new repository" field
+   * toggle run exactly as they do for a pick in the select itself. */
+  var picker = document.getElementById("repo-picker");
+  var pickerInput = document.getElementById("repo-picker-input");
+  var pickerList = document.getElementById("repo-picker-list");
+
+  if (picker && pickerInput && pickerList && repo && repo.tagName === "SELECT") {
+    var pickerEntries = [];
+    var pickerVisible = [];
+    var pickerActive = -1;
+    var pickerReturnTo = null;
+
+    /* In-order subsequence match, so "acb" matches "a-c-b".  Caller folds the
+       case: both sides are lowercased once, not per character. */
+    function isSubsequence(text, query) {
+      var from = 0;
+      for (var i = 0; i < query.length; i += 1) {
+        from = text.indexOf(query.charAt(i), from);
+        if (from === -1) {
+          return false;
+        }
+        from += 1;
+      }
+      return true;
+    }
+
+    /* 0 prefix, 1 contiguous substring, 2 other subsequence, -1 no match.
+       The name and the URL score the same; only the display order differs. */
+    function matchRank(name, url, query) {
+      if (name.indexOf(query) === 0 || url.indexOf(query) === 0) {
+        return 0;
+      }
+      if (name.indexOf(query) !== -1 || url.indexOf(query) !== -1) {
+        return 1;
+      }
+      if (isSubsequence(name, query) || isSubsequence(url, query)) {
+        return 2;
+      }
+      return -1;
+    }
+
+    function pickerMatches() {
+      var query = pickerInput.value.trim().toLowerCase();
+      var add = null;
+      var ranked = [];
+      pickerEntries.forEach(function (entry, index) {
+        if (entry.isAdd) {
+          add = entry;
+          return;
+        }
+        if (!query) {
+          ranked.push({ entry: entry, rank: 0, index: index });
+          return;
+        }
+        var rank = matchRank(
+          entry.name.toLowerCase(),
+          entry.url.toLowerCase(),
+          query
+        );
+        if (rank !== -1) {
+          ranked.push({ entry: entry, rank: rank, index: index });
+        }
+      });
+      if (query) {
+        ranked.sort(function (left, right) {
+          /* Select order within a rank, never alphabetical: the managed list
+             is the order the user chose. */
+          return left.rank - right.rank || left.index - right.index;
+        });
+      }
+      var matches = ranked.map(function (item) {
+        return item.entry;
+      });
+      /* "Add a repository…" is the escape hatch, so it stays reachable no
+         matter what the filter says. */
+      if (add) {
+        matches.push(add);
+      }
+      return matches;
+    }
+
+    function setPickerActive(index) {
+      var rows = pickerList.children;
+      if (pickerActive >= 0 && rows[pickerActive]) {
+        rows[pickerActive].setAttribute("aria-selected", "false");
+      }
+      pickerActive = index;
+      if (index >= 0 && rows[index]) {
+        rows[index].setAttribute("aria-selected", "true");
+        pickerInput.setAttribute("aria-activedescendant", rows[index].id);
+        rows[index].scrollIntoView({ block: "nearest" });
+      } else {
+        pickerInput.removeAttribute("aria-activedescendant");
+      }
+    }
+
+    function renderPicker() {
+      pickerVisible = pickerMatches();
+      pickerList.textContent = "";
+      pickerVisible.forEach(function (entry, index) {
+        var row = document.createElement("li");
+        row.className = "repo-picker-option";
+        row.id = "repo-picker-option-" + index;
+        row.setAttribute("role", "option");
+        row.setAttribute("aria-selected", "false");
+        var name = document.createElement("span");
+        name.className = "repo-picker-name";
+        /* The server's option text, not a second label that could drift. */
+        name.textContent = entry.name;
+        row.appendChild(name);
+        if (!entry.isAdd && entry.url !== entry.name) {
+          var url = document.createElement("span");
+          url.className = "repo-picker-url";
+          url.textContent = entry.url;
+          row.appendChild(url);
+        }
+        row.addEventListener("click", function () {
+          choosePickerEntry(index);
+        });
+        pickerList.appendChild(row);
+      });
+      setPickerActive(pickerVisible.length ? 0 : -1);
+    }
+
+    function closePicker() {
+      if (typeof picker.close === "function") {
+        picker.close();
+      } else {
+        picker.removeAttribute("open");
+      }
+    }
+
+    function choosePickerEntry(index) {
+      var entry = pickerVisible[index];
+      if (!entry) {
+        return;
+      }
+      /* Setting the option does not fire a change event, so both the
+         autosave listener and app.js's new-repository toggle need this one
+         dispatched event to run. */
+      entry.option.selected = true;
+      repo.dispatchEvent(new Event("change", { bubbles: true }));
+      closePicker();
+      if (entry.isAdd) {
+        /* The URL is what the user must type next; the name is optional. */
+        repoNewUrl.focus();
+      } else {
+        if (pickerReturnTo && typeof pickerReturnTo.focus === "function") {
+          pickerReturnTo.focus();
+        }
+        /* Picking an existing repository hides the new-repository fields, so
+           an opener that was one of them has nowhere to take focus.  The
+           select is what the picker acted on, so it is the fallback. */
+        if (document.activeElement !== pickerReturnTo) {
+          repo.focus();
+        }
+      }
+    }
+
+    function openPicker() {
+      pickerReturnTo = document.activeElement;
+      pickerEntries = Array.prototype.map.call(repo.options, function (option) {
+        return {
+          option: option,
+          name: option.textContent.trim(),
+          url: option.value,
+          isAdd: option.value === "",
+        };
+      });
+      pickerInput.value = "";
+      renderPicker();
+      if (typeof picker.showModal === "function") {
+        picker.showModal();
+      } else {
+        picker.setAttribute("open", "");
+      }
+      pickerInput.focus();
+    }
+
+    document.addEventListener("keydown", function (event) {
+      if (!(event.ctrlKey || event.metaKey) || event.altKey || event.shiftKey) {
+        return;
+      }
+      if (event.key.toLowerCase() !== "k") {
+        return;
+      }
+      /* Even with another dialog open, swallow the browser's own Ctrl+K (the
+         search bar in Firefox) instead of letting it pull focus out of a
+         modal.  The help, discard and picker dialogs all count. */
+      event.preventDefault();
+      if (document.querySelector("dialog[open]")) {
+        return;
+      }
+      openPicker();
+    });
+
+    pickerInput.addEventListener("input", renderPicker);
+
+    pickerInput.addEventListener("keydown", function (event) {
+      /* During an IME composition Enter confirms the candidate and the arrows
+         walk the candidate list, so handling them here would pick a repository
+         while the user is still composing the query. */
+      if (event.isComposing) {
+        return;
+      }
+      var count = pickerVisible.length;
+      if (count === 0) {
+        return;
+      }
+      if (event.key === "ArrowDown" || event.key === "ArrowUp") {
+        event.preventDefault();
+        var step = event.key === "ArrowDown" ? 1 : -1;
+        setPickerActive((pickerActive + step + count) % count);
+      } else if (event.key === "Enter") {
+        event.preventDefault();
+        choosePickerEntry(pickerActive);
+      }
+    });
+
+    /* The same backdrop click the help dialog has: a click on the backdrop is
+       the one whose target is the dialog itself, but so is a click on the
+       dialog's own padding, hence the position check. */
+    picker.addEventListener("click", function (event) {
+      if (event.target !== picker) {
+        return;
+      }
+      var rect = picker.getBoundingClientRect();
+      if (
+        event.clientX >= rect.left &&
+        event.clientX <= rect.right &&
+        event.clientY >= rect.top &&
+        event.clientY <= rect.bottom
+      ) {
+        return;
+      }
+      closePicker();
+    });
+  }
+
   /* Resolve once no autosave is running.  A queued save starts when the
    * previous one settles, so the check is repeated after each wait: returning
    * early would let the upload and a queued create race for a second Draft. */

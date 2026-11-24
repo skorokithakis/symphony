@@ -90,6 +90,16 @@ def _write_ticket(
     (directory / f"{ticket_id}.json").write_text(json.dumps(payload))
 
 
+def _page_body(text: str) -> str:
+    """The page's own markup, without the shortcuts dialog base.html adds.
+
+    Assertions that a page does *not* offer something have to ignore that
+    dialog: its static list names every workflow state and every state action
+    on every page.
+    """
+    return text.split('<dialog class="confirm help-dialog"', 1)[0]
+
+
 def _state_entry(ticket_id: str, **overrides: object) -> TicketState:
     values: dict[str, object] = {
         "ticket_id": ticket_id,
@@ -327,7 +337,7 @@ class TestHomePage:
         with _running_server(tmp_path) as (port, _tracker, _state):
             status, _headers, body = _request(port, "GET", "/")
 
-        text = body.decode()
+        text = _page_body(body.decode())
         assert status == 200
         positions = [
             text.index(label) for label in ("Needs Input", "In Progress", "QA", "Draft")
@@ -452,7 +462,7 @@ class TestHomePage:
         with _running_server(tmp_path) as (port, _tracker, _state):
             _status, _headers, body = _request(port, "GET", "/")
 
-        text = body.decode()
+        text = _page_body(body.decode())
         assert "Nothing open" in text
         assert "Needs Input" not in text
         assert "SYM-1" not in text
@@ -570,6 +580,29 @@ class TestTemplates:
         assert "<script>" not in text
         assert "onclick=" not in text
         assert ' style="' not in text
+
+    @pytest.mark.parametrize(
+        "path",
+        ["/", "/archive", "/repos", "/new", "/tickets/SYM-1"],
+    )
+    def test_every_page_carries_the_shortcuts_help(
+        self, tmp_path: Path, path: str
+    ) -> None:
+        # The help dialog belongs in base.html, not in a page's overlay block:
+        # the ticket and editor pages replace that block wholesale.
+        _write_ticket(tmp_path, "SYM-1", state=STATE_IN_PROGRESS, title="Running")
+
+        with _running_server(tmp_path) as (port, _tracker, _state):
+            _status, _headers, body = _request(port, "GET", path)
+
+        text = body.decode()
+        assert '<dialog class="confirm help-dialog" id="help-dialog"' in text
+        assert text.count('id="help-dialog"') == 1
+        assert "<kbd>?</kbd>" in text
+        # The list is static and shared, so a page-specific shortcut says
+        # where it works instead of being omitted.
+        assert "<kbd>Ctrl+K</kbd>" in text
+        assert "Pick repository (editor)" in text
 
 
 class TestDock:
