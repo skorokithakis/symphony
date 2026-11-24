@@ -75,10 +75,15 @@
 
   /* The tab title is "(2) Tickets · symphony" when two tickets wait on the
      user.  Polls hand in the page's own title, so a changed ticket title is
-     picked up too. */
+     picked up too.  Every Needs Input dot follows the same count: the dock's
+     and, on the ticket page, the one on the back link, so the existing polls
+     keep them right without a second endpoint. */
   Sym.setTitle = function (baseTitle, needsInputCount) {
     document.title =
       needsInputCount > 0 ? "(" + needsInputCount + ") " + baseTitle : baseTitle;
+    document.querySelectorAll("[data-needs-input-dot]").forEach(function (dot) {
+      dot.hidden = !(needsInputCount > 0);
+    });
   };
 
   Sym.showConn = function (lost) {
@@ -283,6 +288,104 @@
       }
     });
   }
+
+  /* ---------- keyboard shortcuts ---------- */
+
+  /* One handler for every page.  A shortcut clicks the real control instead of
+     reimplementing it, because the state buttons submit hidden forms and the
+     row links navigate: a click is the only path that cannot diverge from the
+     mouse.  Targets are looked up at key time, never bound here, because the
+     ticket poll replaces the composer's actions and the home poll replaces the
+     whole list. */
+  function isTyping(target) {
+    if (!target || !target.closest) {
+      return false;
+    }
+    if (target.closest("input, textarea, select")) {
+      return true;
+    }
+    var editable = target.closest("[contenteditable]");
+    return Boolean(editable && editable.isContentEditable);
+  }
+
+  /* ``visible`` is false for the dock's New ticket link on the ticket and
+     editor pages, whose layout hides the dock: "c" must still work there.  The
+     state buttons are checked because a hidden button is how the server
+     declines an action. */
+  function activate(name, mustBeVisible) {
+    var element = document.querySelector('[data-shortcut="' + name + '"]');
+    if (!element || element.disabled) {
+      return false;
+    }
+    if (element.getAttribute("aria-disabled") === "true") {
+      return false;
+    }
+    if (mustBeVisible && element.getClientRects().length === 0) {
+      return false;
+    }
+    element.click();
+    return true;
+  }
+
+  /* The home and archive lists are flat, all groups together; the row links
+     are the focus targets, so Enter opens one natively. */
+  function moveRow(step) {
+    var rows = document.querySelectorAll("a.row");
+    if (!rows.length) {
+      return;
+    }
+    var current = Array.prototype.indexOf.call(rows, document.activeElement);
+    var next = current === -1 ? (step > 0 ? 0 : rows.length - 1) : current + step;
+    if (next < 0 || next >= rows.length) {
+      return;
+    }
+    rows[next].focus();
+  }
+
+  var stateSequenceStart = 0;
+  var STATE_SEQUENCE_MS = 1500;
+
+  document.addEventListener("keydown", function (event) {
+    /* An ignored key still cancels an armed "s": otherwise "s", Ctrl+C, "3"
+       would mark the ticket Done.  The event's own job is left alone (no
+       preventDefault), and a modal dialog swallows every page shortcut so the
+       discard confirmation and the lightbox behave like plain dialogs. */
+    var ignored =
+      event.defaultPrevented ||
+      event.ctrlKey ||
+      event.altKey ||
+      event.metaKey ||
+      isTyping(event.target) ||
+      document.querySelector("dialog[open]") !== null;
+    if (ignored) {
+      stateSequenceStart = 0;
+      return;
+    }
+    var key = event.key.toLowerCase();
+    var now = Date.now();
+    var awaitingState =
+      stateSequenceStart !== 0 && now - stateSequenceStart <= STATE_SEQUENCE_MS;
+    if (awaitingState) {
+      stateSequenceStart = 0;
+      if (key === "1" || key === "2" || key === "3") {
+        if (activate("s" + key, true)) {
+          event.preventDefault();
+        }
+        return;
+      }
+      // Any other key cancels the sequence but still does its own job, so a
+      // stray "s" before "j" does not swallow the "j".
+    }
+    if (key === "s") {
+      stateSequenceStart = now;
+    } else if (key === "c") {
+      if (activate("new", false)) {
+        event.preventDefault();
+      }
+    } else if (key === "j" || key === "k") {
+      moveRow(key === "j" ? 1 : -1);
+    }
+  });
 
   /* ---------- the "Saved 14:38" indicator ---------- */
 

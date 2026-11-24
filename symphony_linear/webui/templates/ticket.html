@@ -1,5 +1,5 @@
 {% extends "base.html" %}
-{% from "_macros.html" import composer_actions, entry, pending_files, saved_indicator, state_forms, state_tag, working %}
+{% from "_macros.html" import composer_actions, dock, entry, needs_input_dot, pending_files, saved_indicator, state_forms, state_tag, working %}
 
 {% block title %}{{ page.ticket.id }} · {{ page.title }} · symphony{% endblock %}
 
@@ -19,7 +19,7 @@
       data-api-upload="/api/tickets/{{ page.ticket.id }}/files">
   <header class="thead">
     <div class="thead-top">
-      <a class="back" href="/" aria-label="Back to tickets"><svg class="ic" viewBox="0 0 20 20" aria-hidden="true"><path d="M12 4l-6 6 6 6"></path></svg><span class="back-t">Tickets</span></a>
+      <a class="back" href="/" aria-label="Back to tickets"><svg class="ic" viewBox="0 0 20 20" aria-hidden="true"><path d="M12 4l-6 6 6 6"></path></svg><span class="back-t">Tickets</span>{{ needs_input_dot(needs_input_count) }}</a>
       <span class="tid">{{ page.ticket.id }}</span>
       {{ state_tag(page) }}
       <p class="conn" id="conn" role="status" hidden>Connection lost. Retrying…</p>
@@ -84,19 +84,12 @@
     <span>This ticket is done. Reopen it to work on it again.</span>
     <form method="post" action="/tickets/{{ page.ticket.id }}/state" data-api-state="/api/tickets/{{ page.ticket.id }}/state">
       <input type="hidden" name="action" value="reopen">
-      <button class="btn" type="submit" id="act-reopen">Reopen</button>
+      <button class="btn" type="submit" id="act-reopen" data-shortcut="s1" title="Reopen (s 1)">Reopen</button>
     </form>
   </div>
   {% endif %}
 </main>
-<nav class="dock" aria-label="Main">
-  <a class="btn btn--primary" href="/new"><svg class="ic" viewBox="0 0 20 20" aria-hidden="true"><path d="M10 4v12M4 10h12"></path></svg>New ticket</a>
-  <div class="dock-links">
-    <a class="dock-link" href="/" aria-current="page">Tickets</a>
-    <a class="dock-link" href="/archive">Archive</a>
-    <a class="dock-link" href="/repos">Repositories</a>
-  </div>
-</nav>
+{{ dock("tickets", needs_input_count) }}
 {% endblock %}
 
 {% block overlay %}

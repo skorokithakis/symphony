@@ -1,4 +1,5 @@
 {% extends "base.html" %}
+{% from "_macros.html" import dock %}
 
 {% block title %}Repositories · symphony{% endblock %}
 
@@ -55,12 +56,5 @@
     </form>
   </section>
 </main>
-<nav class="dock" aria-label="Main">
-  <a class="btn btn--primary" href="/new"><svg class="ic" viewBox="0 0 20 20" aria-hidden="true"><path d="M10 4v12M4 10h12"></path></svg>New ticket</a>
-  <div class="dock-links">
-    <a class="dock-link" href="/">Tickets</a>
-    <a class="dock-link" href="/archive">Archive</a>
-    <a class="dock-link" href="/repos" aria-current="page">Repositories</a>
-  </div>
-</nav>
+{{ dock("repos", needs_input_count) }}
 {% endblock %}

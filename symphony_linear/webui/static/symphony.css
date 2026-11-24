@@ -212,6 +212,15 @@ body.sym { min-height: 100dvh; }
 }
 .dock-link:hover { background: var(--sunken); color: var(--ink); }
 .dock-link[aria-current="page"] { display: none; }
+/* The Needs Input dot beside the Tickets links: in the dock, and on the
+   ticket page's back link, which is the only Tickets link a phone can see
+   there because the phone layout hides that page's dock.  The inner dot is
+   the unread row mark, because it means the same thing: a ticket is waiting
+   on you.  The wrapper carries hidden, which the poll toggles, and the
+   display rule below would otherwise override the hidden attribute's UA
+   rule. */
+.needs-input-dot { display: inline-flex; align-items: center; }
+.needs-input-dot[hidden] { display: none; }
 .app--ticket > .bar, .app--ticket > .dock,
 .app--editor > .bar, .app--editor > .dock { display: none; }
 
@@ -414,7 +423,7 @@ body.sym { min-height: 100dvh; }
 }
 .thead-top { display: flex; align-items: center; gap: var(--s2); min-height: var(--tap); }
 .back {
-  display: inline-flex; align-items: center; justify-content: center;
+  display: inline-flex; align-items: center; justify-content: center; gap: var(--s1);
   width: var(--tap); height: var(--tap); margin-left: -12px; border-radius: var(--r2);
   color: var(--ink-2); text-decoration: none;
   transition: background-color var(--dur) var(--ease), color var(--dur) var(--ease);

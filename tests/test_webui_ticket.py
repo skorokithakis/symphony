@@ -14,6 +14,8 @@ from typing import Iterator
 from unittest.mock import Mock
 from urllib.parse import urlencode
 
+import pytest
+
 from symphony_linear.local_tracker import (
     STATE_DONE,
     STATE_IN_PROGRESS,
@@ -318,6 +320,39 @@ class TestTicketPage:
         assert "state--qa" in text
         assert "Back to Needs Input" in text
         assert "Send to QA" not in text
+
+    @pytest.mark.parametrize(
+        ("state", "buttons"),
+        [
+            (STATE_IN_PROGRESS, {"act-stop": ("s1", "Stop (s 1)")}),
+            (
+                STATE_NEEDS_INPUT,
+                {
+                    "act-done": ("s3", "Done (s 3)"),
+                    "act-qa": ("s2", "Send to QA (s 2)"),
+                },
+            ),
+            (
+                STATE_QA,
+                {
+                    "act-done": ("s3", "Done (s 3)"),
+                    "act-needs-input": ("s1", "Back to Needs Input (s 1)"),
+                },
+            ),
+            (STATE_DONE, {"act-reopen": ("s1", "Reopen (s 1)")}),
+        ],
+    )
+    def test_each_state_action_carries_its_keyboard_shortcut(
+        self, tmp_path: Path, state: str, buttons: dict[str, tuple[str, str]]
+    ) -> None:
+        with _server(tmp_path) as (port, tracker, _state, _wake):
+            ticket = _ticket(tracker.store, state=state)
+            text = _page(port, ticket.id)
+
+        for button_id, (shortcut, title) in buttons.items():
+            tag = text.split(f'id="{button_id}"', 1)[1].split(">", 1)[0]
+            assert f'data-shortcut="{shortcut}"' in tag
+            assert f'title="{title}"' in tag
 
     def test_unknown_ticket_is_404(self, tmp_path: Path) -> None:
         with _server(tmp_path) as (port, _tracker, _state, _wake):

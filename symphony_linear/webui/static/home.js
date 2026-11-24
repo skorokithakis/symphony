@@ -29,8 +29,21 @@
     Sym.showConn(false);
     Sym.setTitle(baseTitle, data.needs_input_count || 0);
     if (data.version !== version) {
+      // The swap detaches the focused row, so remember which ticket it was and
+      // focus the new row with the same href: j/k and Enter keep working
+      // across a poll the user did not ask for.
+      var focused = document.activeElement;
+      var focusedHref =
+        focused && focused.matches("a.row") ? focused.getAttribute("href") : null;
       body.innerHTML = data.html;
       version = data.version;
+      if (focusedHref) {
+        body.querySelectorAll("a.row").forEach(function (row) {
+          if (row.getAttribute("href") === focusedHref) {
+            row.focus();
+          }
+        });
+      }
     }
     // Relative row times advance with the clock, not only when a row changes.
     Sym.formatTimes(body);

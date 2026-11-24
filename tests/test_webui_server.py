@@ -572,6 +572,89 @@ class TestTemplates:
         assert ' style="' not in text
 
 
+class TestDock:
+    """The dock lives in one macro; these guard its per-page arguments."""
+
+    @pytest.mark.parametrize(
+        ("path", "current_link"),
+        [
+            ("/", 'href="/" aria-current="page">Tickets'),
+            ("/archive", 'href="/archive" aria-current="page">Archive'),
+            ("/repos", 'href="/repos" aria-current="page">Repositories'),
+            ("/new", 'href="/new" aria-current="page"'),
+            ("/tickets/SYM-1", 'href="/" aria-current="page">Tickets'),
+        ],
+    )
+    def test_each_page_marks_exactly_its_own_link(
+        self, tmp_path: Path, path: str, current_link: str
+    ) -> None:
+        _write_ticket(tmp_path, "SYM-1", state=STATE_IN_PROGRESS, title="Running")
+
+        with _running_server(tmp_path) as (port, _tracker, _state):
+            _status, _headers, body = _request(port, "GET", path)
+
+        text = body.decode()
+        assert current_link in text
+        assert text.count('aria-current="page"') == 1
+
+    @pytest.mark.parametrize(
+        "path",
+        ["/", "/archive", "/repos", "/new", "/tickets/SYM-1"],
+    )
+    def test_every_page_follows_the_needs_input_count(
+        self, tmp_path: Path, path: str
+    ) -> None:
+        # Every page must pass the count into the shared macro: a view that
+        # forgot would render the dot hidden while a ticket waits.
+        _write_ticket(tmp_path, "SYM-1", state=STATE_IN_PROGRESS, title="Running")
+
+        with _running_server(tmp_path) as (port, _tracker, _state):
+            _status, _headers, body = _request(port, "GET", path)
+
+        assert (
+            '<span class="needs-input-dot" data-needs-input-dot hidden>'
+            in body.decode()
+        )
+
+        _write_ticket(tmp_path, "SYM-2", state=STATE_NEEDS_INPUT, title="Waiting")
+
+        with _running_server(tmp_path) as (port, _tracker, _state):
+            _status, _headers, body = _request(port, "GET", path)
+
+        text = body.decode()
+        assert '<span class="needs-input-dot" data-needs-input-dot>' in text
+        assert '<span class="needs-input-dot" data-needs-input-dot hidden>' not in text
+
+    def test_the_back_link_carries_the_dot_on_both_pages(self, tmp_path: Path) -> None:
+        # The phone layout hides the dock on the ticket and editor pages, so
+        # this link is the only Tickets link left there.
+        _write_ticket(tmp_path, "SYM-1", state=STATE_IN_PROGRESS, title="Running")
+        _write_ticket(tmp_path, "SYM-2", state=STATE_NEEDS_INPUT, title="Waiting")
+
+        with _running_server(tmp_path) as (port, _tracker, _state):
+            texts = [
+                _request(port, "GET", path)[2].decode()
+                for path in ("/tickets/SYM-1", "/new")
+            ]
+
+        for text in texts:
+            assert (
+                '<span class="back-t">Tickets</span>'
+                '<span class="needs-input-dot" data-needs-input-dot>' in text
+            )
+            assert text.count("data-needs-input-dot") == 2
+
+    def test_the_dock_marks_the_new_ticket_shortcut(self, tmp_path: Path) -> None:
+        _write_ticket(tmp_path, "SYM-1", state=STATE_IN_PROGRESS, title="Running")
+
+        with _running_server(tmp_path) as (port, _tracker, _state):
+            _status, _headers, body = _request(port, "GET", "/")
+
+        link = body.decode().split('href="/new"', 1)[1].split(">", 1)[0]
+        assert 'data-shortcut="new"' in link
+        assert 'title="New ticket (c)"' in link
+
+
 # ---------------------------------------------------------------------------
 # Security
 # ---------------------------------------------------------------------------

@@ -1,5 +1,5 @@
 {% extends "base.html" %}
-{% from "_macros.html" import archive_body %}
+{% from "_macros.html" import archive_body, dock %}
 
 {% block title %}Archive · symphony{% endblock %}
 
@@ -13,12 +13,5 @@
 <main class="home" id="home-body" data-api="/api/archive" data-version="{{ page.version }}">
   {{ archive_body(page) }}
 </main>
-<nav class="dock" aria-label="Main">
-  <a class="btn btn--primary" href="/new"><svg class="ic" viewBox="0 0 20 20" aria-hidden="true"><path d="M10 4v12M4 10h12"></path></svg>New ticket</a>
-  <div class="dock-links">
-    <a class="dock-link" href="/">Tickets</a>
-    <a class="dock-link" href="/archive" aria-current="page">Archive</a>
-    <a class="dock-link" href="/repos">Repositories</a>
-  </div>
-</nav>
+{{ dock("archive", needs_input_count) }}
 {% endblock %}

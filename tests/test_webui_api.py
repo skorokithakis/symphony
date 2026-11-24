@@ -277,6 +277,9 @@ class TestTicketPoll:
         assert 'class="state state--progress"' in data["state_html"]
         assert 'id="act-send" disabled' in data["actions_html"]
         assert "The agent is working." in data["actions_html"]
+        # Shortcut targets live in composer_actions, so the poll's re-render of
+        # the action bar keeps them.
+        assert 'id="act-stop" data-shortcut="s1"' in data["actions_html"]
         assert "Working, " in data["working_html"]
         assert data["has_composer"] is True
         assert data["page_title"] == f"{ticket.id} · A ticket · symphony"

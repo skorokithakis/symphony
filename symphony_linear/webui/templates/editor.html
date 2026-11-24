@@ -1,5 +1,5 @@
 {% extends "base.html" %}
-{% from "_macros.html" import pending_files, saved_indicator %}
+{% from "_macros.html" import dock, needs_input_dot, pending_files, saved_indicator %}
 
 {% block title %}{% if page.ticket_id %}{{ page.ticket_id }} · {% endif %}{{ page.heading }} · symphony{% endblock %}
 
@@ -23,7 +23,7 @@
         data-api-upload-new="/api/new/files">
     <header class="thead">
       <div class="thead-top">
-        <a class="back" href="/" aria-label="Back to tickets"><svg class="ic" viewBox="0 0 20 20" aria-hidden="true"><path d="M12 4l-6 6 6 6"></path></svg><span class="back-t">Tickets</span></a>
+        <a class="back" href="/" aria-label="Back to tickets"><svg class="ic" viewBox="0 0 20 20" aria-hidden="true"><path d="M12 4l-6 6 6 6"></path></svg><span class="back-t">Tickets</span>{{ needs_input_dot(needs_input_count) }}</a>
         <span class="tid" id="editor-tid">{% if page.ticket_id %}{{ page.ticket_id }}{% endif %}</span>
         <span class="state state--draft">Draft</span>
       </div>
@@ -98,14 +98,7 @@
     </div>
   </form>
 </main>
-<nav class="dock" aria-label="Main">
-  <a class="btn btn--primary" href="/new" aria-current="page"><svg class="ic" viewBox="0 0 20 20" aria-hidden="true"><path d="M10 4v12M4 10h12"></path></svg>New ticket</a>
-  <div class="dock-links">
-    <a class="dock-link" href="/">Tickets</a>
-    <a class="dock-link" href="/archive">Archive</a>
-    <a class="dock-link" href="/repos">Repositories</a>
-  </div>
-</nav>
+{{ dock("new", needs_input_count) }}
 {% endblock %}
 
 {% block overlay %}
