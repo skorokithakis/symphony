@@ -398,10 +398,40 @@
     return true;
   }
 
+  /* On the ticket page a key that is not a shortcut starts a reply, so the
+     user can just type.  Focusing during keydown, without preventDefault, makes
+     the browser insert the key into the newly focused textarea.  The caret goes
+     to the end so a saved draft is continued, not prefixed.  ``pending`` replays
+     the "s" presses that armed the state sequence, so "sure" does not become
+     "ure".  Inserting it here fires no "input"; the keystroke that follows does,
+     and the autosave then writes the whole value. */
+  function typeIntoReply(pending) {
+    var reply = document.getElementById("reply");
+    if (!reply || reply.disabled || reply.readOnly) {
+      return;
+    }
+    var end = reply.value.length;
+    reply.focus();
+    reply.setSelectionRange(end, end);
+    if (pending) {
+      reply.setRangeText(pending, end, end, "end");
+    }
+  }
+
+  /* The pending buffer holds every "s" that armed the state sequence, separate
+     from the timer so the text survives an expired window; the timer only
+     decides whether a following 1/2/3 is still a state shortcut. */
+  var pendingReplyText = "";
   var stateSequenceStart = 0;
   var STATE_SEQUENCE_MS = 1500;
 
   document.addEventListener("keydown", function (event) {
+    /* A modifier's own keydown types nothing.  Shift is the one that reaches
+       here (ctrlKey, altKey and metaKey are in ``ignored``), and returning
+       before the buffer is touched is what lets "s", Shift+U type "sU". */
+    if (event.key === "Shift" || event.key === "CapsLock") {
+      return;
+    }
     /* An ignored key still cancels an armed "s": otherwise "s", Ctrl+C, "3"
        would mark the ticket Done.  The event's own job is left alone (no
        preventDefault), and a modal dialog swallows every page shortcut so the
@@ -414,6 +444,7 @@
       isTyping(event.target) ||
       document.querySelector("dialog[open]") !== null;
     if (ignored) {
+      pendingReplyText = "";
       stateSequenceStart = 0;
       return;
     }
@@ -421,29 +452,49 @@
     var now = Date.now();
     var awaitingState =
       stateSequenceStart !== 0 && now - stateSequenceStart <= STATE_SEQUENCE_MS;
-    if (awaitingState) {
+    /* Only a button the page actually offers is clicked: "s","2" on a ticket
+       with no Send to QA falls through to the typing branch, so the reply gets
+       the "s2" the user meant to type. */
+    if (awaitingState && (key === "1" || key === "2" || key === "3")) {
       stateSequenceStart = 0;
-      if (key === "1" || key === "2" || key === "3") {
-        if (activate("s" + key, true)) {
-          event.preventDefault();
-        }
+      if (activate("s" + key, true)) {
+        pendingReplyText = "";
+        event.preventDefault();
         return;
       }
-      // Any other key cancels the sequence but still does its own job, so a
-      // stray "s" before "j" does not swallow the "j".
     }
     if (key === "s") {
+      /* Appended, not replaced, so "s","s","h" types "ssh"; the case is kept
+         because that is what the user pressed. */
+      pendingReplyText += event.key;
       stateSequenceStart = now;
-    } else if (key === "?") {
+      return;
+    }
+    // Any other key cancels the armed sequence but still does its own job, so
+    // a stray "s" before "j" does not swallow the "j".
+    stateSequenceStart = 0;
+    if (key === "?") {
+      pendingReplyText = "";
       if (openHelp()) {
         event.preventDefault();
       }
     } else if (key === "c") {
+      pendingReplyText = "";
       if (activate("new", false)) {
         event.preventDefault();
       }
-    } else if (key === "j" || key === "k") {
+    } else if ((key === "j" || key === "k") && document.querySelector("a.row")) {
+      pendingReplyText = "";
       moveRow(key === "j" ? 1 : -1);
+    } else if (Array.from(event.key).length === 1 && event.key !== " ") {
+      /* Space is left alone so it still scrolls the page or presses a button,
+         which is why it falls into the clearing branch below instead of here.
+         Array.from counts code points: an astral character has a length of 2. */
+      var replay = pendingReplyText;
+      pendingReplyText = "";
+      typeIntoReply(replay);
+    } else {
+      pendingReplyText = "";
     }
   });
 
