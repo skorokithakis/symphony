@@ -346,6 +346,8 @@ body.sym { min-height: 100dvh; }
 
 .group { display: flex; flex-direction: column; gap: var(--s1); }
 .group-h { display: flex; align-items: center; gap: var(--s2); padding-bottom: var(--s1); }
+/* Hairline after the state pill and count, so each group reads as its own section. */
+.group-h::after { content: ""; flex: 1; height: 1px; margin-left: var(--s2); background: var(--rule); }
 .group-n { font: 400 var(--t-sm)/1 var(--font-mono); color: var(--ink-3); }
 .group-empty { padding: var(--s3) 0; font-size: var(--t-sm); color: var(--ink-2); }
 
