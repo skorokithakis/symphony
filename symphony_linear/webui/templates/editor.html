@@ -46,7 +46,7 @@
       <div class="field field--grow">
         <p class="drop">Drop files to attach<small>Any file type, up to 50 MB each</small></p>
         <label for="description">Ticket text</label>
-        <textarea class="input input--big" id="description" name="description" rows="9" placeholder="Describe the task for one repository. Markdown works."{% if page.errors.get("description") %} aria-invalid="true" aria-describedby="description-err"{% endif %}>{% if page.description.startswith("\n") %}&#10;{% endif %}{{ page.description }}</textarea>
+        <textarea class="input input--big" id="description" name="description" rows="9" placeholder="Describe the task for one repository. Markdown works."{% if not page.ticket_id and not page.errors %} autofocus{% endif %}{% if page.errors.get("description") %} aria-invalid="true" aria-describedby="description-err"{% endif %}>{% if page.description.startswith("\n") %}&#10;{% endif %}{{ page.description }}</textarea>
         {% if page.errors.get("description") %}
         <p class="field-err" id="description-err"><svg class="ic ic--sm" viewBox="0 0 20 20" aria-hidden="true"><path d="M10 3l8 14H2zM10 8.5v4M10 15v.2"></path></svg>{{ page.errors["description"] }}</p>
         {% endif %}
