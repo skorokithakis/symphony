@@ -656,6 +656,11 @@ a.file:hover { border-color: var(--ink-3); background: var(--sunken); }
   border: 0; outline: 0; background: transparent; resize: none;
   font-size: var(--t-md); line-height: 1.5; field-sizing: content;
 }
+/* The composer card shows focus with its own border, so the text field must
+   not draw the global focus ring as well.  This needs its own rule:
+   ".sym :focus-visible" is more specific than ".composer textarea", so the
+   "outline: 0" above loses to it. */
+.composer textarea:focus-visible { outline: 0; }
 .composer textarea::placeholder, .input::placeholder { color: var(--ink-3); opacity: 1; }
 .composer-foot { display: flex; flex-wrap: wrap; align-items: center; justify-content: space-between; gap: var(--s2) var(--s3); }
 .composer-tools { display: flex; align-items: center; gap: var(--s1); margin-left: -10px; }
