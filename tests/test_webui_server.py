@@ -10,6 +10,7 @@ from __future__ import annotations
 import base64
 import http.client
 import json
+import os
 import re
 import socket
 import threading
@@ -32,6 +33,7 @@ from symphony_linear.local_tracker import (
     LocalTracker,
 )
 from symphony_linear.state import StateManager, TicketState, TicketStatus, load_state
+from symphony_linear.webui import templates
 from symphony_linear.webui.http_types import Request, Response, Route
 from symphony_linear.webui.server import _CSP, WebUIServer
 from symphony_linear.webui.views import display_title, short_repo
@@ -575,11 +577,40 @@ class TestTemplates:
             _status, _headers, body = _request(port, "GET", "/")
 
         text = body.decode()
-        assert '<link rel="stylesheet" href="/static/symphony.css">' in text
-        assert '<script src="/static/app.js" defer></script>' in text
+        assert re.search(
+            r'<link rel="stylesheet" href="/static/symphony\.css\?v=\d+">', text
+        )
+        assert re.search(r'<script src="/static/app\.js\?v=\d+" defer></script>', text)
         assert "<script>" not in text
         assert "onclick=" not in text
         assert ' style="' not in text
+
+    def test_static_urls_are_versioned_by_the_file_mtime(self, tmp_path: Path) -> None:
+        static_dir = Path(templates.__file__).resolve().parent / "static"
+
+        with _running_server(tmp_path) as (port, _tracker, _state):
+            _status, _headers, body = _request(port, "GET", "/")
+
+        text = body.decode()
+        for name in ("symphony.css", "app.js", "home.js", "icon.png"):
+            version = (static_dir / name).stat().st_mtime_ns
+            assert f"/static/{name}?v={version}" in text
+
+    def test_static_url_is_not_cached_across_calls(
+        self, monkeypatch: pytest.MonkeyPatch, tmp_path: Path
+    ) -> None:
+        # Statting on every call is what lets an in-place edit change the URL
+        # without a daemon restart, so caching the version must fail this.
+        static_dir = tmp_path / "static"
+        static_dir.mkdir()
+        asset = static_dir / "app.js"
+        asset.write_text("")
+        monkeypatch.setattr(templates, "_STATIC_DIR", static_dir)
+
+        os.utime(asset, ns=(1, 1))
+        assert templates.static_url("app.js") == "/static/app.js?v=1"
+        os.utime(asset, ns=(2, 2))
+        assert templates.static_url("app.js") == "/static/app.js?v=2"
 
     def test_list_continuation_loads_only_on_the_text_box_pages(
         self, tmp_path: Path
@@ -593,10 +624,10 @@ class TestTemplates:
             _status, _headers, ticket = _request(port, "GET", "/tickets/SYM-1")
             _status, _headers, editor = _request(port, "GET", "/new")
 
-        script = b'<script src="/static/lists.js" defer></script>'
-        assert script not in home
-        assert script in ticket
-        assert script in editor
+        script = re.compile(rb'<script src="/static/lists\.js\?v=\d+" defer></script>')
+        assert script.search(home) is None
+        assert script.search(ticket) is not None
+        assert script.search(editor) is not None
 
     @pytest.mark.parametrize(
         "path",
@@ -1250,6 +1281,20 @@ class TestStaticFiles:
         assert status == 200
         assert headers["Content-Type"].startswith("text/javascript")
         assert b"querySelectorAll" in body
+
+    def test_only_versioned_requests_are_cacheable(self, tmp_path: Path) -> None:
+        with _running_server(tmp_path) as (port, _tracker, _state):
+            versioned_status, versioned_headers, _body = _request(
+                port, "GET", "/static/app.js?v=1"
+            )
+            plain_status, plain_headers, _body = _request(port, "GET", "/static/app.js")
+
+        assert versioned_status == 200
+        assert (
+            versioned_headers["Cache-Control"] == "private, max-age=31536000, immutable"
+        )
+        assert plain_status == 200
+        assert "Cache-Control" not in plain_headers
 
     def test_the_list_continuation_script_is_served(self, tmp_path: Path) -> None:
         with _running_server(tmp_path) as (port, _tracker, _state):

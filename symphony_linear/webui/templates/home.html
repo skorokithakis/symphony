@@ -3,11 +3,11 @@
 
 {% block title %}Tickets · symphony{% endblock %}
 
-{% block scripts %}<script src="/static/home.js" defer></script>{% endblock %}
+{% block scripts %}<script src="{{ static_url('home.js') }}" defer></script>{% endblock %}
 
 {% block content %}
 <header class="bar">
-  <a class="wordmark" href="/"><img class="wordmark-logo" src="{{ icon_url }}" alt="" width="24" height="24">symphony</a>
+  <a class="wordmark" href="/"><img class="wordmark-logo" src="{{ icon_url() }}" alt="" width="24" height="24">symphony</a>
   <p class="conn" id="conn" role="status" hidden>Connection lost. Retrying…</p>
 </header>
 <main class="home" id="home-body" data-api="/api/home" data-version="{{ page.version }}">

@@ -3,11 +3,11 @@
 
 {% block title %}{% if page.ticket_id %}{{ page.ticket_id }} · {% endif %}{{ page.heading }} · symphony{% endblock %}
 
-{% block scripts %}<script src="/static/lists.js" defer></script><script src="/static/upload.js" defer></script><script src="/static/editor.js" defer></script>{% endblock %}
+{% block scripts %}<script src="{{ static_url('lists.js') }}" defer></script><script src="{{ static_url('upload.js') }}" defer></script><script src="{{ static_url('editor.js') }}" defer></script>{% endblock %}
 
 {% block content %}
 <header class="bar">
-  <a class="wordmark" href="/"><img class="wordmark-logo" src="{{ icon_url }}" alt="" width="24" height="24">symphony</a>
+  <a class="wordmark" href="/"><img class="wordmark-logo" src="{{ icon_url() }}" alt="" width="24" height="24">symphony</a>
 </header>
 <main>
   <div class="alert alert--warn" id="page-error" role="alert" hidden>

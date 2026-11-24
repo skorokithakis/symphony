@@ -10,6 +10,7 @@ variants (with and without ``webui.anthropic_api_key``).
 from __future__ import annotations
 
 import json
+import re
 from contextlib import contextmanager
 from pathlib import Path
 from typing import Iterator
@@ -305,7 +306,9 @@ class TestNewPage:
         assert 'aria-controls="repo-picker-list"' in text
         assert 'id="repo-picker-list"' in text
         assert 'role="listbox"' in text
-        assert '<script src="/static/editor.js" defer></script>' in text
+        assert re.search(
+            r'<script src="/static/editor\.js\?v=\d+" defer></script>', text
+        )
 
     def test_the_repository_picker_is_only_on_the_editor(self, tmp_path: Path) -> None:
         _write_ticket(tmp_path, "SYM-1", state=STATE_IN_PROGRESS, title="Running")
@@ -318,8 +321,9 @@ class TestNewPage:
         # that carried the dialog would advertise a shortcut that does nothing.
         assert b'id="repo-picker"' not in home
         assert b'id="repo-picker"' not in ticket
-        assert b"/static/editor.js" not in home
-        assert b"/static/editor.js" not in ticket
+        editor_script = re.compile(rb'src="/static/editor\.js\?v=\d+"')
+        assert editor_script.search(home) is None
+        assert editor_script.search(ticket) is None
 
 
 # ---------------------------------------------------------------------------

@@ -55,4 +55,10 @@ def serve_static(request: Request) -> Response:
     content_type = _CONTENT_TYPES.get(
         candidate.suffix.lower(), "application/octet-stream"
     )
-    return Response(body=data, content_type=content_type)
+    # A ``v`` query only comes from static_url, whose value changes whenever
+    # the file does, so the browser may keep the response forever.  Requests
+    # without it (hand-typed URLs, older links) keep the previous behaviour.
+    headers: tuple[tuple[str, str], ...] = ()
+    if "v" in request.query:
+        headers = (("Cache-Control", "private, max-age=31536000, immutable"),)
+    return Response(body=data, content_type=content_type, headers=headers)
