@@ -9,6 +9,18 @@
 
   var Sym = (window.Sym = window.Sym || {});
 
+  /* Whether a dictation recording is live, and the page's chance to react.  It
+   * lives here rather than in dictation.js because that file only loads when
+   * the daemon has a Soniox key, while the ticket and editor pages gate their
+   * own submit controls on it.  Each page replaces ``onChange`` with its gating
+   * function: the ticket page's poll replaces its action buttons, so only the
+   * page can keep a fresh render blocked and then return the buttons to their
+   * current state when the recording ends. */
+  Sym.dictation = {
+    active: false,
+    onChange: function () {},
+  };
+
   var dateTimeFormatter = new Intl.DateTimeFormat(undefined, {
     dateStyle: "medium",
     timeStyle: "short",

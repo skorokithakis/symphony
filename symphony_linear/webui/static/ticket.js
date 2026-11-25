@@ -276,7 +276,25 @@
   }
 
   function applyBusyState() {
+    /* Dictation owns the state actions and Retry: Send is what ends a
+     * recording and posts the final text, so it keeps its own rule.  The poll
+     * replaces the actions fragment, which is why this runs after every
+     * replacement and again whenever dictation.js reports a start or an end,
+     * reading the buttons currently in the DOM rather than a snapshot. */
+    var dictating = Sym.dictation.active;
     var busy = uploadBusy || sending;
+    // The state actions are only ever gated by a recording: the server renders
+    // them enabled, while Send, the one control with a server-side disabled
+    // state, is skipped here and handled below.
+    if (actionsEl) {
+      actionsEl
+        .querySelectorAll("button[type=submit]")
+        .forEach(function (control) {
+          if (control.id !== "act-send") {
+            control.disabled = dictating;
+          }
+        });
+    }
     var button = sendButton();
     if (button) {
       button.disabled = busy || stateSendDisabled;
@@ -290,7 +308,7 @@
     }
     var retry = retryButton();
     if (retry) {
-      retry.disabled = busy;
+      retry.disabled = busy || dictating;
     }
     var reason = reasonElement();
     if (!reason) {
@@ -671,6 +689,12 @@
       return;
     }
     event.preventDefault();
+    /* A recording refuses every state change: the actions are disabled, so
+     * this only catches a submit that got past them (assistive technology, or
+     * a fragment rendered before the gate was applied). */
+    if (Sym.dictation.active) {
+      return;
+    }
     var actionField = form.querySelector('input[name="action"]');
     var action = actionField ? actionField.value : "";
     Sym.postJSON(url, { action: action })
@@ -722,6 +746,10 @@
   }
   captureServerSendState();
   applyBusyState();
+  /* A recording blocks the state actions and Retry; dictation.js calls this
+   * when one starts and when it ends, and re-deriving the gate from the live
+   * buttons is what keeps a poll's fresh render blocked mid-recording. */
+  Sym.dictation.onChange = applyBusyState;
 
   if (jump) {
     jump.addEventListener("click", scrollToBottom);

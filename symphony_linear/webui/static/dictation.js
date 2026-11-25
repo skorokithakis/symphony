@@ -29,7 +29,11 @@
   /* The ticket page's Send is the one submit control a recording leaves
      enabled: pressing it stops the recording and posts the final text.  Every
      other submit control (Stop, Done, Retry, Send to QA, the editor's Start)
-     stays disabled while recording. */
+     is disabled by its own page, which gates on Sym.dictation (see
+     setDictating).  A disabled snapshot taken here was the old approach and
+     cannot work on the ticket page: its poll replaces those buttons, so the
+     fresh ones came back enabled and clickable while the microphone was
+     still recording. */
   var SEND_ID = "act-send";
 
   /* Every entry is a container/codec pair Soniox's audio_format "auto"
@@ -66,6 +70,16 @@
       }
     }
     return null;
+  }
+
+  /* Pages gate their own submit controls on this flag and re-apply that gating
+     when it changes.  The ticket page's poll replaces its action buttons while
+     a recording runs, which is why the page has to re-derive the gate from the
+     live DOM after every refresh instead of this file disabling a snapshot of
+     the controls it found at the start. */
+  function setDictating(dictating) {
+    Sym.dictation.active = dictating;
+    Sym.dictation.onChange();
   }
 
   function setRecording(button, recording) {
@@ -120,9 +134,6 @@
 
     function restoreForm(session) {
       target.readOnly = session.wasReadOnly;
-      session.blocked.forEach(function (entry) {
-        entry[0].disabled = entry[1];
-      });
       if (session.form) {
         session.form.removeEventListener("submit", session.submitGuard, true);
       }
@@ -164,6 +175,7 @@
       restoreForm(session);
       setRecording(button, false);
       button.disabled = false;
+      setDictating(false);
       if (session.done) {
         /* A Send pressed during the recording waits here: the final text is
            already in the textarea and the form is usable again.  A failed
@@ -342,23 +354,9 @@
       }
 
       /* Read-only is what stops the text from changing under the recording;
-         the disabled controls and the submit guard keep every submission but
-         Send out, so the insertion needs no range tracking beyond the cursor
-         captured here. */
-      var blocked = [];
-      if (target.form) {
-        target.form
-          .querySelectorAll("button, input")
-          .forEach(function (control) {
-            if (control.id === SEND_ID) {
-              return;
-            }
-            if (control.type === "submit" || control.hasAttribute("formaction")) {
-              blocked.push([control, control.disabled]);
-              control.disabled = true;
-            }
-          });
-      }
+         the page's own gating of its submit controls and the submit guard keep
+         every submission but Send out, so the insertion needs no range
+         tracking beyond the cursor captured here. */
       var session = {
         socket: null,
         recorder: null,
@@ -377,7 +375,6 @@
         startIndex: startIndex,
         endIndex: endIndex,
         form: target.form,
-        blocked: blocked,
         wasReadOnly: target.readOnly,
         connectTimer: null,
         finishTimer: null,
@@ -400,6 +397,10 @@
       }
       button.disabled = true;
       Sym.clearError();
+      /* Everything but Send is refused from here until teardown: the page's
+         gating disables its submit controls and the submit guard below catches
+         the ones a page does not own. */
+      setDictating(true);
 
       /* The microphone is acquired first: the temporary key is good for 60
          seconds, and a slow permission prompt must not consume that. */

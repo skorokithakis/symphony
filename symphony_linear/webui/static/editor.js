@@ -211,7 +211,10 @@
   }
 
   function applyUploadState() {
-    var blocked = uploadBusy || submitting;
+    /* A recording blocks Start and Discard: the submit guard dictation.js puts
+     * on the form would swallow their submits anyway, and a disabled button
+     * says so.  This runs again when a recording starts and ends. */
+    var blocked = uploadBusy || submitting || Sym.dictation.active;
     if (startButton) {
       startButton.disabled = blocked;
     }
@@ -712,6 +715,8 @@
   }
 
   applyUploadState();
+  /* dictation.js reports a start and an end; Start and Discard follow it. */
+  Sym.dictation.onChange = applyUploadState;
 
   window.addEventListener("online", retry);
 
