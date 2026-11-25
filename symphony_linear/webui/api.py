@@ -461,8 +461,10 @@ def api_create_draft(request: Request) -> Response:
         return _error("Bad request.", status=400)
     form = _form(payload)
     title, description, repo, model = editor.editor_values(request, form, None)
-    if not (title or description.strip() or repo or model):
-        # An empty editor stays just an empty editor; nothing is stored.
+    if not (title or description.strip()):
+        # An editor with no text stays just an editor; nothing is stored.  The
+        # repository and model do not count, because /new preselects a
+        # repository.  Files create the Draft through api_upload_new_file.
         return _json({"id": None, "saved_at": None})
     ticket = request.app.store.create_draft(
         title=title,

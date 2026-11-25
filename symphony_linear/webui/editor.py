@@ -486,8 +486,10 @@ def post_create_draft(request: Request) -> Response:
         return _bad_request()
     title, description, repo, model = editor_values(request, form, None)
 
-    if not (title or description.strip() or repo or model):
-        # An empty form is not a ticket: go back to the same empty editor.
+    if not (title or description.strip()):
+        # A form with no text is not a ticket: go back to the same empty
+        # editor.  The repository and model do not count, because /new
+        # preselects a repository.
         return _redirect("/new")
 
     ticket = request.app.store.create_draft(

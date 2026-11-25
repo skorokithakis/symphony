@@ -67,13 +67,11 @@
     };
   }
 
+  /* The repository and model do not count as content: /new preselects a
+   * repository, so counting it would create a textless Draft on the first
+   * autosave.  Files create the Draft through the upload path instead. */
   function empty(payload) {
-    return (
-      !payload.title.trim() &&
-      !payload.description.trim() &&
-      !payload.repo.trim() &&
-      !payload.model
-    );
+    return !payload.title.trim() && !payload.description.trim();
   }
 
   function applyActions(actions) {
