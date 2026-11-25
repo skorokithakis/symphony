@@ -1389,7 +1389,12 @@ _NTFY_TIMEOUT_SECONDS = 10.0
 #: package.  The web UI serves it at ICON_PATH to the favicon and the title-bar
 #: logo, which are fetched by an authenticated browser.  ntfy cannot send the
 #: UI's Basic credentials, so its payload points at the same file in the public
-#: GitHub repository instead.  Moving or renaming the file changes both.
+#: GitHub repository instead.  Moving or renaming the file changes both.  The
+#: PNG is rendered from the editable source ``misc/icon.svg`` with:
+#:
+#:     uvx --from cairosvg cairosvg misc/icon.svg \
+#:         --output-width 256 --output-height 256 \
+#:         -o symphony_linear/webui/static/icon.png
 ICON_PATH = "/static/icon.png"
 NTFY_ICON_URL = (
     "https://raw.githubusercontent.com/skorokithakis/symphony/master/"

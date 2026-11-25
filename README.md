@@ -1,3 +1,5 @@
+<p align="center"><img src="symphony_linear/webui/static/icon.png" alt="Symphony icon" width="128"></p>
+
 # Symphony
 
 Symphony turns Linear, GitHub Projects or its own built-in web UI into the

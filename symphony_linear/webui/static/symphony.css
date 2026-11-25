@@ -2,7 +2,7 @@
    One stylesheet. No build step. No external requests.
 
    Layout idea: a calm workspace. One reading column, soft surfaces, round corners,
-   very few lines, and one loud colour (saffron) that always means "it is your turn".
+   very few lines, and one loud colour (orange) that always means "it is your turn".
 
    How to use it
    - Put class="sym" on <body>. Put the page in one child: <div class="app">.
@@ -19,25 +19,25 @@
 
 .sym {
   /* colour, light */
-  --paper: #f3f5ef;        /* page ground */
-  --surface: #fcfdfa;      /* composer, user messages, inputs, buttons */
-  --sunken: #e6ebe0;       /* code blocks, thumbnails, hover fills */
-  --rail: #e9ede4;         /* left rail, details panel */
-  --rule: #d5dccf;         /* hairlines */
-  --rule-2: #b4beb0;       /* control borders */
-  --ink: #16211c;          /* text, primary button */
-  --ink-2: #414f47;        /* secondary text */
-  --ink-3: #5a675f;        /* muted text */
-  --accent: #f2b632;       /* attention: Needs Input, unread, warnings. Fill only, never text. */
-  --on-accent: #1c1a10;
+  --paper: #f3f3f9;        /* page ground */
+  --surface: #fcfcfe;      /* composer, user messages, inputs, buttons */
+  --sunken: #e6e6f1;       /* code blocks, thumbnails, hover fills */
+  --rail: #eaeaf4;         /* left rail, details panel */
+  --rule: #d6d6e4;         /* hairlines */
+  --rule-2: #b5b5c9;       /* control borders */
+  --ink: #17172b;          /* text, primary button */
+  --ink-2: #42425a;        /* secondary text */
+  --ink-3: #5b5b74;        /* muted text */
+  --accent: #ff9838;       /* attention: Needs Input, unread, warnings. Fill only, never text. */
+  --on-accent: #1f1305;
   --danger: #a3301e;       /* errors and destructive actions */
   --danger-bg: #f7e0d9;
   --on-danger: #ffffff;
-  --link: #17574a;
-  --focus: #17574a;        /* keyboard focus ring */
-  --scrim: rgb(10 16 13 / 0.45);
-  --shadow-1: 0 1px 2px rgb(22 33 28 / 0.07);
-  --shadow-2: 0 10px 30px -10px rgb(22 33 28 / 0.22), 0 2px 6px rgb(22 33 28 / 0.06);
+  --link: #4d38c7;
+  --focus: #4d38c7;        /* keyboard focus ring */
+  --scrim: rgb(12 12 26 / 0.45);
+  --shadow-1: 0 1px 2px rgb(23 23 43 / 0.07);
+  --shadow-2: 0 10px 30px -10px rgb(23 23 43 / 0.22), 0 2px 6px rgb(23 23 43 / 0.06);
   color-scheme: light;
 
   /* type */
@@ -79,22 +79,22 @@
 
 @media (prefers-color-scheme: dark) {
   .sym:not([data-theme="light"]) {
-    --paper: #111714;
-    --surface: #1a2320;
-    --sunken: #0b100e;
-    --rail: #0d1310;
-    --rule: #26302a;
-    --rule-2: #3f4d44;
-    --ink: #dde5da;
-    --ink-2: #a9b5a9;
-    --ink-3: #8a968b;
-    --accent: #f2b632;
-    --on-accent: #1c1a10;
+    --paper: #121222;
+    --surface: #1b1b30;
+    --sunken: #0a0a15;
+    --rail: #0c0c1a;
+    --rule: #28283e;
+    --rule-2: #42425e;
+    --ink: #dfdfee;
+    --ink-2: #ababc2;
+    --ink-3: #8c8ca5;
+    --accent: #ff9838;
+    --on-accent: #1f1305;
     --danger: #f29480;
     --danger-bg: #3a1b15;
     --on-danger: #2a0f0a;
-    --link: #a3d6c1;
-    --focus: #a3d6c1;
+    --link: #b5a6ff;
+    --focus: #b5a6ff;
     --scrim: rgb(0 0 0 / 0.6);
     --shadow-1: 0 1px 2px rgb(0 0 0 / 0.4);
     --shadow-2: 0 12px 32px -10px rgb(0 0 0 / 0.7), 0 2px 6px rgb(0 0 0 / 0.3);
@@ -103,22 +103,22 @@
 }
 
 .sym[data-theme="dark"] {
-  --paper: #111714;
-  --surface: #1a2320;
-  --sunken: #0b100e;
-  --rail: #0d1310;
-  --rule: #26302a;
-  --rule-2: #3f4d44;
-  --ink: #dde5da;
-  --ink-2: #a9b5a9;
-  --ink-3: #8a968b;
-  --accent: #f2b632;
-  --on-accent: #1c1a10;
+  --paper: #121222;
+  --surface: #1b1b30;
+  --sunken: #0a0a15;
+  --rail: #0c0c1a;
+  --rule: #28283e;
+  --rule-2: #42425e;
+  --ink: #dfdfee;
+  --ink-2: #ababc2;
+  --ink-3: #8c8ca5;
+  --accent: #ff9838;
+  --on-accent: #1f1305;
   --danger: #f29480;
   --danger-bg: #3a1b15;
   --on-danger: #2a0f0a;
-  --link: #a3d6c1;
-  --focus: #a3d6c1;
+  --link: #b5a6ff;
+  --focus: #b5a6ff;
   --scrim: rgb(0 0 0 / 0.6);
   --shadow-1: 0 1px 2px rgb(0 0 0 / 0.4);
   --shadow-2: 0 12px 32px -10px rgb(0 0 0 / 0.7), 0 2px 6px rgb(0 0 0 / 0.3);
@@ -517,6 +517,16 @@ body.sym { min-height: 100dvh; }
 .alert--error { background: var(--danger-bg); border-color: color-mix(in srgb, var(--danger) 30%, transparent); }
 .alert--error .ic, .alert--error .alert-t { color: var(--danger); }
 .alert--warn { background: var(--accent); color: var(--on-accent); }
+/* The warning fill is the accent in both themes, but links, list markers,
+   table headings and the inline-code ground take theme-dependent colours that
+   were chosen for the page grounds.  On the accent they lose contrast (a dark
+   theme link is nearly invisible), so inside a warning they all follow the
+   on-accent text colour instead, and so does the focus ring.  The .md
+   selectors are this specific because the Markdown rules in section 9 come
+   later and would otherwise win. */
+.alert--warn a, .alert--warn .md th, .alert--warn .md li::marker { color: inherit; }
+.alert--warn :focus-visible { outline-color: currentColor; }
+.alert--warn .md :not(pre) > code { background: color-mix(in srgb, currentColor 12%, transparent); }
 .alert details > summary { min-height: var(--tap); display: inline-flex; align-items: center; cursor: pointer; text-decoration: underline; text-decoration-thickness: 1px; text-underline-offset: 0.18em; }
 .alert pre { margin-top: var(--s1); background: var(--paper); }
 .alert ul { list-style: disc; padding-left: 1.2em; font-family: var(--font-mono); font-size: var(--t-xs); }
@@ -647,7 +657,7 @@ a.file:hover { border-color: var(--ink-3); background: var(--sunken); }
   padding: var(--s3) var(--s4) calc(var(--s3) + env(safe-area-inset-bottom));
   background: var(--surface);
   border: 1px solid var(--rule); border-bottom: 0; border-radius: var(--r3) var(--r3) 0 0;
-  box-shadow: 0 -8px 24px -16px rgb(22 33 28 / 0.25);
+  box-shadow: 0 -8px 24px -16px rgb(23 23 43 / 0.25);
   transition: border-color var(--dur) var(--ease), box-shadow var(--dur) var(--ease);
 }
 .composer:focus-within { border-color: var(--ink-3); }
