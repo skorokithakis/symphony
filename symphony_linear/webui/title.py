@@ -15,7 +15,9 @@ nothing: the fallback title stays in place and one WARNING is logged.
 The request shape follows the current Messages API reference: ``POST
 https://api.anthropic.com/v1/messages`` with ``x-api-key`` and
 ``anthropic-version`` headers, and a body of ``model``, ``max_tokens`` and
-``messages``.  The reply is a JSON object whose ``content`` is a list of
+``messages``.  The base URL comes from ``webui.anthropic_base_url`` when it
+is set, so a gateway can front the API; only the ``/v1/messages`` path is
+fixed.  The reply is a JSON object whose ``content`` is a list of
 blocks; only ``{"type": "text"}`` blocks carry the title.
 
 The key comes from ``config.yaml``, which the sandbox masks from the coding
@@ -41,7 +43,9 @@ logger = logging.getLogger(__name__)
 #: real-time tasks").
 MODEL = "claude-haiku-5-5"
 
-_API_URL = "https://api.anthropic.com/v1/messages"
+#: Default Messages API base URL.  ``webui.anthropic_base_url`` replaces it
+#: for a gateway or proxy; the ``/v1/messages`` path is always appended.
+_DEFAULT_BASE_URL = "https://api.anthropic.com"
 _ANTHROPIC_VERSION = "2026-10-21"
 
 #: A title needs a handful of tokens; the cap also bounds a runaway reply.
@@ -123,13 +127,16 @@ def generate_title(
     description: str,
     *,
     api_key: str,
+    base_url: str | None = None,
     transport: httpx.BaseTransport | None = None,
 ) -> str | None:
     """Ask the Messages API for a title, returning ``None`` on any failure.
 
-    *transport* exists for tests, which pass ``httpx.MockTransport`` so no
-    request leaves the process.  The key is only ever placed in the request
-    headers.
+    *base_url* is the optional ``webui.anthropic_base_url``; the fixed
+    ``/v1/messages`` path is appended to it, so a gateway only has to speak
+    the same Messages API at that path.  *transport* exists for tests, which
+    pass ``httpx.MockTransport`` so no request leaves the process.  The key is
+    only ever placed in the request headers.
     """
     headers = {
         "x-api-key": api_key,
@@ -141,9 +148,10 @@ def generate_title(
         "max_tokens": _MAX_TOKENS,
         "messages": [{"role": "user", "content": _prompt(description)}],
     }
+    url = f"{base_url or _DEFAULT_BASE_URL}/v1/messages"
     try:
         with httpx.Client(timeout=_TIMEOUT_SECONDS, transport=transport) as client:
-            response = client.post(_API_URL, headers=headers, json=body)
+            response = client.post(url, headers=headers, json=body)
     except httpx.HTTPError as exc:
         # The exception type only: a transport error's message can echo the
         # request, and the key must never reach a log.
@@ -185,13 +193,14 @@ def schedule_generation(
     api_key = (webui.anthropic_api_key or "").strip() if webui is not None else ""
     if not api_key:
         return
+    base_url = webui.anthropic_base_url if webui is not None else None
     ticket = store.get(ticket_id)
     if ticket is None or ticket.title.strip():
         return
 
     thread = threading.Thread(
         target=_generate_and_store,
-        args=(store, ticket_id, api_key, ticket.description),
+        args=(store, ticket_id, api_key, base_url, ticket.description),
         name=f"webui-title-{ticket_id}",
         daemon=True,
     )
@@ -199,11 +208,15 @@ def schedule_generation(
 
 
 def _generate_and_store(
-    store: LocalTicketStore, ticket_id: str, api_key: str, description: str
+    store: LocalTicketStore,
+    ticket_id: str,
+    api_key: str,
+    base_url: str | None,
+    description: str,
 ) -> None:
     """The daemon thread body.  It must never raise into the server."""
     try:
-        title = generate_title(description, api_key=api_key)
+        title = generate_title(description, api_key=api_key, base_url=base_url)
         if title is not None:
             store.set_title_if_empty(ticket_id, title)
     except Exception:

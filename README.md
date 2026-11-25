@@ -288,6 +288,9 @@ webui:
   password: change-me
   # Optional. Enables automatic titles (see Titles below).
   # anthropic_api_key: ${ANTHROPIC_API_KEY}
+  # Optional. Base URL for the Messages API, e.g. an Anthropic-compatible
+  # gateway (see Titles below).
+  # anthropic_base_url: https://anthropic-gateway.example.com
   # Optional. Public base URL of this UI. A notification taps through to it
   # (see Notifications below).
   # public_url: https://symphony.example.com
@@ -422,6 +425,13 @@ stays.
 
 Without the key, the editor shows the Title field and Start refuses an empty
 one.
+
+`webui.anthropic_base_url` points that request at an Anthropic-compatible
+gateway or proxy instead of `https://api.anthropic.com`. It takes the same
+form as the SDK's `ANTHROPIC_BASE_URL`: everything before `/v1`, since
+`/v1/messages` is always appended. The gateway must accept the `x-api-key`
+header and the fixed model id. The key is still the on/off switch; setting
+only the base URL does nothing.
 
 ### Notifications
 
@@ -564,6 +574,8 @@ linear:
 #   password: change-me
 #   # Optional. Anthropic API key for automatic ticket titles.
 #   # anthropic_api_key: ${ANTHROPIC_API_KEY}
+#   # Optional. Messages API base URL, e.g. an Anthropic-compatible gateway.
+#   # anthropic_base_url: https://anthropic-gateway.example.com
 #   # Optional. Public base URL of this UI, so a notification taps through to
 #   # <public_url>/tickets/<id>.
 #   # public_url: https://symphony.example.com

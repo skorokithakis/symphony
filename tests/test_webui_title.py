@@ -37,7 +37,7 @@ def tracker(tmp_path: Path) -> LocalTracker:
     return LocalTracker(tmp_path)
 
 
-def _config(api_key: str | None) -> AppConfig:
+def _config(api_key: str | None, base_url: str | None = None) -> AppConfig:
     webui: dict[str, object] = {
         "port": 8080,
         "username": _USERNAME,
@@ -45,6 +45,8 @@ def _config(api_key: str | None) -> AppConfig:
     }
     if api_key is not None:
         webui["anthropic_api_key"] = api_key
+    if base_url is not None:
+        webui["anthropic_base_url"] = base_url
     return AppConfig.model_validate({"webui": webui})
 
 
@@ -153,6 +155,20 @@ class TestGenerateTitle:
         assert body["messages"][0]["role"] == "user"
         assert "The widget breaks on load." in body["messages"][0]["content"]
 
+    def test_a_custom_base_url_replaces_the_default(self) -> None:
+        transport, seen = _capture(lambda request: _reply("A title"))
+
+        result = title.generate_title(
+            "Text",
+            api_key="sk-test",
+            base_url="https://anthropic-gateway.example.com",
+            transport=transport,
+        )
+
+        assert result == "A title"
+        assert len(seen) == 1
+        assert str(seen[0].url) == "https://anthropic-gateway.example.com/v1/messages"
+
     def test_an_api_error_returns_none_and_warns(
         self, caplog: pytest.LogCaptureFixture
     ) -> None:
@@ -236,6 +252,27 @@ class TestScheduleGeneration:
         stored = tracker.store.get(ticket_id)
         assert stored is not None
         assert stored.state == STATE_IN_PROGRESS
+
+    def test_the_configured_base_url_reaches_the_request(
+        self, tracker: LocalTracker, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        ticket_id = _started_ticket(tracker, "First line")
+        seen: list[str | None] = []
+
+        def record(*args: Any, **kwargs: Any) -> str:
+            seen.append(kwargs.get("base_url"))
+            return "Generated title"
+
+        monkeypatch.setattr(title, "generate_title", record)
+
+        title.schedule_generation(
+            tracker.store,
+            ticket_id,
+            _config("sk-test", base_url="https://anthropic-gateway.example.com"),
+        )
+
+        _wait_for_title(tracker.store, ticket_id, "Generated title")
+        assert seen == ["https://anthropic-gateway.example.com"]
 
     def test_a_user_title_is_never_replaced(
         self, tracker: LocalTracker, monkeypatch: pytest.MonkeyPatch

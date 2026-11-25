@@ -70,6 +70,40 @@ def _expand_values(obj: Any) -> Any:
     return obj
 
 
+def _normalise_base_url(value: str | None) -> str | None:
+    """Validate an absolute http(s) base URL and strip any trailing slash.
+
+    Shared by ``webui.public_url`` and ``webui.anthropic_base_url`` because
+    both are bases a fixed path is appended to, so they need identical rules.
+    One copy rather than two validators with the same body: the checks are
+    easy to get subtly wrong in one place, and the two fields must not drift.
+    """
+    if value is None:
+        return None
+    stripped = value.strip()
+    # The markers are rejected anywhere in the string rather than through
+    # urlsplit's query and fragment, because a bare "?" or "#" followed by a
+    # slash ("https://x.example?/") puts the marker in the path, which the
+    # trailing-slash strip below would then hide from the split.
+    if "?" in stripped or "#" in stripped:
+        raise ValueError("must not contain a query string or fragment")
+    base = stripped.rstrip("/")
+    parts = urlsplit(base)
+    if parts.scheme not in ("http", "https") or not parts.netloc:
+        raise ValueError("must be an absolute http(s) URL")
+    if not parts.hostname:
+        raise ValueError("must include a host name")
+    if parts.username is not None or parts.password is not None:
+        raise ValueError("must not contain user information (user:pass@)")
+    try:
+        # Reading the property is the check: urlsplit parses the port lazily
+        # and raises ValueError for a non-numeric or out-of-range one.
+        parts.port
+    except ValueError:
+        raise ValueError("must contain a valid port number (0-65535)") from None
+    return base
+
+
 # ---------------------------------------------------------------------------
 # Pydantic sub-models
 # ---------------------------------------------------------------------------
@@ -316,6 +350,13 @@ class _WebUIConfig(BaseModel):
         None,
         description="Optional Anthropic API key for automatic ticket titles",
     )
+    anthropic_base_url: str | None = Field(
+        None,
+        description=(
+            "Optional Messages API base URL for automatic ticket titles, e.g. "
+            "an Anthropic-compatible gateway. Defaults to https://api.anthropic.com"
+        ),
+    )
     public_url: str | None = Field(
         None,
         description=(
@@ -334,26 +375,10 @@ class _WebUIConfig(BaseModel):
             raise ValueError("must be a non-empty string")
         return v
 
-    @field_validator("public_url")
+    @field_validator("public_url", "anthropic_base_url")
     @classmethod
-    def _validate_public_url(cls, v: str | None) -> str | None:
-        if v is None:
-            return None
-        stripped = v.strip()
-        # urlsplit reports an empty query or fragment for a URL ending in "?"
-        # or "#", indistinguishable from no marker at all, so the raw string is
-        # checked before splitting.
-        if stripped.endswith(("?", "#")):
-            raise ValueError("must not contain a query string or fragment")
-        base = stripped.rstrip("/")
-        parts = urlsplit(base)
-        if parts.scheme not in ("http", "https") or not parts.netloc:
-            raise ValueError("must be an absolute http(s) URL")
-        if parts.username is not None or parts.password is not None:
-            raise ValueError("must not contain user information (user:pass@)")
-        if parts.query or parts.fragment:
-            raise ValueError("must not contain a query string or fragment")
-        return base
+    def _validate_base_url(cls, v: str | None) -> str | None:
+        return _normalise_base_url(v)
 
 
 class AppConfig(BaseModel):

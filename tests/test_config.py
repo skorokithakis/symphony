@@ -938,17 +938,61 @@ class TestWebUIConfig:
         with pytest.raises(ValueError, match="user information"):
             load_config(tmp_path)
 
-    @pytest.mark.parametrize("separator", ["?", "#"])
+    @pytest.mark.parametrize("suffix", ["?", "#", "?/", "#/"])
     def test_public_url_trailing_empty_query_or_fragment_is_rejected(
-        self, tmp_path: Path, separator: str
+        self, tmp_path: Path, suffix: str
     ) -> None:
-        """urlsplit hides a bare '?' or '#', so the validator must see it."""
+        """urlsplit hides a bare '?' or '#', even with a trailing slash."""
         _write_yaml(
             tmp_path / "config.yaml",
-            {"webui": _webui_block(public_url=f"https://example.com{separator}")},
+            {"webui": _webui_block(public_url=f"https://example.com{suffix}")},
         )
 
         with pytest.raises(ValueError, match="query string or fragment"):
+            load_config(tmp_path)
+
+    @pytest.mark.parametrize(
+        ("base_url", "message"),
+        [
+            ("https://:443", "host name"),
+            ("https://host.example:abc", "valid port"),
+            ("https://host.example:99999", "valid port"),
+        ],
+    )
+    def test_base_url_rejects_a_missing_host_or_bad_port(
+        self, tmp_path: Path, base_url: str, message: str
+    ) -> None:
+        _write_yaml(
+            tmp_path / "config.yaml",
+            {"webui": _webui_block(anthropic_base_url=base_url)},
+        )
+
+        with pytest.raises(ValueError, match=message):
+            load_config(tmp_path)
+
+    def test_anthropic_base_url_is_validated_like_public_url(
+        self, tmp_path: Path
+    ) -> None:
+        _write_yaml(
+            tmp_path / "config.yaml",
+            {
+                "webui": _webui_block(
+                    anthropic_base_url="https://anthropic-gateway.example.com/"
+                )
+            },
+        )
+
+        config = load_config(tmp_path)
+        assert config.webui is not None
+        assert (
+            config.webui.anthropic_base_url == "https://anthropic-gateway.example.com"
+        )
+
+        _write_yaml(
+            tmp_path / "config.yaml",
+            {"webui": _webui_block(anthropic_base_url="anthropic-gateway.example.com")},
+        )
+        with pytest.raises(ValueError, match="absolute http"):
             load_config(tmp_path)
 
 

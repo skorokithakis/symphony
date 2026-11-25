@@ -109,6 +109,14 @@ linear:
 #   # sandbox masks from the coding agents.
 #   # anthropic_api_key: ${ANTHROPIC_API_KEY}
 #
+#   # Optional. Base URL of the Messages API for automatic titles, e.g. an
+#   # Anthropic-compatible gateway or proxy. Same form as the SDK's
+#   # ANTHROPIC_BASE_URL (without /v1); /v1/messages is always appended, and
+#   # the gateway must accept the x-api-key header and the fixed model id.
+#   # Default: https://api.anthropic.com.  The key above is still the on/off
+#   # switch; this alone does nothing.
+#   # anthropic_base_url: https://anthropic-gateway.example.com
+#
 #   # Optional. Public base URL of this web UI, e.g. behind your reverse
 #   # proxy.  With it set, tapping a notification opens
 #   # <public_url>/tickets/<id>.
