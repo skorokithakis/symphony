@@ -35,11 +35,13 @@ from symphony_linear.local_tracker import (
 from symphony_linear.state import StateManager, TicketState, TicketStatus, load_state
 from symphony_linear.webui import templates
 from symphony_linear.webui.http_types import Request, Response, Route
+from symphony_linear.webui.routes import ROUTES
 from symphony_linear.webui.server import _CSP, WebUIServer
 from symphony_linear.webui.views import display_title, short_repo
 
 _USERNAME = "admin"
 _PASSWORD = "secret"
+_AGENT_TOKEN = "agent-token-123"
 
 
 # ---------------------------------------------------------------------------
@@ -47,21 +49,24 @@ _PASSWORD = "secret"
 # ---------------------------------------------------------------------------
 
 
-def _config() -> AppConfig:
-    return AppConfig.model_validate(
-        {
-            "webui": {
-                "port": 8080,
-                "username": _USERNAME,
-                "password": _PASSWORD,
-            }
-        }
-    )
+def _config(*, api_token: str | None = None) -> AppConfig:
+    block: dict[str, object] = {
+        "port": 8080,
+        "username": _USERNAME,
+        "password": _PASSWORD,
+    }
+    if api_token is not None:
+        block["api_token"] = api_token
+    return AppConfig.model_validate({"webui": block})
 
 
 def _basic(username: str = _USERNAME, password: str = _PASSWORD) -> str:
     raw = f"{username}:{password}".encode()
     return "Basic " + base64.b64encode(raw).decode("ascii")
+
+
+def _bearer(token: str = _AGENT_TOKEN) -> str:
+    return f"Bearer {token}"
 
 
 def _write_ticket(
@@ -169,6 +174,11 @@ _TEST_ROUTES: tuple[Route, ...] = (
     ),
 )
 
+#: A POST inside the agent namespace for the authentication tests.  The real
+#: namespace has only the guide route so far, and the point here is that a
+#: bearer-authenticated POST needs no Origin.
+_AGENT_PROBE: Route = Route("POST", re.compile(r"^/api/v1/probe$"), _echo_view)
+
 
 @contextmanager
 def _running_server(
@@ -177,13 +187,14 @@ def _running_server(
     static_root: Path | None = None,
     routes: Sequence[Route] | None = None,
     max_concurrent: int = 32,
+    api_token: str | None = None,
 ) -> Iterator[tuple[int, LocalTracker, StateManager]]:
     tracker = LocalTracker(tmp_path)
     state = load_state(tmp_path)
     server = WebUIServer(
         store=tracker.store,
         state=state,
-        config=_config(),
+        config=_config(api_token=api_token),
         on_wake=Mock(),
         port=0,
         static_root=static_root,
@@ -1096,6 +1107,151 @@ class TestSameOrigin:
 
         assert status == 405
         assert "GET" in headers["Allow"]
+
+
+class TestAgentAPI:
+    """The bearer-authenticated ``/api/v1`` namespace.
+
+    These run against the real route table and the real server, so they cover
+    the dispatch ordering (namespace check before Basic auth), not a copy of
+    it in a helper.
+    """
+
+    def test_no_configured_token_hides_the_namespace(self, tmp_path: Path) -> None:
+        with _running_server(tmp_path) as (port, _tracker, _state):
+            without_auth, _headers, _body = _request(port, "GET", "/api/v1", auth=False)
+            with_bearer, _headers, _body = _request(
+                port,
+                "GET",
+                "/api/v1",
+                auth=False,
+                headers={"Authorization": _bearer()},
+            )
+
+        assert without_auth == 404
+        assert with_bearer == 404
+
+    @pytest.mark.parametrize(
+        "authorization",
+        [
+            pytest.param(None, id="missing"),
+            pytest.param(_bearer("wrong"), id="wrong-token"),
+            pytest.param("Bearer", id="empty-token"),
+            pytest.param(_basic(), id="basic-credentials"),
+        ],
+    )
+    def test_only_the_matching_bearer_is_accepted(
+        self, tmp_path: Path, authorization: str | None
+    ) -> None:
+        headers = {} if authorization is None else {"Authorization": authorization}
+
+        with _running_server(tmp_path, api_token=_AGENT_TOKEN) as (port, _t, _s):
+            status, _headers, body = _request(
+                port, "GET", "/api/v1", auth=False, headers=headers
+            )
+
+        assert status == 401
+        payload = json.loads(body)
+        assert set(payload) == {"error", "hint"}
+        assert payload["error"]
+        assert "webui.api_token" in payload["hint"]
+
+    def test_subpaths_are_protected_and_neighbours_are_not(
+        self, tmp_path: Path
+    ) -> None:
+        # The namespace is the prefix plus a separator, not a plain string
+        # prefix: /api/v10 must stay on the Basic-auth side.
+        with _running_server(tmp_path, api_token=_AGENT_TOKEN) as (port, _t, _s):
+            unauthorized = _request(port, "GET", "/api/v1/nope", auth=False)[0]
+            authorized = _request(
+                port,
+                "GET",
+                "/api/v1/nope",
+                auth=False,
+                headers={"Authorization": _bearer()},
+            )[0]
+            neighbour = _request(
+                port,
+                "GET",
+                "/api/v10",
+                auth=False,
+                headers={"Authorization": _bearer()},
+            )[0]
+
+        assert unauthorized == 401
+        assert authorized == 404
+        assert neighbour == 401
+
+    def test_the_guide_is_markdown_for_a_lowercase_scheme(self, tmp_path: Path) -> None:
+        with _running_server(tmp_path, api_token=_AGENT_TOKEN) as (port, _t, _s):
+            status, headers, body = _request(
+                port,
+                "GET",
+                "/api/v1",
+                auth=False,
+                headers={"Authorization": f"bearer {_AGENT_TOKEN}"},
+            )
+
+        assert status == 200
+        assert headers["Content-Type"] == "text/markdown; charset=utf-8"
+        assert headers["Content-Security-Policy"] == _CSP
+        assert body.startswith(b"# ")
+        assert b"webui.api_token" in body
+
+    def test_bearer_on_a_browser_route_is_rejected(self, tmp_path: Path) -> None:
+        with _running_server(tmp_path, api_token=_AGENT_TOKEN) as (port, _t, _s):
+            status, headers, _body = _request(
+                port,
+                "GET",
+                "/",
+                auth=False,
+                headers={"Authorization": _bearer()},
+            )
+
+        assert status == 401
+        assert headers["WWW-Authenticate"].startswith("Basic")
+
+    def test_a_bearer_post_without_origin_reaches_the_view(
+        self, tmp_path: Path
+    ) -> None:
+        routes = (*ROUTES, _AGENT_PROBE)
+
+        with _running_server(tmp_path, api_token=_AGENT_TOKEN, routes=routes) as (
+            port,
+            _t,
+            _s,
+        ):
+            status, _headers, body = _request(
+                port,
+                "POST",
+                "/api/v1/probe",
+                auth=False,
+                headers={"Authorization": _bearer()},
+                body=b"hi",
+            )
+
+        assert status == 200
+        assert "body=b'hi'" in body.decode()
+
+    def test_the_body_cap_still_applies(self, tmp_path: Path) -> None:
+        routes = (*ROUTES, _AGENT_PROBE)
+        oversized = b"x" * (1024 * 1024 + 1)
+
+        with _running_server(tmp_path, api_token=_AGENT_TOKEN, routes=routes) as (
+            port,
+            _t,
+            _s,
+        ):
+            status, _headers, _body = _request(
+                port,
+                "POST",
+                "/api/v1/probe",
+                auth=False,
+                headers={"Authorization": _bearer()},
+                body=oversized,
+            )
+
+        assert status == 413
 
 
 class TestBodyLimits:

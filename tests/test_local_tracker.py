@@ -326,6 +326,29 @@ class TestRepos:
         assert stored is not None
         assert stored.repo == "owner/name"
 
+    def test_rename_keeps_the_url_and_leaves_tickets_unchanged(
+        self, tmp_path: Path
+    ) -> None:
+        tracker = LocalTracker(tmp_path)
+        tracker.store.add_repo("owner/name", "Old")
+        ticket = tracker.store.create_draft(description="x", repo="owner/name")
+
+        entry = tracker.store.rename_repo(" owner/name ", "New")
+
+        assert entry.url == "owner/name"
+        assert entry.name == "New"
+        assert [
+            (saved.url, saved.name)
+            for saved in LocalTracker(tmp_path).store.list_repos()
+        ] == [("owner/name", "New")]
+        stored = tracker.store.get(ticket.id)
+        assert stored is not None
+        assert stored.repo == "owner/name"
+
+    def test_rename_of_an_unknown_url_raises(self, store: LocalTicketStore) -> None:
+        with pytest.raises(TrackerNotFoundError):
+            store.rename_repo("owner/name", "New")
+
     def test_a_refused_start_does_not_add_the_new_repository(
         self, tmp_path: Path
     ) -> None:
@@ -424,6 +447,40 @@ class TestDraftEditing:
 
         reloaded = LocalTicketStore(tmp_path / "tickets")
         assert reloaded.get(ticket.id) == updated
+
+    def test_update_draft_fields_changes_only_the_supplied_ones(
+        self, store: LocalTicketStore
+    ) -> None:
+        ticket = store.create_draft(
+            title="Old", description="Body", repo="acme/widgets", model="Cheap"
+        )
+
+        updated = store.update_draft_fields(ticket.id, {"description": "New body"})
+
+        assert updated.title == "Old"
+        assert updated.description == "New body"
+        assert updated.repo == "acme/widgets"
+        assert updated.model == "Cheap"
+
+    def test_update_draft_fields_rejects_unknown_keys(
+        self, store: LocalTicketStore
+    ) -> None:
+        ticket = store.create_draft(description="x")
+
+        with pytest.raises(ValueError):
+            store.update_draft_fields(ticket.id, {"state": STATE_DONE})
+
+    def test_start_draft_stored_keeps_the_stored_fields(
+        self, store: LocalTicketStore
+    ) -> None:
+        ticket = store.create_draft(title="Old", description="Body", repo="owner/name")
+        store.update_draft_fields(ticket.id, {"title": "New"})
+
+        started = store.start_draft_stored(ticket.id, add_repo=True)
+
+        assert started.title == "New"
+        assert started.state == STATE_IN_PROGRESS
+        assert [entry.url for entry in store.list_repos()] == ["owner/name"]
 
     def test_update_started_ticket_raises(self, tracker: LocalTracker) -> None:
         ticket_id = _new_triggered(tracker)

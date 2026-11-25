@@ -26,6 +26,22 @@ from __future__ import annotations
 
 import re
 
+from symphony_linear.webui.agent_api import (
+    api_models,
+    api_repo_add,
+    api_repo_delete,
+    api_repo_rename,
+    api_repos,
+    api_ticket_action,
+    api_ticket_comment,
+    api_ticket_create,
+    api_ticket_delete,
+    api_ticket_detail,
+    api_ticket_edit,
+    api_ticket_start,
+    api_tickets,
+    guide,
+)
 from symphony_linear.webui.api import (
     MAX_UPLOAD_BYTES,
     api_archive,
@@ -85,6 +101,14 @@ _API_TICKET_FILE = re.compile(
 
 _FILES = re.compile(r"^/files/(?P<ticket_id>[^/]+)/(?P<name>[^/]+)$")
 
+_API_V1_TICKETS = re.compile(r"^/api/v1/tickets$")
+_API_V1_TICKET = re.compile(r"^/api/v1/tickets/(?P<ticket_id>[^/]+)$")
+_API_V1_TICKET_START = re.compile(r"^/api/v1/tickets/(?P<ticket_id>[^/]+)/start$")
+_API_V1_TICKET_ACTIONS = re.compile(r"^/api/v1/tickets/(?P<ticket_id>[^/]+)/actions$")
+_API_V1_TICKET_COMMENTS = re.compile(r"^/api/v1/tickets/(?P<ticket_id>[^/]+)/comments$")
+_API_V1_REPOS = re.compile(r"^/api/v1/repos$")
+_API_V1_MODELS = re.compile(r"^/api/v1/models$")
+
 ROUTES: tuple[Route, ...] = (
     Route("GET", re.compile(r"^/$"), home),
     Route("GET", re.compile(r"^/archive$"), archive),
@@ -104,6 +128,24 @@ ROUTES: tuple[Route, ...] = (
     Route("POST", _TICKET_DISCARD, post_discard_draft),
     Route("POST", re.compile(r"^/tickets/(?P<ticket_id>[^/]+)/reply$"), post_reply),
     Route("POST", re.compile(r"^/tickets/(?P<ticket_id>[^/]+)/state$"), post_state),
+    # The agent API.  These are ordinary routes, so the body cap and the
+    # security headers still apply; the server authenticates /api/v1 with a
+    # bearer token instead of Basic auth, and turns its routing and body
+    # errors into the JSON error shape.  The guide lists every one of them.
+    Route("GET", re.compile(r"^/api/v1$"), guide),
+    Route("GET", _API_V1_TICKETS, api_tickets),
+    Route("POST", _API_V1_TICKETS, api_ticket_create),
+    Route("GET", _API_V1_TICKET, api_ticket_detail),
+    Route("PATCH", _API_V1_TICKET, api_ticket_edit),
+    Route("DELETE", _API_V1_TICKET, api_ticket_delete),
+    Route("POST", _API_V1_TICKET_START, api_ticket_start),
+    Route("POST", _API_V1_TICKET_ACTIONS, api_ticket_action),
+    Route("POST", _API_V1_TICKET_COMMENTS, api_ticket_comment),
+    Route("GET", _API_V1_REPOS, api_repos),
+    Route("POST", _API_V1_REPOS, api_repo_add),
+    Route("PATCH", _API_V1_REPOS, api_repo_rename),
+    Route("DELETE", _API_V1_REPOS, api_repo_delete),
+    Route("GET", _API_V1_MODELS, api_models),
     # JSON endpoints for the live pages.  They go through the same dispatch
     # pipeline as every page, so the Basic auth, same-origin check, body cap
     # and security headers apply without a second implementation.

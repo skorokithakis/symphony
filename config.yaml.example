@@ -117,6 +117,12 @@ linear:
 #   # switch; this alone does nothing.
 #   # anthropic_base_url: https://anthropic-gateway.example.com
 #
+#   # Optional. Bearer token for the read/write JSON API at /api/v1, used by
+#   # an external agent rather than a browser.  Leave it unset to disable the
+#   # API: /api/v1 then answers 404.  The token lives in config.yaml, which
+#   # the sandbox masks from the coding agents.
+#   # api_token: ${SYMPHONY_WEBUI_API_TOKEN}
+#
 #   # Optional. Public base URL of this web UI, e.g. behind your reverse
 #   # proxy.  With it set, tapping a notification opens
 #   # <public_url>/tickets/<id>.

@@ -357,6 +357,13 @@ class _WebUIConfig(BaseModel):
             "an Anthropic-compatible gateway. Defaults to https://api.anthropic.com"
         ),
     )
+    api_token: str | None = Field(
+        None,
+        description=(
+            "Optional bearer token for the /api/v1 agent API.  Unset means "
+            "the API is disabled and /api/v1 answers 404."
+        ),
+    )
     public_url: str | None = Field(
         None,
         description=(
@@ -373,6 +380,17 @@ class _WebUIConfig(BaseModel):
     def _validate_non_empty(cls, v: str) -> str:
         if not v.strip():
             raise ValueError("must be a non-empty string")
+        return v
+
+    @field_validator("api_token")
+    @classmethod
+    def _validate_api_token(cls, v: str | None) -> str | None:
+        # An empty value is almost always an unset ${VAR} that expanded to "".
+        # Reject it at load time rather than leave the API enabled with a
+        # token no client can send, which would turn every /api/v1 request
+        # into a puzzling 401.
+        if v is not None and not v.strip():
+            raise ValueError("must be a non-empty string when set")
         return v
 
     @field_validator("public_url", "anthropic_base_url")

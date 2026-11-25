@@ -66,7 +66,8 @@ symphony_linear/
                     routes.py (route table), api.py (JSON endpoints), views.py / editor.py /
                     ticket.py (list, editor and ticket pages), files.py (uploaded-file serving),
                     markdown.py (safe Markdown), title.py (optional Anthropic titles),
-                    templates/ and static/
+                    agent_api.py + agent_api.md (the bearer-authenticated /api/v1 API and its
+                    guide), templates/ and static/
   sandbox.py        Single function: run_in_sandbox() → builds the bwrap argv and returns a Popen
   agent_runner.py   Shared sandbox process runner; drains pipes and enforces turn watchdogs
   opencode.py       OpenCode adapter: run_initial / run_resume; parses OpenCode NDJSON
@@ -556,10 +557,11 @@ shutting down, or the ticket is no longer triggered — see `_is_still_triggered
   behaves exactly as before (tests, or a tracker with no web UI attached).
 - **Every web UI request goes through one dispatch choke point.**
   `_WebUIHandler.handle_one_request` parses the request and `_dispatch` does,
-  in order: HTTP Basic auth on every request, including static assets and
-  error responses (one constant-time `hmac.compare_digest` over the whole
-  `user:password` pair); same-origin enforcement on every non-GET/HEAD method;
-  route resolution; the per-route body cap (1 MiB by default) and body read.
+  in order: authentication (Basic for the browser routes, including static
+  assets and error responses, with one constant-time `hmac.compare_digest`
+  over the whole `user:password` pair; bearer for `/api/v1` — see the next
+  bullet); same-origin enforcement on every non-GET/HEAD method; route
+  resolution; the per-route body cap (1 MiB by default) and body read.
   `end_headers` adds the CSP, `X-Content-Type-Options: nosniff` and
   `X-Frame-Options: DENY` to every response, error responses included. The
   Origin check requires the Origin netloc to equal `Host` and rejects an
@@ -569,6 +571,30 @@ shutting down, or the ticket is no longer triggered — see `_is_still_triggered
   skips this. GET and HEAD are not same-origin checked and HEAD runs the GET
   view, so a GET view must never write the store, `state.json` or the seen
   marker: saves, state actions and the seen marker are POSTs.
+- **`/api/v1` is the one bearer-authenticated namespace.** It is the JSON API
+  for the user's personal agent, which runs outside the sandbox and cannot use
+  the browser's Basic credentials (`webui/agent_api.py`, guide text in
+  `webui/agent_api.md`). The credential is `webui.api_token` in
+  `config.yaml`, not a header a proxy supplies, because the sandbox shares the
+  host network and can forge headers; `config.yaml` is masked from it
+  (gnosis uwxghy). The namespace is exactly `/api/v1` and `/api/v1/...`,
+  matched on the raw percent-encoded path — the same string the route
+  patterns see — so a percent-encoded alias falls through to Basic auth.
+  `_dispatch` checks this before Basic auth: with no token configured,
+  `/api/v1` answers 404 (an unknown route, not a 401 that confirms the API
+  exists); a missing or wrong `Authorization: Bearer` gets a JSON 401 of the
+  shape `{"error": str, "hint": str}`. A matching token skips both the Basic
+  check and the same-origin check, because browsers never attach a bearer
+  token by themselves, so a cross-site request has no ambient credential to
+  ride. Basic credentials are deliberately not accepted on `/api/v1`, and
+  the bearer token is not accepted anywhere else. The body cap, socket
+  timeout and security headers still apply, and the server stays the only
+  choke point: no `do_*` methods, no second server. Routing and body errors
+  in the namespace are JSON too, including the 404 for an unknown path (its
+  hint points at `GET /api/v1`), because the callers are programs. The
+  ticket endpoints reuse `editor.validation_errors` and
+  `ticket.state_action_target` rather than restating the rules, and every
+  ticket's `allowed_actions` is derived from those same functions.
 - **Only registered uploads are readable, and only four image types are
   inline.** `LocalTicketStore.read_file` serves a name only when it appears in
   the ticket's `files`, its `pending_files` or a comment's `files`;

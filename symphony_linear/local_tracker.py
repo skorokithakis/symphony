@@ -21,6 +21,7 @@ import shutil
 import tempfile
 import threading
 import uuid
+from collections.abc import Callable, Mapping
 from dataclasses import dataclass
 from datetime import datetime, timezone
 from pathlib import Path
@@ -494,6 +495,20 @@ class FileStoreError(Exception):
     """The uploaded-file store could not perform an operation."""
 
 
+class DraftValidationError(ValueError):
+    """A Draft failed the caller's Start validation under the store lock.
+
+    ``errors`` is the field-to-message mapping the validation callable
+    returned.  It subclasses ``ValueError`` so existing callers that treat a
+    refused start as a value error keep working; callers that need the
+    messages catch this class first.
+    """
+
+    def __init__(self, errors: Mapping[str, str]) -> None:
+        super().__init__(" ".join(errors.values()))
+        self.errors = dict(errors)
+
+
 @dataclass(frozen=True)
 class PendingUpload:
     """A reserved on-disk name for an upload whose body is still streaming.
@@ -592,6 +607,29 @@ class LocalTicketStore:
                 return
             self._persist_repos(remaining)
             self._repos = remaining
+
+    def rename_repo(self, url: str, name: str) -> RepoEntry:
+        """Change one managed repository's display name, keeping its URL.
+
+        The URL identifies the entry, so it is never changed and renaming
+        cannot orphan a ticket or create a second entry for the same
+        repository.  Tickets are untouched: each keeps the repository string
+        it was created with.  Raises ``TrackerNotFoundError`` for a URL that
+        is not in the list, so the web layer can answer 404 instead of
+        silently creating an entry.
+        """
+        url = url.strip()
+        with self._lock:
+            for index, entry in enumerate(self._repos):
+                if entry.url != url:
+                    continue
+                renamed = entry.model_copy(update={"name": name.strip()})
+                entries = list(self._repos)
+                entries[index] = renamed
+                self._persist_repos(entries)
+                self._repos = entries
+                return renamed.model_copy(deep=True)
+        raise TrackerNotFoundError(f"Repository not found: {url}")
 
     # ------------------------------------------------------------------
     # Uploaded files
@@ -914,6 +952,92 @@ class LocalTicketStore:
             self._tickets[ticket_id] = updated
             return updated.model_copy(deep=True)
 
+    def update_draft_fields(
+        self, ticket_id: str, fields: Mapping[str, str | None]
+    ) -> LocalTicket:
+        """Apply only the supplied editable fields to draft *ticket_id*.
+
+        The browser editor posts every field at once, but an API caller may
+        change one.  Reading the ticket, merging and writing under one lock is
+        what makes two concurrent single-field edits keep each other's work;
+        a merge against a copy read before the lock loses whichever write
+        lands second.  ``fields`` may hold only ``title``, ``description``,
+        ``repo`` and ``model``, already validated by the caller.
+        """
+        allowed = {"title", "description", "repo", "model"}
+        unknown = set(fields) - allowed
+        if unknown:
+            raise ValueError(f"Unknown draft fields: {', '.join(sorted(unknown))}")
+        with self._lock:
+            ticket = self._require(ticket_id)
+            if ticket.state != STATE_DRAFT:
+                raise ValueError(
+                    f"Ticket {ticket_id} is in state {ticket.state!r} and "
+                    f"cannot be edited"
+                )
+            updated = ticket.model_copy(update={**fields, "updated_at": _iso_now()})
+            self._persist(updated)
+            self._tickets[ticket_id] = updated
+            return updated.model_copy(deep=True)
+
+    def start_draft_stored(
+        self,
+        ticket_id: str,
+        *,
+        add_repo: bool = False,
+        validate: Callable[[LocalTicket], Mapping[str, str]] | None = None,
+        model_aliases: frozenset[str] | None = None,
+    ) -> LocalTicket:
+        """Validate and move a Draft to In Progress without rewriting its fields.
+
+        The agent API's Start has no fields of its own: it starts whatever the
+        Draft holds when the lock is taken.  Passing a snapshot read earlier
+        would overwrite an edit that landed in between, so the read,
+        validation, transition and repository-list write all happen here,
+        under the lock.
+
+        *validate* runs on the stored ticket and returns a field-to-message
+        mapping; a non-empty result raises :class:`DraftValidationError` and
+        nothing is written.  It must not call back into this store, because
+        the lock is held.
+
+        *model_aliases*, when given, clears a stored alias that no longer
+        appears in it, matching the editor's Start, which drops an alias the
+        configuration no longer defines.
+
+        *add_repo* adds the ticket's repository to the managed list, the same
+        side effect Start has in the editor.
+        """
+        with self._lock:
+            ticket = self._require(ticket_id)
+            if ticket.state != STATE_DRAFT:
+                raise ValueError(
+                    f"Ticket {ticket_id} is in state {ticket.state!r} and "
+                    f"cannot be started"
+                )
+            if validate is not None:
+                errors = validate(ticket)
+                if errors:
+                    raise DraftValidationError(errors)
+            now = _iso_now()
+            update: dict[str, Any] = {
+                "state": STATE_IN_PROGRESS,
+                "state_changed_at": now,
+                "updated_at": now,
+            }
+            if (
+                model_aliases is not None
+                and ticket.model is not None
+                and ticket.model not in model_aliases
+            ):
+                update["model"] = None
+            started = ticket.model_copy(update=update)
+            self._persist(started)
+            self._tickets[ticket_id] = started
+            if add_repo and ticket.repo.strip():
+                self._add_repo_locked(ticket.repo, "")
+            return started.model_copy(deep=True)
+
     def start_draft(
         self,
         ticket_id: str,
@@ -1035,7 +1159,12 @@ class LocalTicketStore:
         return self.add_comment(ticket_id, body, kind=None)
 
     def add_human_comment_once(
-        self, ticket_id: str, body: str, *, token: str
+        self,
+        ticket_id: str,
+        body: str,
+        *,
+        token: str,
+        consume_composer: bool = True,
     ) -> LocalComment | None:
         """Append a human comment unless *token* was already accepted.
 
@@ -1043,6 +1172,12 @@ class LocalTicketStore:
         same form post cannot both append.  Returns ``None`` when the token was
         already used; the caller should treat that as success (the first
         attempt's comment is the one the user sees).
+
+        ``consume_composer`` is true for the browser's Send, which sends what
+        is in the composer: the pending files move onto the new comment and
+        the saved draft text is cleared.  The agent API replies from its own
+        client, so it passes ``False`` and leaves the browser's draft text and
+        pending attachments exactly as they were.
         """
         with self._lock:
             ticket = self._require(ticket_id)
@@ -1061,23 +1196,31 @@ class LocalTicketStore:
                 body=body,
                 kind=None,
                 created_at=_iso_now(),
-                files=[record.model_copy() for record in ticket.pending_files],
+                files=(
+                    [record.model_copy() for record in ticket.pending_files]
+                    if consume_composer
+                    else []
+                ),
             )
-            updated = ticket.model_copy(
-                update={
-                    "comments": [*ticket.comments, comment],
-                    "pending_files": [],
-                    "accepted_send_tokens": [
-                        *ticket.accepted_send_tokens,
-                        token,
-                    ][-_MAX_SEND_TOKENS:],
-                    # Sending consumes the composer text, which is then empty
-                    # for the next visit from any device.
-                    "reply_draft": "",
-                    "reply_draft_saved_at": None,
-                    "updated_at": comment.created_at,
-                }
-            )
+            update: dict[str, Any] = {
+                "comments": [*ticket.comments, comment],
+                "accepted_send_tokens": [
+                    *ticket.accepted_send_tokens,
+                    token,
+                ][-_MAX_SEND_TOKENS:],
+                "updated_at": comment.created_at,
+            }
+            if consume_composer:
+                update.update(
+                    {
+                        "pending_files": [],
+                        # Sending consumes the composer text, which is then
+                        # empty for the next visit from any device.
+                        "reply_draft": "",
+                        "reply_draft_saved_at": None,
+                    }
+                )
+            updated = ticket.model_copy(update=update)
             self._persist(updated)
             self._tickets[ticket_id] = updated
             return comment.model_copy(deep=True)

@@ -11,9 +11,16 @@ request lines:
 
 * HTTP Basic auth on every request, including static assets (constant-time
   ``hmac.compare_digest`` comparison);
+* the ``/api/v1`` agent API's bearer token instead of Basic auth, from
+  ``webui.api_token``.  Basic credentials are not accepted there, and the
+  bearer token is not accepted anywhere else.  With no token configured the
+  namespace answers 404 rather than advertising itself with a 401.  Routing,
+  body and view errors in the namespace all use the API's JSON error shape;
 * same-origin enforcement on every non-GET/HEAD request (browsers attach
   Basic credentials to cross-site requests, so auth alone is not CSRF
-  protection);
+  protection).  A bearer-authenticated ``/api/v1`` request is exempt because
+  browsers never attach a bearer token by themselves, so there is no
+  ambient credential for a cross-site request to ride;
 * the request-body cap, which is a per-route value (1 MiB by default), and
   the socket read timeout, in the style of ``webhook.py``;
 * the security headers, emitted by :meth:`_WebUIHandler.end_headers` so even
@@ -45,6 +52,7 @@ from symphony_linear.config import AppConfig
 from symphony_linear.local_tracker import LocalTicketStore
 from symphony_linear.presence import TicketPresence
 from symphony_linear.state import StateManager
+from symphony_linear.webui.agent_api import error_response, is_agent_api_path
 from symphony_linear.webui.http_types import Request, Response, Route, WebUIApp
 from symphony_linear.webui.routes import ROUTES
 
@@ -165,18 +173,30 @@ class _WebUIHandler(BaseHTTPRequestHandler):
     # ------------------------------------------------------------------
 
     def _dispatch(self) -> None:
-        if not self._authenticated():
-            self._send(_UNAUTHORIZED)
-            return
-
-        if self.command not in ("GET", "HEAD") and not self._same_origin():
-            logger.warning(
-                "webui: rejected cross-origin %s %s", self.command, self.path
-            )
-            self._send(Response.text("Forbidden\n", status=403))
-            return
-
         path, query = self._split_target()
+        agent_api = path is not None and is_agent_api_path(path)
+
+        if agent_api:
+            # The bearer exception to both guards; the module docstring and
+            # agent_api.py explain why it is safe.  The 404 when no token is
+            # configured is deliberate: an unconfigured daemon must not
+            # advertise the namespace with a 401.
+            refusal = self._agent_api_refusal()
+            if refusal is not None:
+                self._send(refusal)
+                return
+        else:
+            if not self._authenticated():
+                self._send(_UNAUTHORIZED)
+                return
+
+            if self.command not in ("GET", "HEAD") and not self._same_origin():
+                logger.warning(
+                    "webui: rejected cross-origin %s %s", self.command, self.path
+                )
+                self._send(Response.text("Forbidden\n", status=403))
+                return
+
         if path is None:
             self._send(Response.text("Bad Request\n", status=400))
             return
@@ -186,7 +206,33 @@ class _WebUIHandler(BaseHTTPRequestHandler):
         # arrive.
         route, match, allowed = self._resolve(path)
         if route is None:
-            if allowed:
+            if agent_api:
+                # The API's callers are programs, so every error in this
+                # namespace is the JSON shape, including the ones the server
+                # produces before a view runs.
+                if allowed:
+                    self._send(
+                        error_response(
+                            "Method not allowed.",
+                            f"{self.command} is not supported on {path}. "
+                            f"Try {', '.join(allowed)}. "
+                            "GET /api/v1 returns the guide, which lists every "
+                            "endpoint.",
+                            status=405,
+                            headers=(("Allow", ", ".join(allowed)),),
+                        )
+                    )
+                else:
+                    self._send(
+                        error_response(
+                            "Unknown endpoint.",
+                            f"{path} is not part of the agent API. "
+                            "GET /api/v1 returns the guide, which lists every "
+                            "endpoint.",
+                            status=404,
+                        )
+                    )
+            elif allowed:
                 self._send(
                     Response.text(
                         "Method Not Allowed\n",
@@ -202,7 +248,7 @@ class _WebUIHandler(BaseHTTPRequestHandler):
         body_stream: BinaryIO | None = None
         content_length: int | None = None
         if self.command in _BODY_METHODS:
-            prepared = self._prepare_body(route)
+            prepared = self._prepare_body(route, agent_api=agent_api)
             if prepared is None:
                 return
             content_length, body, body_stream = prepared
@@ -221,7 +267,24 @@ class _WebUIHandler(BaseHTTPRequestHandler):
             response = route.view(request)
         except Exception:
             logger.exception("webui: view failed for %s %s", self.command, path)
-            response = Response.text("Internal Server Error\n", status=500)
+            if agent_api:
+                if path.startswith("/api/v1/repos"):
+                    read_back = "GET /api/v1/repos"
+                elif path.startswith("/api/v1/tickets"):
+                    read_back = (
+                        "GET /api/v1/tickets, or GET /api/v1/tickets/{ticket_id}"
+                    )
+                else:
+                    read_back = "GET /api/v1"
+                response = error_response(
+                    "Internal server error.",
+                    "The write may have succeeded before the failure. Read it "
+                    f"back with {read_back} before repeating a write, and read "
+                    "the daemon log for the traceback.",
+                    status=500,
+                )
+            else:
+                response = Response.text("Internal Server Error\n", status=500)
         self._send(response)
 
     # ------------------------------------------------------------------
@@ -263,6 +326,47 @@ class _WebUIHandler(BaseHTTPRequestHandler):
         # Compare the whole "user:password" pair in constant time.  A
         # per-field comparison would leak which half was wrong.
         return hmac.compare_digest(supplied, expected)
+
+    def _agent_api_refusal(self) -> Response | None:
+        """Return the refusal for an ``/api/v1`` request, or None to proceed.
+
+        Basic auth is not consulted here at all, and the bearer token is not
+        consulted for any other path: the two credentials own disjoint parts
+        of the URL space.
+        """
+        token = self._api_token
+        if token is None:
+            # Same answer as an unknown route, so a daemon without the API
+            # configured never confirms that /api/v1 exists.
+            return Response.text("Not Found\n", status=404)
+
+        supplied = self._bearer_token()
+        if supplied is None or not hmac.compare_digest(
+            supplied.encode("utf-8"), token.encode("utf-8")
+        ):
+            return error_response(
+                "Unauthorized",
+                "Send 'Authorization: Bearer <token>' using the token in "
+                "webui.api_token of config.yaml.",
+                status=401,
+            )
+        return None
+
+    def _bearer_token(self) -> str | None:
+        header = self.headers.get("Authorization")
+        if not header:
+            return None
+        scheme, _, value = header.partition(" ")
+        if scheme.lower() != "bearer":
+            return None
+        stripped = value.strip()
+        return stripped or None
+
+    @property
+    def _api_token(self) -> str | None:
+        server = self.server
+        assert isinstance(server, _WebUIServer)
+        return server.api_token
 
     # ------------------------------------------------------------------
     # Same-origin (CSRF) guard
@@ -345,40 +449,84 @@ class _WebUIHandler(BaseHTTPRequestHandler):
     # Body handling
     # ------------------------------------------------------------------
 
-    def _prepare_body(self, route: Route) -> tuple[int, bytes, BinaryIO | None] | None:
+    def _prepare_body(
+        self, route: Route, *, agent_api: bool
+    ) -> tuple[int, bytes, BinaryIO | None] | None:
         """Validate and (unless streaming) read the body for *route*.
 
         Returns ``(content_length, body, stream)`` or sends an error and
         returns None.  ``stream`` is ``self.rfile`` only for routes that opted
         into ``stream_body``; the view must read exactly ``content_length``
         bytes from it.
+
+        *agent_api* selects the JSON error shape for the API namespace, whose
+        callers are programs; the browser routes keep their plain-text
+        refusals.
         """
+
+        def refuse(
+            status: int,
+            text: str,
+            error: str,
+            hint: str,
+        ) -> None:
+            if agent_api:
+                self._send(error_response(error, hint, status=status))
+            else:
+                self._send(Response.text(text, status=status))
+
         if self.headers.get("Transfer-Encoding") is not None:
             # We only speak Content-Length framing; refusing chunked bodies
             # avoids request-smuggling ambiguity.
-            self._send(Response.text("Bad Request\n", status=400))
+            refuse(
+                400,
+                "Bad Request\n",
+                "Chunked request bodies are not supported.",
+                "Send the body with one Content-Length header.",
+            )
             return None
 
         values = self.headers.get_all("Content-Length") or []
         if not values:
             logger.warning("webui: missing Content-Length on %s", self.path)
-            self._send(Response.text("Length Required\n", status=411))
+            refuse(
+                411,
+                "Length Required\n",
+                "A Content-Length header is required.",
+                "Send one Content-Length header with an ASCII decimal length "
+                "(it may be 0).",
+            )
             return None
         if len(values) != 1:
             # Duplicate Content-Length values are a request-smuggling vector
             # even when their values agree.
-            self._send(Response.text("Bad Request\n", status=400))
+            refuse(
+                400,
+                "Bad Request\n",
+                "Duplicate Content-Length headers.",
+                "Send exactly one Content-Length header.",
+            )
             return None
         raw_length = values[0].strip()
         if _CONTENT_LENGTH_RE.fullmatch(raw_length) is None:
-            self._send(Response.text("Bad Request\n", status=400))
+            refuse(
+                400,
+                "Bad Request\n",
+                "Content-Length is not a plain decimal number.",
+                "Send Content-Length as an ASCII decimal integer.",
+            )
             return None
         try:
             content_length = int(raw_length)
         except ValueError:
             # Python refuses absurdly long digit strings; reject them rather
             # than returning 500.
-            self._send(Response.text("Bad Request\n", status=400))
+            refuse(
+                400,
+                "Bad Request\n",
+                "Content-Length is not a plain decimal number.",
+                "Send Content-Length as an ASCII decimal integer.",
+            )
             return None
         if content_length > route.max_body_bytes:
             logger.warning(
@@ -386,7 +534,12 @@ class _WebUIHandler(BaseHTTPRequestHandler):
                 content_length,
                 route.max_body_bytes,
             )
-            self._send(Response.text("Payload Too Large\n", status=413))
+            refuse(
+                413,
+                "Payload Too Large\n",
+                f"The body is larger than {route.max_body_bytes} bytes.",
+                "Send a smaller body; the agent API has no upload endpoint.",
+            )
             return None
 
         if route.stream_body:
@@ -396,10 +549,20 @@ class _WebUIHandler(BaseHTTPRequestHandler):
             body = self.rfile.read(content_length)
         except (ConnectionError, OSError):
             logger.warning("webui: failed to read request body")
-            self._send(Response.text("Bad Request\n", status=400))
+            refuse(
+                400,
+                "Bad Request\n",
+                "The request body could not be read.",
+                "Send the request again.",
+            )
             return None
         if len(body) != content_length:
-            self._send(Response.text("Bad Request\n", status=400))
+            refuse(
+                400,
+                "Bad Request\n",
+                "The request body ended before Content-Length bytes arrived.",
+                "Send the request again with the whole body.",
+            )
             return None
         return content_length, body, None
 
@@ -466,6 +629,7 @@ class _WebUIServer(ThreadingHTTPServer):
 
     app: WebUIApp
     credentials: tuple[str, str]
+    api_token: str | None
     routes: Sequence[Route]
 
     def __init__(
@@ -575,6 +739,7 @@ class WebUIServer:
         # daemon always uses the configured port.
         self._port = webui.port if port is None else port
         self._credentials = (webui.username, webui.password)
+        self._api_token = webui.api_token
         self._routes = tuple(ROUTES if routes is None else routes)
         self._max_concurrent = max_concurrent
         self._app = WebUIApp(
@@ -618,6 +783,7 @@ class WebUIServer:
         try:
             server.app = self._app
             server.credentials = self._credentials
+            server.api_token = self._api_token
             server.routes = self._routes
             # The server object is handed to the thread directly: stop() clears
             # self._server, and a thread reading that field would see None and

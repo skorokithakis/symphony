@@ -830,6 +830,24 @@ class TestWebUIConfig:
         assert config.webui.username == "admin"
         assert config.webui.password == "secret"
         assert config.webui.anthropic_api_key is None
+        assert config.webui.api_token is None
+
+    def test_api_token_is_expanded_from_the_environment(
+        self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        monkeypatch.setenv("SYMPHONY_API_TOKEN", "agent-token")
+        cfg = {"webui": _webui_block(api_token="${SYMPHONY_API_TOKEN}")}
+        _write_yaml(tmp_path / "config.yaml", cfg)
+
+        config = load_config(tmp_path)
+        assert config.webui is not None
+        assert config.webui.api_token == "agent-token"
+
+    def test_empty_api_token_raises(self, tmp_path: Path) -> None:
+        _write_yaml(tmp_path / "config.yaml", {"webui": _webui_block(api_token="  ")})
+
+        with pytest.raises(ValueError, match="non-empty"):
+            load_config(tmp_path)
 
     def test_explicit_host_and_api_key(self, tmp_path: Path) -> None:
         cfg = {"webui": _webui_block(host="0.0.0.0", anthropic_api_key="sk-ant-test")}

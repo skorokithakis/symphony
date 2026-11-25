@@ -291,6 +291,9 @@ webui:
   # Optional. Base URL for the Messages API, e.g. an Anthropic-compatible
   # gateway (see Titles below).
   # anthropic_base_url: https://anthropic-gateway.example.com
+  # Optional. Bearer token for the JSON API at /api/v1, for an external agent
+  # (see Agent API below). Unset disables the API: /api/v1 then answers 404.
+  # api_token: ${SYMPHONY_WEBUI_API_TOKEN}
   # Optional. Public base URL of this UI. A notification taps through to it
   # (see Notifications below).
   # public_url: https://symphony.example.com
@@ -469,6 +472,31 @@ deliberately never sent: it does not exist at the moment of the transition,
 and it would go to a third party. Delivery is best-effort: a failure is one
 WARNING in the daemon log, with a short timeout, and never affects the turn.
 
+### Agent API
+
+An external agent can drive the built-in tracker over HTTP instead of using
+the browser. Set `webui.api_token` and point it at `<public_url>/api/v1` (or
+`http://127.0.0.1:<port>/api/v1`):
+
+```yaml
+webui:
+  # ... the rest of the webui block
+  api_token: ${SYMPHONY_WEBUI_API_TOKEN}
+```
+
+```bash
+curl -s "https://symphony.example.com/api/v1" \
+  -H "Authorization: Bearer $SYMPHONY_WEBUI_API_TOKEN"
+```
+
+`GET /api/v1` returns the whole guide as Markdown: what the states mean, every
+endpoint with a `curl` example and a sample response, and the polling loop for
+creating a ticket, waiting for the agent's reply and answering it. The token
+lives in `config.yaml`, which the sandbox masks from coding agents; Basic
+credentials are not accepted on `/api/v1`, and the bearer token is not
+accepted anywhere else. Leaving `api_token` unset disables the API: the whole
+namespace answers `404`.
+
 ## Configuration
 
 Symphony reads `config.yaml` from its workspace directory, which defaults to
@@ -576,6 +604,9 @@ linear:
 #   # anthropic_api_key: ${ANTHROPIC_API_KEY}
 #   # Optional. Messages API base URL, e.g. an Anthropic-compatible gateway.
 #   # anthropic_base_url: https://anthropic-gateway.example.com
+#   # Optional. Bearer token for the JSON API at /api/v1, for an external
+#   # agent. Unset disables the API: /api/v1 then answers 404.
+#   # api_token: ${SYMPHONY_WEBUI_API_TOKEN}
 #   # Optional. Public base URL of this UI, so a notification taps through to
 #   # <public_url>/tickets/<id>.
 #   # public_url: https://symphony.example.com
