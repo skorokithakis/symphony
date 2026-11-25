@@ -75,6 +75,14 @@ def complete(
     body = {
         "model": MODEL,
         "max_tokens": max_tokens,
+        # Haiku 5.5 thinks by default when this field is absent, and thinking
+        # tokens count toward max_tokens.  With the small caps both callers use,
+        # a long input made the model spend the whole budget on a thinking
+        # block and stop before writing any text, so summaries silently failed.
+        # Raising max_tokens was rejected: it only makes the failure rarer and
+        # pays for thinking we discard.  Disabled is valid at the default
+        # (medium) effort; it returns a 400 only at xhigh or max.
+        "thinking": {"type": "disabled"},
         "messages": [{"role": "user", "content": prompt}],
     }
     url = f"{base_url or DEFAULT_BASE_URL}/v1/messages"
@@ -95,7 +103,11 @@ def complete(
 
     text = _text_from_response(response)
     if text is None:
-        logger.warning("Anthropic Messages response was not in the expected shape")
+        logger.warning(
+            "Anthropic Messages response was not in the expected shape"
+            " (stop_reason: %s)",
+            _stop_reason(response),
+        )
     return text
 
 
@@ -113,6 +125,22 @@ def clean_line(raw: str, *, max_chars: int) -> str:
     if len(line) > max_chars:
         line = line[:max_chars].rstrip()
     return line
+
+
+def _stop_reason(response: httpx.Response) -> str | None:
+    """Return the reply's ``stop_reason`` for the log, or ``None``.
+
+    Only this one field is logged, never the body: it says whether a textless
+    reply ran out of tokens (``max_tokens``) or ended normally.
+    """
+    try:
+        payload = response.json()
+    except ValueError:
+        return None
+    if not isinstance(payload, dict):
+        return None
+    reason = payload.get("stop_reason")
+    return reason if isinstance(reason, str) else None
 
 
 def _text_from_response(response: httpx.Response) -> str | None:

@@ -153,6 +153,9 @@ class TestGenerateTitle:
         body = json.loads(request.content)
         assert body["model"] == anthropic.MODEL == "claude-haiku-5-5"
         assert 0 < body["max_tokens"] <= 256
+        # Haiku 5.5 thinks by default and thinking counts toward max_tokens,
+        # so without this a small cap ends the reply before any text block.
+        assert body["thinking"] == {"type": "disabled"}
         assert body["messages"][0]["role"] == "user"
         assert "The widget breaks on load." in body["messages"][0]["content"]
 
