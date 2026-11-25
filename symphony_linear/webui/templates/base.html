@@ -15,6 +15,9 @@
 <meta name="theme-color" content="#121222" media="(prefers-color-scheme: dark)">
 <link rel="stylesheet" href="{{ static_url('symphony.css') }}">
 <script src="{{ static_url('app.js') }}" defer></script>
+{# Loaded on every page: it registers the push service worker even when there
+   is no bell to show, so a worker update never waits for a bell click. #}
+<script src="{{ static_url('push.js') }}" defer></script>
 {% block scripts %}{% endblock %}
 </head>
 <body class="sym">

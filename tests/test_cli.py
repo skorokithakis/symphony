@@ -15,6 +15,7 @@ from symphony_linear.local_tracker import STATE_IN_PROGRESS, LocalTracker
 from symphony_linear.presence import TicketPresence
 from symphony_linear.tracker import TransitionTarget
 from symphony_linear.turn_activity import TurnActivity
+from symphony_linear.webpush import WebPushStore
 
 
 # ---------------------------------------------------------------------------
@@ -501,6 +502,24 @@ class TestCreateTracker:
 
         assert isinstance(tracker, LocalTracker)
         assert (tmp_path / "tickets").is_dir()
+
+    def test_webui_backend_receives_a_web_push_store(self, tmp_path: Path) -> None:
+        """Web Push is always on: the CLI builds the one store to share.
+
+        The same instance must reach the web server, so it is exposed on the
+        tracker rather than created twice.
+        """
+        _write_config(tmp_path, _CONFIG_WITH_WEBUI)
+        config = load_config(tmp_path)
+
+        tracker = _create_tracker(config, tmp_path)
+
+        assert isinstance(tracker, LocalTracker)
+        assert isinstance(tracker.webpush, WebPushStore)
+        assert tracker.webpush.public_key()
+        # The file deliberately lives in the workspace root, where the
+        # computed sandbox masking hides it from agents.
+        assert (tmp_path / "webpush.json").is_file()
 
     def test_webui_backend_receives_the_ntfy_block(
         self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch

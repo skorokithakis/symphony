@@ -1,5 +1,5 @@
 {% extends "base.html" %}
-{% from "_macros.html" import archive_body, dock %}
+{% from "_macros.html" import archive_body, dock, push_bell %}
 
 {% block title %}Archive · symphony{% endblock %}
 
@@ -8,7 +8,10 @@
 {% block content %}
 <header class="bar">
   <a class="wordmark" href="/"><img class="wordmark-logo" src="{{ icon_url() }}" alt="" width="24" height="24">symphony</a>
-  <p class="conn" id="conn" role="status" hidden>Connection lost. Retrying…</p>
+  <div class="bar-actions">
+    <p class="conn" id="conn" role="status" hidden>Connection lost. Retrying…</p>
+    {{ push_bell(push_public_key) }}
+  </div>
 </header>
 <main class="home" id="home-body" data-api="/api/archive" data-version="{{ page.version }}">
   {{ archive_body(page) }}

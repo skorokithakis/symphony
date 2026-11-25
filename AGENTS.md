@@ -61,6 +61,8 @@ symphony_linear/
   github.py         GitHub GraphQL client (httpx, sync); typed exceptions
   github_tracker.py GitHub Projects v2 backend adapter implementing the Tracker protocol
   local_tracker.py  Built-in tracker: on-disk ticket store under <workspace>/tickets/, fixed workflow states
+  webpush.py        Web Push for the built-in tracker: VAPID pair + subscription store
+                    (<workspace>/webpush.json) and the Needs Input sender
   presence.py       In-memory viewer presence shared by the web UI and the local tracker (Needs Input push gate)
   turn_activity.py  In-memory record of each running turn's last agent output, shown as an age on the ticket page
   webui/            Web UI for the built-in tracker: server.py (the single dispatch choke point),
@@ -542,6 +544,53 @@ shutting down, or the ticket is no longer triggered — see `_is_still_triggered
   `Send to QA` action is a pure transition and never posts the composer text: a
   fresh human comment would be seen as pending input, resume the agent, and
   pull the ticket out of QA before the serve starts.
+- **Web Push for the built-in backend is always on, with no config.** When a
+  ticket reaches Needs Input, `LocalTracker.transition_to` sends one encrypted
+  push per stored subscription beside the optional ntfy publish, behind the
+  same presence gate (see below). The store is
+  `<workspace>/webpush.json` (`webpush.py`), holding a VAPID P-256 key pair
+  generated on first use and the subscriptions' endpoint + `p256dh` + `auth`.
+  It must stay in the workspace root: the computed sandbox masking already
+  hides every root entry except the current ticket's dir, so agents cannot
+  read the subscriptions or the signing key. Writes are atomic
+  (tempfile + `os.replace`) under one `threading.RLock`, because the web
+  server thread adds subscriptions while the orchestrator thread removes
+  them. `cli._create_tracker` builds the single store and exposes it as
+  `LocalTracker.webpush`; the web server must use that exact instance.
+  Messages are `aes128gcm` (RFC 8291, `http-ece`) with a per-message ephemeral
+  key, authenticated by a 12-hour ES256 VAPID JWT (`aud` = endpoint origin,
+  `sub` = `webui.public_url` only when set). The payload is
+  `{title: "Needs Input", body: "<identifier>: <display title>",
+  url: "/tickets/<id>", tag: <ticket id>}`; the URL stays relative for the
+  service worker, and the icon is not in the payload. `add_subscription`
+  rejects a non-https endpoint (it is a bearer capability) and malformed key
+  material, and dedupes by endpoint, replacing the keys because that is what
+  a browser re-subscribe looks like. HTTP 404/410 deletes that subscription;
+  every other failure is one WARNING with no retry, at the same best-effort
+  boundary as ntfy. The daemon's own logs never include an endpoint, for the
+  same reason they are https-only (client libraries may log the URL
+  themselves at debug level; that is outside this module).
+  The browser half is `webui/push.py` plus `static/sw.js` and `static/push.js`.
+  `cli.main` passes `tracker.webpush` to `WebUIServer`, which resolves the VAPID
+  public key once at construction because generating the pair writes
+  `webpush.json` and a page GET must never write persisted state. Every page's
+  header renders a bell (`push_bell` in `_macros.html`) only when that store
+  exists; `push.js` registers `/sw.js` on every page load and reveals the bell
+  only when the browser can subscribe and has not yet. It also re-POSTs an
+  existing subscription on every load (the store dedupes by endpoint, so a save
+  that failed earlier repairs itself), and a notification click focuses a window
+  already at exactly that URL and otherwise opens a new one, never navigating
+  an existing tab because it may hold unsaved text. `POST
+  /api/push-subscriptions` takes the browser's `PushSubscription.toJSON()`
+  shape (`keys.p256dh` / `keys.auth`) and the CSP needs `worker-src 'self'`,
+  which `default-src 'none'` would otherwise block. `/sw.js` is a root route
+  rather than `/static/sw.js` because a worker's scope is its own directory.
+  Its response alone widens `img-src` to `NTFY_ICON_URL`'s origin through
+  `Response.csp` (the notification service fetches the icon without Basic
+  credentials, and every other response's policy is unchanged); the icon URL
+  must stay equal to `NTFY_ICON_URL`, and `tests/test_webui_server.py` asserts
+  that equality. The Needs Input body is capped at 200 code points in the
+  sender, because a push service takes one 4096-byte record.
 - **The Needs Input push is suppressed while the ticket's page is watched.**
   The ticket page's 3-second poll adds `active=1` while the tab is visible,
   the window has focus (`document.hasFocus()`) and the user interacted
@@ -549,10 +598,10 @@ shutting down, or the ticket is no longer triggered — see `_is_still_triggered
   minutes. `api_ticket` records that in a process-local `TicketPresence`
   (`presence.py`: monotonic timestamps, thread-safe, never persisted), and
   `cli.main` builds one instance shared by `LocalTracker` and `WebUIServer`.
-  `LocalTracker.transition_to` skips the Needs Input ntfy publish, with one
-  INFO line, when that ticket saw a signal in the last 15 seconds (five poll
-  intervals). Only the page of the ticket that changed counts; home
-  and other ticket pages do not. Recording presence is a GET with an
+  `LocalTracker.transition_to` skips the Needs Input ntfy publish and every
+  Web Push, with one INFO line, when that ticket saw a signal in the last 15
+  seconds (five poll intervals). Only the page of the ticket that changed
+  counts; home and other ticket pages do not. Recording presence is a GET with an
   in-memory side effect only — no ticket store, `state.json` or seen marker
   is touched, so it stays within the read-only GET rule. `TicketPresence` is
   optional on both constructors, so a tracker or server built without one

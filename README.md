@@ -312,6 +312,11 @@ Open `http://127.0.0.1:8080/`. The browser asks for the username and password
 once, using HTTP Basic auth; there is no login page. Served over HTTPS, the UI
 can be installed as an app and then opens standalone.
 
+With HTTPS (or on localhost), the header shows a bell that subscribes this
+browser to Web Push notifications for tickets that reach Needs Input; it hides
+itself once the browser has subscribed, and the ticket page's notification is
+suppressed while you are looking at it.
+
 **Put HTTPS in front of the port before exposing it.** Basic auth sends the
 password with every request, so plain HTTP is only reasonable on localhost.
 Keep `host` on `127.0.0.1` and terminate TLS in a reverse proxy (nginx, Caddy,
@@ -1208,11 +1213,12 @@ session id.
 - **No live view of the agent's work.** The web UI shows the ticket's state
   and how long it has been working, not the agent's steps, tool calls or
   streamed output. You see the written reply when the turn ends.
-- **No built-in push notifications.** The web UI marks unread tickets in the
-  list and puts a `(N) Symphony` count in the browser tab title. The optional
-  `webui.ntfy` block sends a push through ntfy when a ticket reaches Needs
-  Input; there is no email or webhook notification and nothing is sent for
-  other events (replies, QA, Done).
+- **No email or webhook notifications.** The web UI marks unread tickets in the
+  list, puts a `(N) Symphony` count in the browser tab title, and pushes a
+  browser notification for a ticket that reaches Needs Input once you allow it.
+  The optional `webui.ntfy` block sends one through ntfy as well; there is no
+  email or webhook notification and nothing is sent for other events (replies,
+  QA, Done).
 - **No search and no named projects.** The web UI groups tickets by state.
   Saved repositories have a name, but there are no projects to group
   tickets under.

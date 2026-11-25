@@ -43,6 +43,7 @@ from symphony_linear.tracker import (
     is_bot_comment,
     model_for_issue,
 )
+from symphony_linear.webpush import WebPushStore
 
 
 # ---------------------------------------------------------------------------
@@ -1769,7 +1770,7 @@ class TestNtfyNotifications:
             tracker.transition_to(ticket.id, TransitionTarget.needs_input)
 
         assert calls == []
-        assert "Skipping ntfy notification" in caplog.text
+        assert "Skipping Needs Input notifications" in caplog.text
         # The suppression is only about the push: the transition itself stands.
         stored = tracker.store.get(ticket.id)
         assert stored is not None
@@ -1820,6 +1821,71 @@ class TestNtfyNotifications:
         tracker.transition_to(ticket.id, TransitionTarget.needs_input)
 
         assert calls == [ticket.id]
+
+
+# ---------------------------------------------------------------------------
+# Web Push notifications
+# ---------------------------------------------------------------------------
+
+
+class TestWebPushNotifications:
+    def test_transition_to_needs_input_sends_the_push(
+        self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        """Web Push is always on for this backend, with no ntfy block needed."""
+        tracker = LocalTracker(tmp_path, webpush=WebPushStore(tmp_path))
+        ticket = tracker.store.create_draft(title="Fix it", description="x")
+        tracker.store.set_state(ticket.id, STATE_IN_PROGRESS)
+        calls: list[tuple[str, str]] = []
+        monkeypatch.setattr(
+            "symphony_linear.local_tracker.publish_needs_input_push",
+            lambda _store, **kwargs: calls.append(
+                (kwargs["ticket_id"], kwargs["body"])
+            ),
+        )
+
+        tracker.transition_to(ticket.id, TransitionTarget.needs_input)
+
+        # The body keeps the identifier and the display title in the same
+        # shape as the ntfy message, so both notifications read alike.
+        assert calls == [(ticket.id, f"{ticket.identifier}: Fix it")]
+
+    def test_the_presence_gate_also_covers_web_push(
+        self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        presence = TicketPresence()
+        tracker = LocalTracker(
+            tmp_path,
+            webpush=WebPushStore(tmp_path),
+            presence=presence,
+        )
+        ticket = tracker.store.create_draft(title="t", description="x")
+        tracker.store.set_state(ticket.id, STATE_IN_PROGRESS)
+        presence.mark_active(ticket.id)
+        calls: list[str] = []
+        monkeypatch.setattr(
+            "symphony_linear.local_tracker.publish_needs_input_push",
+            lambda _store, **kwargs: calls.append(kwargs["ticket_id"]),
+        )
+
+        tracker.transition_to(ticket.id, TransitionTarget.needs_input)
+
+        assert calls == []
+
+    def test_other_targets_do_not_push(
+        self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        tracker = LocalTracker(tmp_path, webpush=WebPushStore(tmp_path))
+        ticket = tracker.store.create_draft(title="t", description="x")
+        calls: list[str] = []
+        monkeypatch.setattr(
+            "symphony_linear.local_tracker.publish_needs_input_push",
+            lambda _store, **kwargs: calls.append(kwargs["ticket_id"]),
+        )
+
+        tracker.transition_to(ticket.id, TransitionTarget.in_progress)
+
+        assert calls == []
 
 
 # ---------------------------------------------------------------------------

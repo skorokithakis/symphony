@@ -414,6 +414,7 @@ def _render(request: Request, page: EditorPage, *, status: int = 200) -> Respons
             page=page,
             needs_input_count=needs_input_count(request),
             dictation_enabled=request.app.dictation_enabled,
+            push_public_key=request.app.push_public_key,
         ),
         status=status,
     )

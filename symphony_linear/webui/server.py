@@ -53,6 +53,7 @@ from symphony_linear.local_tracker import LocalTicketStore
 from symphony_linear.presence import TicketPresence
 from symphony_linear.state import StateManager
 from symphony_linear.turn_activity import TurnActivity
+from symphony_linear.webpush import WebPushStore
 from symphony_linear.webui.agent_api import error_response, is_agent_api_path
 from symphony_linear.webui.http_types import Request, Response, Route, WebUIApp
 from symphony_linear.webui.routes import routes_for
@@ -90,6 +91,10 @@ def _build_csp(*, dictation: bool) -> str:
     return (
         "default-src 'none'; "
         "script-src 'self'; "
+        # A same-origin service worker (the Web Push script at /sw.js) is a
+        # worker, not a script: default-src 'none' would otherwise block its
+        # registration.
+        "worker-src 'self'; "
         "style-src 'self'; "
         "img-src 'self'; "
         # default-src 'none' would otherwise block the web app manifest.
@@ -125,6 +130,11 @@ class _WebUIHandler(BaseHTTPRequestHandler):
     server_version = "symphony"
     sys_version = ""
 
+    #: A per-response Content-Security-Policy override, set by :meth:`_send`
+    #: and cleared at the start of every request, because one handler instance
+    #: can serve several requests on a kept-alive connection.
+    _csp_override: str | None = None
+
     def version_string(self) -> str:
         """Do not advertise the Python version in the Server header."""
         return self.server_version
@@ -156,6 +166,7 @@ class _WebUIHandler(BaseHTTPRequestHandler):
         HTTP/1.0 error instead, so the CSP and the security headers are still
         emitted.
         """
+        self._csp_override = None
         try:
             self.raw_requestline = self.rfile.readline(65537)
             if len(self.raw_requestline) > 65536:
@@ -594,12 +605,17 @@ class _WebUIHandler(BaseHTTPRequestHandler):
 
     def end_headers(self) -> None:
         """Add the headers every response must carry, success or error."""
-        self.send_header("Content-Security-Policy", self._csp)
+        csp = self._csp_override if self._csp_override is not None else self._csp
+        self.send_header("Content-Security-Policy", csp)
         self.send_header("X-Content-Type-Options", "nosniff")
         self.send_header("X-Frame-Options", "DENY")
         super().end_headers()
 
     def _send(self, response: Response) -> None:
+        # Set before the headers are written: end_headers() is the single place
+        # the policy is emitted, including for the base class's error
+        # responses, and this response may be the one route that overrides it.
+        self._csp_override = response.csp
         self.send_response(response.status)
         self.send_header("Content-Type", response.content_type)
         self.send_header("Content-Length", str(len(response.body)))
@@ -742,6 +758,12 @@ class WebUIServer:
         The in-memory turn-activity record shared with the orchestrator, which
         records each running turn's last output so the ticket page can show
         its age.  ``None`` disables the age (tests).
+    webpush:
+        The Web Push store shared with the local tracker.  The pages render
+        the subscribe bell from its VAPID public key, and
+        ``POST /api/push-subscriptions`` adds to this exact instance, which is
+        the one the tracker sends from.  ``None`` renders no bell and makes
+        the endpoint answer 404 (tests).
     """
 
     def __init__(
@@ -757,6 +779,7 @@ class WebUIServer:
         max_concurrent: int = _MAX_CONCURRENT_REQUESTS,
         presence: TicketPresence | None = None,
         turn_activity: TurnActivity | None = None,
+        webpush: WebPushStore | None = None,
     ) -> None:
         webui = config.webui
         if webui is None:
@@ -771,6 +794,10 @@ class WebUIServer:
         self._csp = _build_csp(dictation=webui.soniox_api_key is not None)
         self._routes = tuple(routes if routes is not None else routes_for(config))
         self._max_concurrent = max_concurrent
+        # Generating the VAPID pair writes webpush.json, and a page GET must
+        # never write persisted state, so the bell's key is resolved once here
+        # rather than by a view.
+        push_public_key = webpush.public_key() if webpush is not None else None
         self._app = WebUIApp(
             store=store,
             state=state,
@@ -779,6 +806,9 @@ class WebUIServer:
             static_root=static_root or _STATIC_ROOT,
             presence=presence,
             turn_activity=turn_activity,
+            webpush=webpush,
+            push_public_key=push_public_key,
+            csp=self._csp,
         )
         self._thread: threading.Thread | None = None
         self._server: _WebUIServer | None = None

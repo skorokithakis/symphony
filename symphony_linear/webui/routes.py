@@ -81,6 +81,7 @@ from symphony_linear.webui.editor import (
 )
 from symphony_linear.webui.files import serve_file
 from symphony_linear.webui.http_types import Route
+from symphony_linear.webui.push import api_push_subscription, serve_service_worker
 from symphony_linear.webui.repos import (
     post_add_repo,
     post_remove_repo,
@@ -135,6 +136,10 @@ ROUTES: tuple[Route, ...] = (
     Route("GET", _TICKET_EDIT, edit_page),
     Route("GET", re.compile(r"^/tickets/(?P<ticket_id>[^/]+)$"), ticket_page),
     Route("GET", _FILES, serve_file),
+    # The Web Push service worker must be at the root for its scope to cover
+    # the ticket pages a notification opens; see webui/push.py.
+    Route("GET", re.compile(r"^/sw\.js$"), serve_service_worker),
+    Route("POST", re.compile(r"^/api/push-subscriptions$"), api_push_subscription),
     Route("POST", re.compile(r"^/new$"), post_create_draft),
     Route("POST", _TICKET_EDIT, post_save_draft),
     Route("POST", re.compile(r"^/new/start$"), post_start_new),

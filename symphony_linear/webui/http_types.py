@@ -19,6 +19,7 @@ from symphony_linear.local_tracker import LocalTicketStore
 from symphony_linear.presence import TicketPresence
 from symphony_linear.state import StateManager
 from symphony_linear.turn_activity import TurnActivity
+from symphony_linear.webpush import WebPushStore
 
 #: Default request-body limit.  A route may raise it explicitly; the file
 #: upload routes do so and stream the body instead of buffering it.
@@ -42,6 +43,21 @@ class WebUIApp:
     #: output.  ``None`` means the page never shows an output age (tests and
     #: other construction paths).
     turn_activity: TurnActivity | None = None
+    #: Shared with the tracker, which sends the Needs Input push and drops
+    #: expired subscriptions; this is that same instance, and the subscribe
+    #: endpoint is the only thing that adds one.  ``None`` means no Web Push
+    #: (tests and other construction paths), so the pages render no bell and
+    #: the endpoint answers 404.
+    webpush: WebPushStore | None = None
+    #: The VAPID public key the bell hands to the browser.  Resolved once when
+    #: the server is constructed, because generating the pair writes
+    #: ``webpush.json`` and a page GET must never write persisted state.
+    #: ``None`` exactly when ``webpush`` is None.
+    push_public_key: str | None = None
+    #: The server-wide Content-Security-Policy.  A route that needs one extra
+    #: source in its own response (the Web Push service worker's notification
+    #: icon) derives its override from this rather than restating the policy.
+    csp: str = ""
 
     @property
     def dictation_enabled(self) -> bool:
@@ -84,12 +100,17 @@ class Response:
 
     The server always adds its security headers (CSP, nosniff, frame denial)
     and ``Content-Type``/``Content-Length`` when it writes this object.
+
+    ``csp`` overrides the server-wide Content-Security-Policy for this one
+    response.  ``None``, the only value every route but the Web Push service
+    worker uses, keeps the server's policy byte for byte.
     """
 
     status: int = 200
     body: bytes = b""
     content_type: str = "text/html; charset=utf-8"
     headers: tuple[tuple[str, str], ...] = ()
+    csp: str | None = None
 
     @classmethod
     def html(

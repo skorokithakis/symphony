@@ -1,5 +1,5 @@
 {% extends "base.html" %}
-{% from "_macros.html" import composer_actions, dock, entry, needs_input_dot, pending_files, saved_indicator, state_forms, state_tag, working %}
+{% from "_macros.html" import composer_actions, dock, entry, needs_input_dot, pending_files, push_bell, saved_indicator, state_forms, state_tag, working %}
 
 {% block title %}{{ page.ticket.id }} · {{ page.title }} · symphony{% endblock %}
 
@@ -8,6 +8,7 @@
 {% block content %}
 <header class="bar">
   <a class="wordmark" href="/"><img class="wordmark-logo" src="{{ icon_url() }}" alt="" width="24" height="24">symphony</a>
+  {{ push_bell(push_public_key) }}
 </header>
 <main class="ticket" id="ticket"
       data-ticket-id="{{ page.ticket.id }}"

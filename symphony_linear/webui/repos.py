@@ -76,6 +76,7 @@ def _render(request: Request, page: ReposPage, *, status: int = 200) -> Response
             app_class="app app--home",
             page=page,
             needs_input_count=needs_input_count(request),
+            push_public_key=request.app.push_public_key,
         ),
         status=status,
     )

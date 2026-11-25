@@ -635,6 +635,7 @@ def ticket_page(request: Request) -> Response:
             page=page_for(request, ticket),
             needs_input_count=needs_input_count(request),
             dictation_enabled=request.app.dictation_enabled,
+            push_public_key=request.app.push_public_key,
         )
     )
 

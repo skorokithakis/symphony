@@ -23,9 +23,12 @@ from unittest.mock import Mock, patch
 
 import httpx
 import pytest
+from cryptography.hazmat.primitives import serialization
+from cryptography.hazmat.primitives.asymmetric import ec
 
 from symphony_linear.config import AppConfig
 from symphony_linear.local_tracker import (
+    NTFY_ICON_URL,
     STATE_DONE,
     STATE_DRAFT,
     STATE_IN_PROGRESS,
@@ -34,6 +37,7 @@ from symphony_linear.local_tracker import (
     LocalTracker,
 )
 from symphony_linear.state import StateManager, TicketState, TicketStatus, load_state
+from symphony_linear.webpush import WebPushStore
 from symphony_linear.webui import templates
 from symphony_linear.webui.http_types import Request, Response, Route
 from symphony_linear.webui.routes import ROUTES
@@ -118,6 +122,29 @@ def _page_body(text: str) -> str:
     return text.split('<dialog class="confirm help-dialog"', 1)[0]
 
 
+def _push_subscription(
+    endpoint: str = "https://push.example.com/abc",
+) -> dict[str, object]:
+    """A browser's ``PushSubscription.toJSON()`` payload, with real key material."""
+    private_key = ec.generate_private_key(ec.SECP256R1())
+    p256dh = (
+        base64.urlsafe_b64encode(
+            private_key.public_key().public_bytes(
+                serialization.Encoding.X962,
+                serialization.PublicFormat.UncompressedPoint,
+            )
+        )
+        .rstrip(b"=")
+        .decode("ascii")
+    )
+    auth = base64.urlsafe_b64encode(bytes(range(16))).rstrip(b"=").decode("ascii")
+    return {
+        "endpoint": endpoint,
+        "expirationTime": None,
+        "keys": {"p256dh": p256dh, "auth": auth},
+    }
+
+
 def _state_entry(ticket_id: str, **overrides: object) -> TicketState:
     values: dict[str, object] = {
         "ticket_id": ticket_id,
@@ -200,8 +227,9 @@ def _running_server(
     max_concurrent: int = 32,
     api_token: str | None = None,
     soniox_api_key: str | None = None,
+    webpush: WebPushStore | None = None,
 ) -> Iterator[tuple[int, LocalTracker, StateManager]]:
-    tracker = LocalTracker(tmp_path)
+    tracker = LocalTracker(tmp_path, webpush=webpush)
     state = load_state(tmp_path)
     server = WebUIServer(
         store=tracker.store,
@@ -212,6 +240,7 @@ def _running_server(
         static_root=static_root,
         routes=routes,
         max_concurrent=max_concurrent,
+        webpush=tracker.webpush,
     )
     server.start()
     try:
@@ -1469,6 +1498,7 @@ class TestResponseHeaders:
 
         assert headers["Content-Security-Policy"] == _CSP
         assert "script-src 'self'" in _CSP
+        assert "worker-src 'self'" in _CSP
         assert "style-src 'self'" in _CSP
         assert "'unsafe-inline'" not in _CSP
         assert "frame-ancestors 'none'" in _CSP
@@ -1517,6 +1547,7 @@ class TestSonioxDictation:
     _BASE_CSP = (
         "default-src 'none'; "
         "script-src 'self'; "
+        "worker-src 'self'; "
         "style-src 'self'; "
         "img-src 'self'; "
         "manifest-src 'self'; "
@@ -1923,3 +1954,111 @@ class TestServerLifecycle:
         assert headers["x-content-type-options"] == "nosniff"
         assert headers["x-frame-options"] == "DENY"
         assert headers["connection"] == "close"
+
+
+class TestWebPush:
+    """The browser half of Web Push: the worker route, the bell and the endpoint.
+
+    The store and the sender are covered in ``test_webpush.py``; these tests
+    are about the HTTP plumbing review would otherwise have to take on trust.
+    """
+
+    def test_the_worker_is_served_for_root_scope_behind_auth(
+        self, tmp_path: Path
+    ) -> None:
+        with _running_server(tmp_path, webpush=WebPushStore(tmp_path)) as (
+            port,
+            _tracker,
+            _state,
+        ):
+            status, headers, body = _request(port, "GET", "/sw.js")
+            unauthenticated = _request(port, "GET", "/sw.js", auth=False)[0]
+
+        assert status == 200
+        assert headers["Content-Type"] == "text/javascript; charset=utf-8"
+        # A worker's registration carries the page's credentials, but it must
+        # still be behind the one dispatch pipeline like every other route.
+        assert unauthenticated == 401
+        assert b'addEventListener("push"' in body
+        assert b'addEventListener("notificationclick"' in body
+        # The notification service fetches the icon without Basic credentials,
+        # so it must be the same public GitHub copy the ntfy payload uses.
+        assert NTFY_ICON_URL.encode() in body
+
+    def test_the_worker_csp_adds_only_the_icon_origin(self, tmp_path: Path) -> None:
+        with _running_server(tmp_path, webpush=WebPushStore(tmp_path)) as (
+            port,
+            _tracker,
+            _state,
+        ):
+            _status, headers, _body = _request(port, "GET", "/sw.js")
+
+        # Built from the page policy here rather than through the route's own
+        # helper, so a change to the policy that skipped the replacement fails
+        # this test instead of quietly blocking the notification icon.
+        expected = _CSP.replace("img-src 'self';", f"img-src 'self' {NTFY_ICON_URL};")
+        assert expected != _CSP
+        assert headers["Content-Security-Policy"] == expected
+
+    def test_the_bell_appears_only_with_a_store(self, tmp_path: Path) -> None:
+        with _running_server(tmp_path) as (port, _tracker, _state):
+            _status, _headers, without = _request(port, "GET", "/")
+            refused = _request(
+                port,
+                "POST",
+                "/api/push-subscriptions",
+                headers={"Origin": _origin(port)},
+                body=b"{}",
+            )[0]
+
+        store = WebPushStore(tmp_path)
+        with _running_server(tmp_path, webpush=store) as (port, _tracker, _state):
+            _status, _headers, with_bell = _request(port, "GET", "/")
+
+        assert b'id="push-bell"' not in without
+        assert refused == 404
+        assert b'id="push-bell"' in with_bell
+        assert f'data-push-public-key="{store.public_key()}"'.encode() in with_bell
+
+    def test_the_endpoint_stores_a_browser_subscription(self, tmp_path: Path) -> None:
+        store = WebPushStore(tmp_path)
+        payload = _push_subscription()
+        with _running_server(tmp_path, webpush=store) as (port, _tracker, _state):
+            status, _headers, body = _request(
+                port,
+                "POST",
+                "/api/push-subscriptions",
+                headers={
+                    "Origin": _origin(port),
+                    "Content-Type": "application/json",
+                },
+                body=json.dumps(payload).encode(),
+            )
+
+        assert status == 201
+        assert json.loads(body) == {"ok": True}
+        # The same instance the tracker sends from, so the subscription is live
+        # immediately.
+        assert [entry.endpoint for entry in store.subscriptions()] == [
+            payload["endpoint"]
+        ]
+
+    def test_the_endpoint_rejects_a_non_https_endpoint(self, tmp_path: Path) -> None:
+        store = WebPushStore(tmp_path)
+        with _running_server(tmp_path, webpush=store) as (port, _tracker, _state):
+            status, _headers, body = _request(
+                port,
+                "POST",
+                "/api/push-subscriptions",
+                headers={
+                    "Origin": _origin(port),
+                    "Content-Type": "application/json",
+                },
+                body=json.dumps(
+                    _push_subscription("http://push.example.com/x")
+                ).encode(),
+            )
+
+        assert status == 400
+        assert "https" in json.loads(body)["error"]
+        assert store.subscriptions() == []

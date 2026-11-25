@@ -43,6 +43,7 @@ from symphony_linear.tracker import (
     is_agent_kind,
     model_label_name,
 )
+from symphony_linear.webpush import WebPushStore, publish_needs_input_push
 
 logger = logging.getLogger(__name__)
 
@@ -1744,6 +1745,7 @@ class LocalTracker:
         public_url: str | None = None,
         presence: TicketPresence | None = None,
         on_agent_reply: AgentReplyCallback | None = None,
+        webpush: WebPushStore | None = None,
     ) -> None:
         self.store = LocalTicketStore(workspace / "tickets")
         # Notifications hang off the tracker because transition_to is the one
@@ -1753,6 +1755,13 @@ class LocalTracker:
         # The UI's base URL is a webui setting, not an ntfy one, but the only
         # thing that consumes it is the notification payload here.
         self._public_url = public_url
+        # Web Push has no config block and is always on for the web UI
+        # backend, so the CLI always supplies a store.  It is public because
+        # the web server shares this exact instance: it is the only writer of
+        # subscriptions, while this tracker removes them when a push service
+        # reports one gone.  ``None`` is a tracker with no web UI attached
+        # (tests, or a path that constructs the tracker on its own).
+        self.webpush = webpush
         # Shared with the web UI, which records a human looking at the ticket.
         # ``None`` is a tracker with no web UI attached (tests, or a path that
         # constructs the tracker on its own), and then nothing suppresses.
@@ -1832,9 +1841,12 @@ class LocalTracker:
         logged no-op, never an exception: the next tick sees an untriggered
         ticket and runs its normal cleanup, which cancels the turn.
 
-        A successful ``needs_input`` transition publishes one ntfy
-        notification unless the web UI recorded the human viewing that ticket
-        seconds earlier (see :class:`~symphony_linear.presence.TicketPresence`).
+        A successful ``needs_input`` transition publishes one ntfy notification
+        and one Web Push per stored subscription, unless the web UI recorded
+        the human viewing that ticket seconds earlier (see
+        :class:`~symphony_linear.presence.TicketPresence`).  The two pushes
+        share one presence gate: the reply is already on screen, so neither
+        should repeat it on the reader's phone.
         """
         state = _STATE_FOR_TARGET.get(target)
         if state is None:
@@ -1852,19 +1864,29 @@ class LocalTracker:
             )
             return
         logger.info("Transitioned %s to '%s'", id, state)
-        if target is TransitionTarget.needs_input and self._ntfy is not None:
+        has_push = self._ntfy is not None or self.webpush is not None
+        if target is TransitionTarget.needs_input and has_push:
             # The reply is already on the reader's screen when the human has
             # this ticket's page open, so a push would only repeat it on their
             # phone.  A stale or absent signal publishes normally.
             if self._presence is not None and self._presence.is_active(id):
                 logger.info(
-                    "Skipping ntfy notification for %s: its page is being viewed",
+                    "Skipping Needs Input notifications for %s: its page is "
+                    "being viewed",
                     id,
                 )
                 return
             ticket = self.store.get(id)
             if ticket is not None:
-                publish_needs_input(self._ntfy, ticket, public_url=self._public_url)
+                if self._ntfy is not None:
+                    publish_needs_input(self._ntfy, ticket, public_url=self._public_url)
+                if self.webpush is not None:
+                    publish_needs_input_push(
+                        self.webpush,
+                        ticket_id=ticket.id,
+                        body=f"{ticket.identifier}: {display_title(ticket)}",
+                        public_url=self._public_url,
+                    )
 
     def is_still_triggered(self, issue: Issue) -> bool:
         return issue.state in TRIGGERED_STATES

@@ -1018,6 +1018,14 @@ dialog.confirm:not([open]) { display: none; }
 .dictation-btn[aria-pressed="true"] { background: var(--accent); color: var(--on-accent); }
 .dictation-btn[aria-pressed="true"] .ic { animation: sym-pulse 1.4s ease-in-out infinite; }
 
+/* The Web Push bell reuses .icon-btn and starts hidden; push.js reveals it
+   only for a browser that can subscribe.  The design's display rule would
+   otherwise win over the hidden attribute. */
+.push-bell[hidden] { display: none; }
+
+/* The header's right-hand controls: the connection notice and the bell. */
+.bar-actions { display: flex; align-items: center; gap: var(--s2); }
+
 /* The saved indicator is quiet until it has something to say.  Its two icons
    are toggled rather than swapped in the script. */
 .saved[data-state="error"] { color: var(--danger); }

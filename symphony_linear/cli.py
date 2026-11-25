@@ -23,6 +23,7 @@ from symphony_linear.state import load_state
 from symphony_linear.tracker import Tracker, model_label_name
 from symphony_linear.turn_activity import TurnActivity
 from symphony_linear.webhook import WebhookServer
+from symphony_linear.webpush import WebPushStore
 from symphony_linear.webui import WebUIServer, summary
 
 logger = get_logger(__name__)
@@ -139,6 +140,7 @@ def main(argv: list[str] | None = None) -> None:
             on_wake=orchestrator.wake,
             presence=presence,
             turn_activity=turn_activity,
+            webpush=tracker.webpush,
         )
     try:
         # Start inside the try so a failed bind/thread start still runs
@@ -203,6 +205,11 @@ def _create_tracker(
             public_url=config.webui.public_url,
             presence=presence,
             on_agent_reply=summary.agent_reply_hook(config.webui),
+            # Web Push is always on for this backend and has no config.  Build
+            # the one store here; ``LocalTracker.webpush`` exposes it so the
+            # web server adds subscriptions to the same instance the tracker
+            # sends from.
+            webpush=WebPushStore(workspace),
         )
     # The model_validator guarantees this is unreachable, but be defensive.
     raise RuntimeError("No tracker backend configured")

@@ -352,6 +352,7 @@ def home(request: Request) -> Response:
             app_class="app app--home",
             page=page,
             needs_input_count=page.needs_input_count,
+            push_public_key=request.app.push_public_key,
         )
     )
 
@@ -365,6 +366,7 @@ def archive(request: Request) -> Response:
             app_class="app app--home",
             page=page,
             needs_input_count=page.needs_input_count,
+            push_public_key=request.app.push_public_key,
         )
     )
 

@@ -164,6 +164,19 @@
 </span>
 {%- endmacro %}
 
+{# The Web Push opt-in bell.  It is rendered only when the daemon has a push
+   store, and push.js reveals it only for a browser that can subscribe and has
+   not subscribed yet.  The VAPID public key rides in a data attribute because
+   the script has to hand it to pushManager.subscribe, and the CSP forbids
+   inline script. #}
+{% macro push_bell(public_key) -%}
+{% if public_key %}
+<button class="icon-btn push-bell" type="button" id="push-bell" data-push-public-key="{{ public_key }}" aria-label="Enable notifications" title="Enable notifications" hidden>
+  <svg class="ic" viewBox="0 0 20 20" aria-hidden="true"><path d="M10 3.5A3.5 3.5 0 006.5 7v3L5 13h10l-1.5-3V7A3.5 3.5 0 0010 3.5zM8.5 16a1.5 1.5 0 003 0"></path></svg>
+</button>
+{% endif %}
+{%- endmacro %}
+
 {# The Needs Input dot and its screen-reader label.  It sits beside the
    Tickets link in the dock, and beside the ticket page's back link because
    the phone layout hides the whole dock on that page.  The wrapper carries

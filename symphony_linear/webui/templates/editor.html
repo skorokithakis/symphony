@@ -1,5 +1,5 @@
 {% extends "base.html" %}
-{% from "_macros.html" import dock, needs_input_dot, pending_files, saved_indicator %}
+{% from "_macros.html" import dock, needs_input_dot, pending_files, push_bell, saved_indicator %}
 
 {% block title %}{% if page.ticket_id %}{{ page.ticket_id }} · {% endif %}{{ page.heading }} · symphony{% endblock %}
 
@@ -8,6 +8,7 @@
 {% block content %}
 <header class="bar">
   <a class="wordmark" href="/"><img class="wordmark-logo" src="{{ icon_url() }}" alt="" width="24" height="24">symphony</a>
+  {{ push_bell(push_public_key) }}
 </header>
 <main>
   <div class="alert alert--warn" id="page-error" role="alert" hidden>
