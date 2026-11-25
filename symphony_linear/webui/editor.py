@@ -17,11 +17,14 @@ The page is a plain HTML form, so it works without JavaScript:
   own form carries ``confirm=1`` and is the request that deletes the Draft.
   With JavaScript, ``app.js`` opens the dialog in place instead of posting.
 * The repository control is a ``<select>`` over the managed repository list,
-  with an "Add a repository…" option that reveals two text fields.  Without
-  JavaScript both fields stay visible; either way a non-empty new URL wins
-  over the select.  Starting the ticket adds it to the managed list; saving
-  and autosave only store it on the Draft.  Any stored repository that is not
-  in the list is shown as an extra option, so it is never lost.
+  sorted by display name, with an "Add a repository…" option that reveals two
+  text fields.  A repository used by a recent ticket also appears in a
+  "Recent" group above the full list, so the usual choice is near the
+  top.  Without JavaScript both fields stay visible; either way a non-empty
+  new URL wins over the select.  Starting the ticket adds it to the managed
+  list; saving and autosave only store it on the Draft.  Any stored
+  repository that is not in the list is shown as an extra option, so it is
+  never lost.
 * The model control is a native ``<select>``, so it works without JavaScript.
   Its first option, Default, stores no model and means the agent's default;
   the rest are the configured aliases in configuration order.
@@ -57,6 +60,10 @@ from symphony_linear.webui.views import needs_input_count
 #: to the ticket page; a started ticket's description is fixed from then on.
 _EDITABLE_STATES = frozenset({STATE_DRAFT})
 
+#: How many repositories the "Recent" group holds, and the managed-list size
+#: that makes the group worth showing at all.
+_RECENT_REPOS = 5
+
 #: The two title variants.  The mock's wording is copied verbatim.
 _TITLE_NOTE = "You do not write a title. Symphony writes it from your text after Start."
 
@@ -85,8 +92,11 @@ class EditorPage:
     title: str
     description: str
     repo: str
-    #: The stored repository list, in list order.
+    #: The managed repositories sorted by display name, A to Z.
     repos: tuple[RepoOption, ...]
+    #: The most recently used managed repositories, newest first, for the
+    #: "Recent" group.  Empty when the list is short enough to scan whole.
+    recent_repos: tuple[RepoOption, ...]
     #: The current value when it is not in the list, so an old Draft keeps it.
     repo_extra: RepoOption | None
     #: A submitted inline repository, preserved when Start validation failed.
@@ -138,8 +148,8 @@ def default_repo(tickets: list[LocalTicket], repos: list[RepoEntry]) -> str:
     """Pick the repository a new ticket should start with.
 
     The most recent ticket's repository is preferred, but only while it is
-    still in the managed list; otherwise the first list entry is used, and an
-    empty list leaves the select on "Add a repository…".
+    still in the managed list; otherwise the first entry in display order is
+    used, and an empty list leaves the select on "Add a repository…".
     """
     by_url = {entry.url for entry in repos}
     ordered = sorted(tickets, key=lambda ticket: _sort_key(ticket.updated_at))
@@ -147,11 +157,43 @@ def default_repo(tickets: list[LocalTicket], repos: list[RepoEntry]) -> str:
         value = ticket.repo.strip()
         if value and value in by_url:
             return value
-    return repos[0].url if repos else ""
+    options = _repo_options(repos)
+    return options[0].url if options else ""
 
 
 def _repo_options(repos: list[RepoEntry]) -> tuple[RepoOption, ...]:
-    return tuple(RepoOption(url=entry.url, name=entry.name) for entry in repos)
+    """The managed repositories in A-to-Z display-name order, ignoring case."""
+    return tuple(
+        RepoOption(url=entry.url, name=entry.name)
+        for entry in sorted(repos, key=lambda entry: entry.name.casefold())
+    )
+
+
+def _recent_repo_options(
+    tickets: list[LocalTicket], repos: list[RepoEntry]
+) -> tuple[RepoOption, ...]:
+    """The recently used managed repositories, newest first.
+
+    Recency is per repository URL: the newest ``updated_at`` among the tickets
+    that name it, so a Draft counts.  A short list needs no shortcut, and a
+    repository no longer in the managed list is dropped because the group is a
+    way into that list, not a history of every URL ever typed.
+    """
+    if len(repos) <= _RECENT_REPOS:
+        return ()
+    by_url = {entry.url: entry for entry in repos}
+    newest: dict[str, datetime] = {}
+    for ticket in tickets:
+        url = ticket.repo.strip()
+        if url not in by_url:
+            continue
+        stamp = _sort_key(ticket.updated_at)
+        if url not in newest or stamp > newest[url]:
+            newest[url] = stamp
+    ordered = sorted(newest, key=lambda url: newest[url], reverse=True)
+    return tuple(
+        RepoOption(url=url, name=by_url[url].name) for url in ordered[:_RECENT_REPOS]
+    )
 
 
 def _title_editable(request: Request) -> bool:
@@ -192,7 +234,8 @@ def _page(
     save_action, start_action, discard_action, keep_action = action_paths(ticket_id)
     # An empty alias is not a selectable choice: "" is the Default option.
     aliases = tuple(alias for alias in request.app.config.models if alias)
-    repos = _repo_options(request.app.store.list_repos())
+    entries = request.app.store.list_repos()
+    repos = _repo_options(entries)
     repo_extra = (
         RepoOption(url=repo, name=repo_short_name(repo) or repo)
         if repo and not repo_new_url and all(option.url != repo for option in repos)
@@ -205,6 +248,7 @@ def _page(
         description=description,
         repo=repo,
         repos=repos,
+        recent_repos=_recent_repo_options(request.app.store.list_tickets(), entries),
         repo_extra=repo_extra,
         repo_new_url=repo_new_url,
         repo_new_name=repo_new_name,

@@ -71,7 +71,12 @@
       <div class="field">
         <label for="repo">Repository</label>
         <select class="input mono" id="repo" name="repo"{% if page.errors.get("repo") %} aria-invalid="true" aria-describedby="repo-err"{% endif %}>
-          {% for option in page.repos %}<option value="{{ option.url }}"{% if option.url == page.repo %} selected{% endif %}>{{ option.name }}</option>{% endfor %}
+          {% if page.recent_repos %}<optgroup label="Recent">
+          {% for option in page.recent_repos %}<option value="{{ option.url }}"{% if option.url == page.repo and not page.repo_new_url %} selected{% endif %}>{{ option.name }}</option>
+          {% endfor %}</optgroup>{% endif %}
+          {% if page.repos %}<optgroup label="All repositories">
+          {% for option in page.repos %}<option value="{{ option.url }}"{% if option.url == page.repo and not page.repo_new_url and option not in page.recent_repos %} selected{% endif %}>{{ option.name }}</option>
+          {% endfor %}</optgroup>{% endif %}
           {% if page.repo_extra %}<option value="{{ page.repo_extra.url }}" selected>{{ page.repo_extra.name }}</option>{% endif %}
           <option value=""{% if not page.repo or page.repo_new_url %} selected{% endif %}>Add a repository…</option>
         </select>

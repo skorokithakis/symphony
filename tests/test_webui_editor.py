@@ -249,6 +249,85 @@ class TestNewPage:
         assert 'name="repo_new_name"' in text
         assert 'href="/repos"' in text
 
+    def test_the_repository_select_sorts_names_and_puts_recent_ones_first(
+        self, tmp_path: Path
+    ) -> None:
+        delta = "https://example.com/delta.git"
+        echo = "https://example.com/echo.git"
+        beta = "https://example.com/beta.git"
+        _write_ticket(
+            tmp_path,
+            "SYM-1",
+            state=STATE_DRAFT,
+            repo=delta,
+            updated_at="2026-11-19T10:00:00+00:00",
+        )
+        _write_ticket(
+            tmp_path,
+            "SYM-2",
+            state=STATE_DRAFT,
+            repo=echo,
+            updated_at="2026-11-21T10:00:00+00:00",
+        )
+        # Delta's place comes from its newest ticket, not its oldest.
+        _write_ticket(
+            tmp_path,
+            "SYM-3",
+            state=STATE_DRAFT,
+            repo=delta,
+            updated_at="2026-11-22T10:00:00+00:00",
+        )
+        _write_ticket(
+            tmp_path,
+            "SYM-4",
+            state=STATE_DRAFT,
+            repo=beta,
+            updated_at="2026-11-20T10:00:00+00:00",
+        )
+
+        with _server(tmp_path) as (port, tracker, _wake):
+            # The store seeded the list from the tickets: delta, echo, beta.
+            tracker.store.rename_repo(beta, "Beta")
+            tracker.store.add_repo("https://example.com/zeta.git", "zeta")
+            tracker.store.add_repo("https://example.com/alpha.git", "alpha")
+            tracker.store.add_repo("https://example.com/foxtrot.git", "foxtrot")
+            _status, text = _get(port, "/new")
+
+        select = text.split('id="repo" name="repo"', 1)[1].split("</select>", 1)[0]
+        recent = select.split('<optgroup label="Recent">', 1)[1].split("</optgroup>", 1)
+        everything = select.split('<optgroup label="All repositories">', 1)[1]
+        everything = everything.split("</optgroup>", 1)[0]
+
+        def names(group: str) -> list[str]:
+            return re.findall(r">([^<]+)</option>", group)
+
+        # Newest first, de-duplicated by URL, only for managed repositories.
+        assert names(recent[0]) == ["delta", "echo", "Beta"]
+        # A to Z, ignoring case: Beta sorts before delta.
+        assert names(everything) == [
+            "alpha",
+            "Beta",
+            "delta",
+            "echo",
+            "foxtrot",
+            "zeta",
+        ]
+        # Delta is both the newest and the default, so it appears twice.  Only
+        # the Recent copy may be selected; two would let the browser pick the
+        # last one.
+        assert select.count(" selected>") == 1
+        assert " selected>" in recent[0]
+        assert " selected>" not in everything
+
+        # Five repositories need no shortcut; the whole list is one glance.
+        with _server(tmp_path / "short") as (port, tracker, _wake):
+            for name in ["alpha", "beta", "delta", "echo", "foxtrot"]:
+                tracker.store.add_repo(f"https://example.com/{name}.git", name)
+            _status, short = _get(port, "/new")
+
+        assert '<optgroup label="Recent">' not in short
+        assert '<optgroup label="All repositories">' in short
+
     def test_a_full_url_is_the_option_value_and_a_short_name(
         self, tmp_path: Path
     ) -> None:

@@ -552,14 +552,26 @@
 
     function openPicker() {
       pickerReturnTo = document.activeElement;
-      pickerEntries = Array.prototype.map.call(repo.options, function (option) {
-        return {
-          option: option,
-          name: option.textContent.trim(),
-          url: option.value,
-          isAdd: option.value === "",
-        };
-      });
+      /* A recent repository is listed twice in the select (in "Recent" and in
+         "All repositories").  Keep the first copy only, so the picker shows
+         each repository once, with the recent ones first. */
+      var seenUrls = new Set();
+      pickerEntries = Array.prototype.filter
+        .call(repo.options, function (option) {
+          if (seenUrls.has(option.value)) {
+            return false;
+          }
+          seenUrls.add(option.value);
+          return true;
+        })
+        .map(function (option) {
+          return {
+            option: option,
+            name: option.textContent.trim(),
+            url: option.value,
+            isAdd: option.value === "",
+          };
+        });
       pickerInput.value = "";
       renderPicker();
       if (typeof picker.showModal === "function") {
