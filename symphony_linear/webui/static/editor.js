@@ -209,15 +209,17 @@
   }
 
   function applyUploadState() {
-    /* A recording blocks Start and Discard: the submit guard dictation.js puts
-     * on the form would swallow their submits anyway, and a disabled button
-     * says so.  This runs again when a recording starts and ends. */
-    var blocked = uploadBusy || submitting || Sym.dictation.active;
+    /* A recording leaves Start usable: Start is what ends the recording and
+     * starts the ticket with the final text (see start()).  Discard stays
+     * blocked, because discarding mid-recording would drop the text still
+     * being transcribed and nothing would wait for it.  This runs again when a
+     * recording starts and ends. */
+    var blocked = uploadBusy || submitting;
     if (startButton) {
       startButton.disabled = blocked;
     }
     if (discardButton) {
-      discardButton.disabled = blocked;
+      discardButton.disabled = blocked || Sym.dictation.active;
     }
     if (uploadReason) {
       uploadReason.hidden = !uploadBusy;
@@ -283,7 +285,44 @@
     if (submitting) {
       return;
     }
-    doStart();
+    /* Start is usable while dictation is recording: it stops the recording and
+     * starts the ticket once Soniox has delivered the final text, so the
+     * ticket never starts without it (doStart reads the fields after the
+     * wait).  `submitting` covers the wait as well, which is what makes a
+     * second Start, or Ctrl+Enter, during the wait a no-op and keeps Discard
+     * blocked.  A failed recording rejects: its error is already shown, the
+     * confirmed text stays in the box, and no ticket is started. */
+    var finishing =
+      typeof Sym.finishDictation === "function" ? Sym.finishDictation() : null;
+    if (!finishing) {
+      doStart();
+      return;
+    }
+    submitting = true;
+    applyUploadState();
+    /* A file removal must not start while the recording is finishing: doStart
+     * takes the lock itself on resolve, so only the reject path unlocks. */
+    if (uploader) {
+      uploader.setLocked(true);
+    }
+    finishing.then(
+      function () {
+        submitting = false;
+        doStart();
+      },
+      function () {
+        submitting = false;
+        if (uploader) {
+          uploader.setLocked(false);
+        }
+        applyUploadState();
+        if (dirty) {
+          // An autosave that fired during the wait returned early because
+          // `submitting` was set, so the edits it saw are still unsaved.
+          schedule();
+        }
+      },
+    );
   }
 
   function doDiscard() {
@@ -718,7 +757,8 @@
   }
 
   applyUploadState();
-  /* dictation.js reports a start and an end; Start and Discard follow it. */
+  /* dictation.js reports a start and an end: Start stays usable either way,
+     while Discard is disabled for the recording's duration. */
   Sym.dictation.onChange = applyUploadState;
 
   window.addEventListener("online", retry);

@@ -26,15 +26,15 @@
      leave the microphone captured. */
   var CONNECT_TIMEOUT_MS = 10000;
   var FINISH_TIMEOUT_MS = 10000;
-  /* The ticket page's Send is the one submit control a recording leaves
-     enabled: pressing it stops the recording and posts the final text.  Every
-     other submit control (Stop, Done, Retry, Send to QA, the editor's Start)
-     is disabled by its own page, which gates on Sym.dictation (see
-     setDictating).  A disabled snapshot taken here was the old approach and
-     cannot work on the ticket page: its poll replaces those buttons, so the
-     fresh ones came back enabled and clickable while the microphone was
-     still recording. */
-  var SEND_ID = "act-send";
+  /* Two submit controls a recording leaves enabled: the ticket page's Send and
+     the editor's Start.  Pressing either stops the recording and acts once
+     Soniox has delivered the final text.  Every other submit control (Stop,
+     Done, Retry, Send to QA, Discard) is disabled by its own page, which gates
+     on Sym.dictation (see setDictating).  A disabled snapshot taken here was
+     the old approach and cannot work on the ticket page: its poll replaces
+     those buttons, so the fresh ones came back enabled and clickable while
+     the microphone was still recording. */
+  var ALLOWED_SUBMIT_IDS = ["act-send", "act-start"];
 
   /* Every entry is a container/codec pair Soniox's audio_format "auto"
      documents (webm and ogg; MP4/AAC is deliberately absent because the
@@ -329,9 +329,9 @@
         return;
       }
       if (!session.recorder) {
-        /* The microphone is still being acquired, which only a Send does
-           while it is happening (the button is disabled until then).  Ending
-           the recording the moment it exists keeps the microphone from
+        /* The microphone is still being acquired, which only a Send or Start
+           does while it is happening (the button is disabled until then).
+           Ending the recording the moment it exists keeps the microphone from
            running on after the reply was requested. */
         session.stopRequested = true;
         return;
@@ -379,11 +379,11 @@
         connectTimer: null,
         finishTimer: null,
         submitGuard: function (event) {
-          /* Send is the one submission a recording lets through: the ticket
-             page stops the recording and sends the final text.  Everything
+          /* Send and Start are the submissions a recording lets through: both
+             pages stop the recording and act on the final text.  Everything
              else, including an implicit Enter submission, is refused. */
           var submitter = event.submitter;
-          if (submitter && submitter.id === SEND_ID) {
+          if (submitter && ALLOWED_SUBMIT_IDS.indexOf(submitter.id) !== -1) {
             return;
           }
           event.preventDefault();
@@ -397,9 +397,9 @@
       }
       button.disabled = true;
       Sym.clearError();
-      /* Everything but Send is refused from here until teardown: the page's
-         gating disables its submit controls and the submit guard below catches
-         the ones a page does not own. */
+      /* Everything but Send and Start is refused from here until teardown: the
+         page's gating disables its submit controls and the submit guard below
+         catches the ones a page does not own. */
       setDictating(true);
 
       /* The microphone is acquired first: the temporary key is good for 60
@@ -536,15 +536,15 @@
     }
 
     /* Ends an active recording from outside the dictation button.  The ticket
-       page's Send and Ctrl+Enter call this instead of being blocked: they wait
-       for Soniox's final text and then post it, so the transcription is never
-       cut off by a send that raced it.  null means nothing is recording, which
-       lets the caller keep its normal synchronous path.  The promise resolves
-       once the final text is in the textarea and the form is restored, and
-       rejects when the recording failed; the caller must not send then, and
-       the error is already on the page.  A stop during the microphone
-       permission prompt is remembered and applied as soon as the recorder
-       exists, because the dictation button is disabled until then. */
+       page's Send and Ctrl+Enter and the editor's Start call this instead of
+       being blocked: they wait for Soniox's final text and then act on it, so
+       the transcription is never cut off by a send that raced it.  null means
+       nothing is recording, which lets the caller keep its normal synchronous
+       path.  The promise resolves once the final text is in the textarea and
+       the form is restored, and rejects when the recording failed; the caller
+       must not send then, and the error is already on the page.  A stop during
+       the microphone permission prompt is remembered and applied as soon as the
+       recorder exists, because the dictation button is disabled until then. */
     function finishActive() {
       var session = active;
       if (!session || session.finished) {
