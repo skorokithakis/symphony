@@ -1,8 +1,8 @@
 """Web Push for the built-in tracker: subscription store and Needs Input sender.
 
-Unlike ntfy, Web Push needs no third-party server: the browser registers a
-``PushSubscription`` with its own push service, and the daemon posts an
-encrypted message to that endpoint.  The protocol has two independent halves,
+Web Push needs no separately configured notification service: the browser
+registers a ``PushSubscription`` with its own push service, and the daemon posts
+an encrypted message to that endpoint.  The protocol has two independent halves,
 both implemented here:
 
 * **VAPID** (RFC 8292) identifies this daemon to the push service with a
@@ -284,13 +284,14 @@ def publish_needs_input_push(
     the tracker already owns the display-title fallback; this module must not
     import the tracker, which imports it.
 
-    This runs at the end of a turn, after the state change was persisted and
-    the reply was posted, so it is one best-effort boundary like
-    :func:`symphony_linear.local_tracker.publish_needs_input`: every failure is
-    one WARNING and a return, nothing is retried, and no exception reaches the
-    turn.  A push service that no longer knows a subscription (404 or 410) is
-    not a failure, it is the signal to delete that subscription; that is the
-    only way subscriptions ever leave the store.
+    This runs after the state change was persisted, so it is one best-effort
+    boundary: every failure is one WARNING and a return, nothing is retried,
+    and no exception reaches the turn.  A push service that no longer knows a
+    subscription (404 or 410) is not a failure, it is the signal to delete that
+    subscription; that is the only way subscriptions ever leave the store.
+
+    The notification never contains comment or reply text: *body* is the
+    identifier and display title only.
 
     *public_url* is used only for the VAPID ``sub`` claim.  The payload's
     ``url`` stays relative, because the browser resolves it against the page
@@ -331,10 +332,9 @@ def publish_needs_input_push(
                     public_url=public_url,
                 )
     except Exception as exc:
-        # Deliberately broad, for the same reason as the ntfy publisher: this
-        # runs after a turn has ended, httpx can raise several unrelated types,
-        # and the exception message can echo the endpoint, which is a bearer
-        # capability.  Only the type is logged.
+        # Deliberately broad: this runs after a turn has ended, httpx can raise
+        # several unrelated types, and the exception message can echo the
+        # endpoint, which is a bearer capability.  Only the type is logged.
         logger.warning("Web Push for %s failed: %s", ticket_id, type(exc).__name__)
 
 

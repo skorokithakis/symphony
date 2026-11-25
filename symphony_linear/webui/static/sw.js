@@ -5,12 +5,12 @@
  * There is deliberately no fetch handler and no cache: the pages are the
  * server's, and a caching worker would show stale tickets.
  *
- * The icon is the public GitHub copy of static/icon.png, the same URL the ntfy
- * payload uses (NTFY_ICON_URL in symphony_linear/local_tracker.py), because a
- * notification's icon is fetched by the browser's notification service
- * without the page's Basic credentials, and /static/icon.png would answer 401.
- * The response's CSP allows that one origin (webui/push.py), and
- * tests/test_webui_server.py asserts the spellings stay equal. */
+ * The icon is the public GitHub copy of static/icon.png (PUBLIC_ICON_URL in
+ * symphony_linear/webui/push.py), because a notification's icon is fetched by
+ * the browser's notification service without the page's Basic credentials, and
+ * /static/icon.png would answer 401.  The response's CSP allows that one origin
+ * (webui/push.py), and tests/test_webui_server.py asserts the spellings stay
+ * equal. */
 "use strict";
 
 var ICON_URL = "https://raw.githubusercontent.com/skorokithakis/symphony/master/symphony_linear/webui/static/icon.png";

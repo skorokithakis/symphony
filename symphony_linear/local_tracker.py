@@ -28,10 +28,8 @@ from pathlib import Path
 from typing import Any
 from urllib.parse import urlsplit
 
-import httpx
 from pydantic import BaseModel, ConfigDict, Field, field_validator
 
-from symphony_linear.config import _NtfyConfig
 from symphony_linear.linear import Comment, Issue
 from symphony_linear.presence import TicketPresence
 from symphony_linear.state import StateManager
@@ -1610,16 +1608,11 @@ class LocalTicketStore:
 # LocalTracker
 # ---------------------------------------------------------------------------
 
-#: A notification must not hold a turn for long: the human is waiting for the
-#: turn's reply, and the message itself is already on the ticket.
-_NTFY_TIMEOUT_SECONDS = 10.0
-
-#: The icon's two spellings, both naming ``webui/static/icon.png`` in the
-#: package.  The web UI serves it at ICON_PATH to the favicon and the title-bar
-#: logo, which are fetched by an authenticated browser.  ntfy cannot send the
-#: UI's Basic credentials, so its payload points at the same file in the public
-#: GitHub repository instead.  Moving or renaming the file changes both.  The
-#: PNG is rendered from the editable source ``misc/icon.svg`` with:
+#: The icon served to the favicon and the title-bar logo, which are fetched by
+#: an authenticated browser.  The notification service fetches an icon without
+#: those credentials, so it uses the public GitHub copy instead (see
+#: ``webui/push.py``).  Moving or renaming the file changes both.  The PNG is
+#: rendered from the editable source ``misc/icon.svg`` with:
 #:
 #:     uvx --from cairosvg cairosvg misc/icon.svg \
 #:         --output-width 256 --output-height 256 \
@@ -1630,71 +1623,6 @@ _NTFY_TIMEOUT_SECONDS = 10.0
 #: from a copy of the SVG with ``rx="116"`` removed, because Android and iOS
 #: crop that one to their own shape and need a full-bleed tile.
 ICON_PATH = "/static/icon.png"
-NTFY_ICON_URL = (
-    "https://raw.githubusercontent.com/skorokithakis/symphony/master/"
-    "symphony_linear/webui/static/icon.png"
-)
-
-
-def publish_needs_input(
-    config: _NtfyConfig,
-    ticket: LocalTicket,
-    *,
-    public_url: str | None = None,
-    transport: httpx.BaseTransport | None = None,
-) -> None:
-    """Publish one ntfy notification that *ticket* reached Needs Input.
-
-    The message is the identifier and display title only: no comment or reply
-    text exists at transition time, and none may be sent to a third-party
-    server anyway.  The JSON publish to the server root is chosen over ntfy's
-    ``Title``/``Message`` headers because HTTP headers are latin-1, and a
-    ticket title is arbitrary UTF-8 text.
-
-    Losing a notification must never fail the turn that just ended, so the
-    whole notification — building the request and delivering it — is one
-    best-effort boundary: every failure is a single WARNING and a return, and
-    nothing is retried.  *transport* exists for tests, which pass
-    ``httpx.MockTransport`` so no request leaves the process.
-
-    *public_url* is the configured ``webui.public_url``.  It lives in
-    ``_WebUIConfig`` rather than the ntfy block because it describes the web
-    UI, not the topic.  It only drives the tap target; the icon is always sent
-    from :data:`NTFY_ICON_URL`, because ntfy fetches it without credentials and
-    the web UI requires them.
-    """
-    try:
-        root, topic = config.endpoint()
-        payload: dict[str, Any] = {
-            "topic": topic,
-            "title": "Needs Input",
-            "message": f"{ticket.identifier}: {display_title(ticket)}",
-            # ntfy renders this on Android only; iOS ignores the field and the
-            # notification still works without one.
-            "icon": NTFY_ICON_URL,
-        }
-        if public_url:
-            payload["click"] = f"{public_url}/tickets/{ticket.id}"
-        headers = {"Authorization": f"Bearer {config.token}"} if config.token else {}
-        with httpx.Client(timeout=_NTFY_TIMEOUT_SECONDS, transport=transport) as client:
-            response = client.post(root, json=payload, headers=headers)
-        if not response.is_success:
-            logger.warning(
-                "ntfy notification for %s returned HTTP %s",
-                ticket.id,
-                response.status_code,
-            )
-    except Exception as exc:
-        # Deliberately broad.  This runs after the state change was already
-        # persisted and a turn has just ended, so a lost notification must not
-        # fail that turn.  httpx reports transport and TLS problems as several
-        # unrelated types (HTTPError, InvalidURL, and plain OSError for an
-        # unusable SSL certificate file), so any narrower list could still leak
-        # a raise.  The type is all that is logged: an exception message can
-        # echo the URL, and the token lives in the headers.
-        logger.warning(
-            "ntfy notification for %s failed: %s", ticket.id, type(exc).__name__
-        )
 
 
 _STATE_FOR_TARGET: dict[TransitionTarget, str] = {
@@ -1741,19 +1669,14 @@ class LocalTracker:
         self,
         workspace: Path,
         *,
-        ntfy: _NtfyConfig | None = None,
         public_url: str | None = None,
         presence: TicketPresence | None = None,
         on_agent_reply: AgentReplyCallback | None = None,
         webpush: WebPushStore | None = None,
     ) -> None:
         self.store = LocalTicketStore(workspace / "tickets")
-        # Notifications hang off the tracker because transition_to is the one
-        # place a ticket reaches Needs Input, and it is only reachable from the
-        # orchestrator.  ``None`` means the config block was absent.
-        self._ntfy = ntfy
-        # The UI's base URL is a webui setting, not an ntfy one, but the only
-        # thing that consumes it is the notification payload here.
+        # The UI's base URL is a webui setting, and the only thing that
+        # consumes it is the notification's VAPID contact here.
         self._public_url = public_url
         # Web Push has no config block and is always on for the web UI
         # backend, so the CLI always supplies a store.  It is public because
@@ -1841,12 +1764,11 @@ class LocalTracker:
         logged no-op, never an exception: the next tick sees an untriggered
         ticket and runs its normal cleanup, which cancels the turn.
 
-        A successful ``needs_input`` transition publishes one ntfy notification
-        and one Web Push per stored subscription, unless the web UI recorded
-        the human viewing that ticket seconds earlier (see
-        :class:`~symphony_linear.presence.TicketPresence`).  The two pushes
-        share one presence gate: the reply is already on screen, so neither
-        should repeat it on the reader's phone.
+        A successful ``needs_input`` transition sends one Web Push per stored
+        subscription, unless the web UI recorded a recent active signal from
+        that ticket's page (visible, focused, and recently interacted with; see
+        :class:`~symphony_linear.presence.TicketPresence`): a human already
+        watching the ticket does not need a phone notification.
         """
         state = _STATE_FOR_TARGET.get(target)
         if state is None:
@@ -1864,29 +1786,24 @@ class LocalTracker:
             )
             return
         logger.info("Transitioned %s to '%s'", id, state)
-        has_push = self._ntfy is not None or self.webpush is not None
-        if target is TransitionTarget.needs_input and has_push:
-            # The reply is already on the reader's screen when the human has
-            # this ticket's page open, so a push would only repeat it on their
-            # phone.  A stale or absent signal publishes normally.
+        if target is TransitionTarget.needs_input and self.webpush is not None:
+            # A human actively watching this ticket's page does not need a
+            # phone notification.  A stale or absent signal sends normally.
             if self._presence is not None and self._presence.is_active(id):
                 logger.info(
-                    "Skipping Needs Input notifications for %s: its page is "
+                    "Skipping the Needs Input notification for %s: its page is "
                     "being viewed",
                     id,
                 )
                 return
             ticket = self.store.get(id)
             if ticket is not None:
-                if self._ntfy is not None:
-                    publish_needs_input(self._ntfy, ticket, public_url=self._public_url)
-                if self.webpush is not None:
-                    publish_needs_input_push(
-                        self.webpush,
-                        ticket_id=ticket.id,
-                        body=f"{ticket.identifier}: {display_title(ticket)}",
-                        public_url=self._public_url,
-                    )
+                publish_needs_input_push(
+                    self.webpush,
+                    ticket_id=ticket.id,
+                    body=f"{ticket.identifier}: {display_title(ticket)}",
+                    public_url=self._public_url,
+                )
 
     def is_still_triggered(self, issue: Issue) -> bool:
         return issue.state in TRIGGERED_STATES

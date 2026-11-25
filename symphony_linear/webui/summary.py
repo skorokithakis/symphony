@@ -15,7 +15,7 @@ a deleted ticket or comment as a no-op.  ``updated_at`` is never touched, so a
 summary landing cannot reorder the home list.  ``webui/views.py`` shows the
 summary under the title of a Needs Input row that is not failed, and only for
 the ticket's latest agent reply; it never reaches the ticket page, the JSON API
-or ntfy.
+or a notification.
 
 The HTTP request itself lives in ``symphony_linear/anthropic.py``, shared with
 automatic titles: the request shape, timeout and model id are the same, and the

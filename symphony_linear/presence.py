@@ -2,9 +2,9 @@
 
 The web UI's ticket page polls every few seconds and marks its ticket active
 while the tab is visible, the window has focus and the user interacted
-recently.  The built-in tracker consults this record before publishing the
-"Needs Input" ntfy notification, because the reply that just landed is already
-on the reader's screen when they are looking at the ticket.
+recently.  The built-in tracker consults this record before sending the
+"Needs Input" Web Push notification, because the reply that just landed is
+already on the reader's screen when they are looking at the ticket.
 
 Nothing here is persisted: presence only means anything while this process
 runs, and a restart simply lets the next poll re-register it.  The class is

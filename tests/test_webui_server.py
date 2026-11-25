@@ -28,7 +28,6 @@ from cryptography.hazmat.primitives.asymmetric import ec
 
 from symphony_linear.config import AppConfig
 from symphony_linear.local_tracker import (
-    NTFY_ICON_URL,
     STATE_DONE,
     STATE_DRAFT,
     STATE_IN_PROGRESS,
@@ -40,6 +39,7 @@ from symphony_linear.state import StateManager, TicketState, TicketStatus, load_
 from symphony_linear.webpush import WebPushStore
 from symphony_linear.webui import templates
 from symphony_linear.webui.http_types import Request, Response, Route
+from symphony_linear.webui.push import PUBLIC_ICON_URL
 from symphony_linear.webui.routes import ROUTES
 from symphony_linear.webui.server import _CSP, WebUIServer
 from symphony_linear.webui.views import display_title, short_repo
@@ -1982,8 +1982,8 @@ class TestWebPush:
         assert b'addEventListener("push"' in body
         assert b'addEventListener("notificationclick"' in body
         # The notification service fetches the icon without Basic credentials,
-        # so it must be the same public GitHub copy the ntfy payload uses.
-        assert NTFY_ICON_URL.encode() in body
+        # so it must be the same public GitHub copy the worker's CSP allows.
+        assert PUBLIC_ICON_URL.encode() in body
 
     def test_the_worker_csp_adds_only_the_icon_origin(self, tmp_path: Path) -> None:
         with _running_server(tmp_path, webpush=WebPushStore(tmp_path)) as (
@@ -1996,7 +1996,7 @@ class TestWebPush:
         # Built from the page policy here rather than through the route's own
         # helper, so a change to the policy that skipped the replacement fails
         # this test instead of quietly blocking the notification icon.
-        expected = _CSP.replace("img-src 'self';", f"img-src 'self' {NTFY_ICON_URL};")
+        expected = _CSP.replace("img-src 'self';", f"img-src 'self' {PUBLIC_ICON_URL};")
         assert expected != _CSP
         assert headers["Content-Security-Policy"] == expected
 

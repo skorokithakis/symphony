@@ -546,9 +546,8 @@ shutting down, or the ticket is no longer triggered — see `_is_still_triggered
   pull the ticket out of QA before the serve starts.
 - **Web Push for the built-in backend is always on, with no config.** When a
   ticket reaches Needs Input, `LocalTracker.transition_to` sends one encrypted
-  push per stored subscription beside the optional ntfy publish, behind the
-  same presence gate (see below). The store is
-  `<workspace>/webpush.json` (`webpush.py`), holding a VAPID P-256 key pair
+  push per stored subscription, behind the presence gate (see below). The store
+  is `<workspace>/webpush.json` (`webpush.py`), holding a VAPID P-256 key pair
   generated on first use and the subscriptions' endpoint + `p256dh` + `auth`.
   It must stay in the workspace root: the computed sandbox masking already
   hides every root entry except the current ticket's dir, so agents cannot
@@ -566,10 +565,10 @@ shutting down, or the ticket is no longer triggered — see `_is_still_triggered
   rejects a non-https endpoint (it is a bearer capability) and malformed key
   material, and dedupes by endpoint, replacing the keys because that is what
   a browser re-subscribe looks like. HTTP 404/410 deletes that subscription;
-  every other failure is one WARNING with no retry, at the same best-effort
-  boundary as ntfy. The daemon's own logs never include an endpoint, for the
-  same reason they are https-only (client libraries may log the URL
-  themselves at debug level; that is outside this module).
+  every other failure is one WARNING with no retry. The daemon's own logs never
+  include an endpoint, for the same reason they are https-only (client
+  libraries may log the URL themselves at debug level; that is outside this
+  module).
   The browser half is `webui/push.py` plus `static/sw.js` and `static/push.js`.
   `cli.main` passes `tracker.webpush` to `WebUIServer`, which resolves the VAPID
   public key once at construction because generating the pair writes
@@ -585,12 +584,13 @@ shutting down, or the ticket is no longer triggered — see `_is_still_triggered
   shape (`keys.p256dh` / `keys.auth`) and the CSP needs `worker-src 'self'`,
   which `default-src 'none'` would otherwise block. `/sw.js` is a root route
   rather than `/static/sw.js` because a worker's scope is its own directory.
-  Its response alone widens `img-src` to `NTFY_ICON_URL`'s origin through
+  Its response alone widens `img-src` to `PUBLIC_ICON_URL`'s origin through
   `Response.csp` (the notification service fetches the icon without Basic
-  credentials, and every other response's policy is unchanged); the icon URL
-  must stay equal to `NTFY_ICON_URL`, and `tests/test_webui_server.py` asserts
-  that equality. The Needs Input body is capped at 200 code points in the
-  sender, because a push service takes one 4096-byte record.
+  credentials, and every other response's policy is unchanged); `PUBLIC_ICON_URL`
+  (in `webui/push.py`) must stay equal to the `ICON_URL` hard-coded in
+  `static/sw.js`, and `tests/test_webui_server.py` asserts it appears there. The
+  Needs Input body is capped at 200 code points in the sender, because a push
+  service takes one 4096-byte record.
 - **The Needs Input push is suppressed while the ticket's page is watched.**
   The ticket page's 3-second poll adds `active=1` while the tab is visible,
   the window has focus (`document.hasFocus()`) and the user interacted
@@ -598,9 +598,9 @@ shutting down, or the ticket is no longer triggered — see `_is_still_triggered
   minutes. `api_ticket` records that in a process-local `TicketPresence`
   (`presence.py`: monotonic timestamps, thread-safe, never persisted), and
   `cli.main` builds one instance shared by `LocalTracker` and `WebUIServer`.
-  `LocalTracker.transition_to` skips the Needs Input ntfy publish and every
-  Web Push, with one INFO line, when that ticket saw a signal in the last 15
-  seconds (five poll intervals). Only the page of the ticket that changed
+  `LocalTracker.transition_to` skips every Needs Input Web Push, with one INFO
+  line, when that ticket saw a signal in the last 15 seconds (five poll
+  intervals). Only the page of the ticket that changed
   counts; home and other ticket pages do not. Recording presence is a GET with an
   in-memory side effect only — no ticket store, `state.json` or seen marker
   is touched, so it stays within the read-only GET rule. `TicketPresence` is
@@ -632,8 +632,8 @@ shutting down, or the ticket is no longer triggered — see `_is_still_triggered
   `LocalTicketStore.set_comment_summary`; a deleted ticket or comment is a
   no-op and `updated_at` is untouched. `webui/views.py` shows it only on a
   non-failed Needs Input row, and only for the latest agent reply. It is never
-  sent to ntfy, shown on the ticket page, or exposed by `/api/v1`, and a GET
-  never generates one.
+  sent as a notification, shown on the ticket page, or exposed by `/api/v1`,
+  and a GET never generates one.
 - **Every web UI request goes through one dispatch choke point.**
   `_WebUIHandler.handle_one_request` parses the request and `_dispatch` does,
   in order: authentication (Basic for the browser routes, including static

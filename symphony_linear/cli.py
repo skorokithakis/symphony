@@ -201,7 +201,6 @@ def _create_tracker(
     if config.webui is not None:
         return LocalTracker(
             workspace,
-            ntfy=config.webui.ntfy,
             public_url=config.webui.public_url,
             presence=presence,
             on_agent_reply=summary.agent_reply_hook(config.webui),

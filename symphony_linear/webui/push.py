@@ -17,9 +17,18 @@ like an unknown path.
 
 from __future__ import annotations
 
-from symphony_linear.local_tracker import NTFY_ICON_URL
 from symphony_linear.webui.api import _body, _error, _json
 from symphony_linear.webui.http_types import Request, Response
+
+#: The public copy of the UI's ``static/icon.png`` in the GitHub repository.
+#: A notification's icon is fetched by the browser's notification service
+#: without the page's Basic credentials, so the UI's own ``/static/icon.png``
+#: would answer 401.  ``static/sw.js`` hard-codes the same URL, and
+#: ``tests/test_webui_server.py`` asserts the two spellings stay equal.
+PUBLIC_ICON_URL = (
+    "https://raw.githubusercontent.com/skorokithakis/symphony/master/"
+    "symphony_linear/webui/static/icon.png"
+)
 
 #: The page policy's image directive.  The worker's policy is that same string
 #: with the notification icon's origin appended, so no other directive and no
@@ -31,13 +40,13 @@ def _service_worker_csp(base: str) -> str:
     """Return the server's policy with the notification icon's origin allowed.
 
     The worker shows the notification, and its icon is the public GitHub copy
-    (``NTFY_ICON_URL``) because the notification service fetches it without
+    (``PUBLIC_ICON_URL``) because the notification service fetches it without
     Basic credentials.  The page policy allows images from ``'self'`` only, so
     the worker would block its own icon.  Appending to the existing directive
     rather than restating the policy keeps every other directive, and every
     other response, byte for byte identical.
     """
-    return base.replace(_IMG_SRC_SELF, f"img-src 'self' {NTFY_ICON_URL};", 1)
+    return base.replace(_IMG_SRC_SELF, f"img-src 'self' {PUBLIC_ICON_URL};", 1)
 
 
 def serve_service_worker(request: Request) -> Response:

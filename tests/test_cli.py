@@ -51,14 +51,12 @@ webui:
 poll_interval_seconds: 10
 """
 
-_CONFIG_WITH_WEBUI_NTFY = """\
+_CONFIG_WITH_WEBUI_PUBLIC_URL = """\
 webui:
   port: 8080
   username: admin
   password: secret
   public_url: https://symphony.example.com
-  ntfy:
-    url: https://ntfy.sh/mytopic
 poll_interval_seconds: 10
 """
 
@@ -521,11 +519,11 @@ class TestCreateTracker:
         # computed sandbox masking hides it from agents.
         assert (tmp_path / "webpush.json").is_file()
 
-    def test_webui_backend_receives_the_ntfy_block(
+    def test_webui_backend_passes_public_url_to_web_push(
         self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
     ) -> None:
-        """cli must pass webui.ntfy through: it is what arms notifications."""
-        _write_config(tmp_path, _CONFIG_WITH_WEBUI_NTFY)
+        """The push's VAPID contact needs webui.public_url, so cli must pass it."""
+        _write_config(tmp_path, _CONFIG_WITH_WEBUI_PUBLIC_URL)
         config = load_config(tmp_path)
         tracker = _create_tracker(config, tmp_path)
         assert isinstance(tracker, LocalTracker)
@@ -533,23 +531,21 @@ class TestCreateTracker:
         tracker.store.set_state(ticket.id, STATE_IN_PROGRESS)
         calls: list[tuple[str, str | None]] = []
         monkeypatch.setattr(
-            "symphony_linear.local_tracker.publish_needs_input",
-            lambda _config, notified, **kwargs: calls.append(
-                (notified.id, kwargs.get("public_url"))
+            "symphony_linear.local_tracker.publish_needs_input_push",
+            lambda _store, **kwargs: calls.append(
+                (kwargs["ticket_id"], kwargs["public_url"])
             ),
         )
 
         tracker.transition_to(ticket.id, TransitionTarget.needs_input)
 
-        # The notification payload's links need the web UI's base URL, so cli
-        # must hand webui.public_url to the tracker alongside the ntfy block.
         assert calls == [(ticket.id, "https://symphony.example.com")]
 
     def test_webui_backend_receives_the_presence_object(
         self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
     ) -> None:
-        """A ticket whose page is watched must not publish its push."""
-        _write_config(tmp_path, _CONFIG_WITH_WEBUI_NTFY)
+        """A ticket whose page is watched must not send its push."""
+        _write_config(tmp_path, _CONFIG_WITH_WEBUI)
         config = load_config(tmp_path)
         presence = TicketPresence()
         tracker = _create_tracker(config, tmp_path, presence=presence)
@@ -559,8 +555,8 @@ class TestCreateTracker:
         presence.mark_active(ticket.id)
         calls: list[str] = []
         monkeypatch.setattr(
-            "symphony_linear.local_tracker.publish_needs_input",
-            lambda _config, notified, **_kwargs: calls.append(notified.id),
+            "symphony_linear.local_tracker.publish_needs_input_push",
+            lambda _store, **kwargs: calls.append(kwargs["ticket_id"]),
         )
 
         tracker.transition_to(ticket.id, TransitionTarget.needs_input)

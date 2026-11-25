@@ -1014,47 +1014,17 @@ class TestWebUIConfig:
             load_config(tmp_path)
 
 
-class TestNtfyConfig:
-    def test_token_expands(
-        self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
-    ) -> None:
-        monkeypatch.setenv("NTFY_TOKEN", "tk_secret")
-        ntfy = {"url": "https://ntfy.sh/mytopic", "token": "$NTFY_TOKEN"}
+class TestWebUINtfyRemoved:
+    def test_a_ntfy_block_is_rejected(self, tmp_path: Path) -> None:
+        """ntfy was removed before release, so an old block must fail loudly."""
+        ntfy = {"url": "https://example.com/mytopic"}
         _write_yaml(tmp_path / "config.yaml", {"webui": _webui_block(ntfy=ntfy)})
 
-        config = load_config(tmp_path)
-        assert config.webui is not None
-        assert config.webui.ntfy is not None
-        assert config.webui.ntfy.token == "tk_secret"
-
-    def test_url_without_topic_raises(self, tmp_path: Path) -> None:
-        _write_yaml(
-            tmp_path / "config.yaml",
-            {"webui": _webui_block(ntfy={"url": "https://ntfy.sh/"})},
-        )
-
-        with pytest.raises(ValueError, match="must include a topic"):
-            load_config(tmp_path)
-
-    def test_topic_url_user_information_is_rejected(self, tmp_path: Path) -> None:
-        """Credentials belong in the token field, not embedded in a URL."""
-        _write_yaml(
-            tmp_path / "config.yaml",
-            {
-                "webui": _webui_block(
-                    ntfy={"url": "https://user:pass@example.com/mytopic"}
-                )
-            },
-        )
-
-        with pytest.raises(ValueError, match="user information.*'token' field"):
-            load_config(tmp_path)
-
-    def test_unknown_key_raises(self, tmp_path: Path) -> None:
-        ntfy = {"url": "https://ntfy.sh/mytopic", "topic": "mytopic"}
-        _write_yaml(tmp_path / "config.yaml", {"webui": _webui_block(ntfy=ntfy)})
-
-        with pytest.raises(ValueError, match="Config validation failed"):
+        # The specific error matters: a block must fail because the field no
+        # longer exists, not because its contents happened to be invalid.
+        with pytest.raises(
+            ValueError, match="webui -> ntfy: Extra inputs are not permitted"
+        ):
             load_config(tmp_path)
 
 

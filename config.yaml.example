@@ -134,21 +134,16 @@ linear:
 #   # api_token: ${SYMPHONY_WEBUI_API_TOKEN}
 #
 #   # Optional. Public base URL of this web UI, e.g. behind your reverse
-#   # proxy.  With it set, tapping a notification opens
-#   # <public_url>/tickets/<id>.
+#   # proxy.  It is sent as the contact ("sub") claim of the Web Push
+#   # notification's VAPID token; the notification itself always opens the
+#   # ticket page relative to wherever the UI is served.
 #   # public_url: https://symphony.example.com
 #
-#   # Optional. Push notifications via ntfy when a ticket actually moves to
-#   # Needs Input (a turn ending, a turn failing, a dirty-workspace refusal,
-#   # a QA serve dying).  `url` is the full topic URL.  Nothing is sent
-#   # without this block.  Only the ticket's identifier and title are sent,
-#   # never comment text.  The notification always carries the Symphony icon,
-#   # fetched from GitHub; ntfy shows it on Android only.
-#   # ntfy:
-#   #   url: https://ntfy.sh/my-symphony-topic
-#   #   # Optional. Sent as `Authorization: Bearer <token>` for a protected
-#   #   # topic.
-#   #   token: ${NTFY_TOKEN}
+#   # Push notifications need no configuration: Web Push is always on.  The
+#   # header's bell subscribes the browser, and a ticket that actually moves
+#   # to Needs Input (a turn ending, a turn failing, a dirty-workspace
+#   # refusal, a QA serve dying) sends one notification with the ticket's
+#   # identifier and title, never comment text.
 
 # ---------------------------------------------------------------------------
 # Coding agent
