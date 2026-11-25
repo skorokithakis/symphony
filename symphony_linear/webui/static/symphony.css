@@ -390,13 +390,14 @@ body.sym { min-height: 100dvh; }
 .row:focus-visible { outline-offset: -2px; }
 .row-mark { grid-area: mark; align-self: start; display: inline-flex; height: 1.35em; align-items: center; }
 .row-title { grid-area: title; min-width: 0; line-height: 1.35; text-wrap: pretty; }
-/* The one-line agent summary a Needs Input row shows under its title.  The
-   block sits inside the title grid area rather than in an area of its own, so
-   the phone and desktop layouts place it the same way.  min-width: 0 on the
-   parent is what lets the ellipsis win over the grid track's auto minimum. */
+/* The agent summary a Needs Input row shows under its title.  The block sits
+   inside the title grid area rather than in an area of its own, so the phone
+   and desktop layouts place it the same way.  It wraps instead of ending in an
+   ellipsis: on a phone one line cut it off after about 45 characters, and
+   summary.py caps it at 120, so a row grows by about three lines at most. */
 .row-summary {
   display: block; margin-top: 1px;
-  overflow: hidden; text-overflow: ellipsis; white-space: nowrap;
+  text-wrap: pretty;
   font-size: var(--t-sm); font-weight: 400; color: var(--ink-2);
 }
 .row-sub {
