@@ -574,9 +574,19 @@ class LocalTicketStore:
     # ------------------------------------------------------------------
 
     def list_repos(self) -> list[RepoEntry]:
-        """Return copies of the managed repositories, in list order."""
+        """Return copies of the managed repositories, A to Z by name.
+
+        Sorting on read, not on write, keeps ``repos.json`` in insertion order
+        and gives every caller (the repositories page, ``/api/v1/repos``) the
+        same order as the editor's dropdown without each one re-sorting.
+        """
         with self._lock:
-            return [entry.model_copy(deep=True) for entry in self._repos]
+            return [
+                entry.model_copy(deep=True)
+                for entry in sorted(
+                    self._repos, key=lambda entry: entry.name.casefold()
+                )
+            ]
 
     def add_repo(self, url: str, name: str = "") -> RepoEntry:
         """Add *url* to the list unless it is already there.

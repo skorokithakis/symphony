@@ -456,8 +456,8 @@
       });
       if (query) {
         ranked.sort(function (left, right) {
-          /* Select order within a rank, never alphabetical: the managed list
-             is the order the user chose. */
+          /* Select order within a rank, so recently used repositories keep
+             their place ahead of the A-to-Z list. */
           return left.rank - right.rank || left.index - right.index;
         });
       }

@@ -255,7 +255,7 @@ def _write_ticket_file(directory: Path, ticket: LocalTicket) -> None:
 
 
 class TestRepos:
-    def test_seeded_from_existing_tickets_newest_first(self, tmp_path: Path) -> None:
+    def test_seeded_from_existing_tickets_listed_by_name(self, tmp_path: Path) -> None:
         tickets = tmp_path / "tickets"
         for ticket_id, repo, updated_at in (
             ("SYM-1", "old/repo", "2026-11-19T10:00:00+00:00"),
@@ -274,8 +274,8 @@ class TestRepos:
         repos = LocalTracker(tmp_path).store.list_repos()
 
         assert [(entry.url, entry.name) for entry in repos] == [
-            ("https://example.com/team/new.git", "team/new"),
             ("old/repo", "old/repo"),
+            ("https://example.com/team/new.git", "team/new"),
         ]
         assert (tickets / "repos.json").exists()
 
