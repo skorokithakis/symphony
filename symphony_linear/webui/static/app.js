@@ -192,14 +192,36 @@
 
   /* ---------- one-off behaviours, present only on their own pages ---------- */
 
-  // Copy buttons (the workspace path and the session id).
-  document.querySelectorAll("[data-copy]").forEach(function (button) {
-    button.addEventListener("click", function () {
-      var text = button.getAttribute("data-copy");
-      if (text && navigator.clipboard) {
-        navigator.clipboard.writeText(text).catch(function () {});
-      }
-    });
+  /* Copy buttons: the Details workspace path and session id, and each thread
+   * entry's stored Markdown.  Delegated, so the entries the ticket page's poll
+   * appends get a working button too; a per-button listener would miss them.
+   * The button's original icon is captured once and restored after the check
+   * mark, so clicking again during the feedback does not replace the check
+   * with itself. */
+  var copyRestore = new WeakMap();
+  document.addEventListener("click", function (event) {
+    var button = event.target.closest("[data-copy]");
+    var text = button && button.getAttribute("data-copy");
+    if (!text || !navigator.clipboard) {
+      return;
+    }
+    navigator.clipboard
+      .writeText(text)
+      .then(function () {
+        var state = copyRestore.get(button);
+        if (!state) {
+          state = { icon: button.innerHTML, timer: 0 };
+          copyRestore.set(button, state);
+        }
+        window.clearTimeout(state.timer);
+        button.innerHTML =
+          '<svg class="ic ic--sm" viewBox="0 0 20 20" aria-hidden="true">' +
+          '<path d="M4 10.5l4 4 8-9"></path></svg>';
+        state.timer = window.setTimeout(function () {
+          button.innerHTML = state.icon;
+        }, 1500);
+      })
+      .catch(function () {});
   });
 
   // "Open all" / "Close all" for one agent reply's collapsible sections.

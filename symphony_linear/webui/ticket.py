@@ -126,7 +126,10 @@ class Entry:
 
     ``kind`` is one of ``user``, ``agent``, ``error``, ``notice`` or
     ``warning``.  ``html`` is rendered Markdown and is the only value a
-    template may mark safe; ``notice`` is escaped plain text.  ``new`` marks an
+    template may mark safe; ``notice`` is escaped plain text.  ``markdown`` is
+    the raw stored body behind the entry's copy button, which must paste as
+    the agent wrote it (code fences and all), so it is deliberately not
+    derived from ``html`` or from the plain-text form.  ``new`` marks an
     entry posted after the ticket's seen marker when the page was opened; the
     page keeps the badge until it is reloaded.
     """
@@ -137,6 +140,7 @@ class Entry:
     clock: str = ""
     html: str = ""
     notice: str = ""
+    markdown: str = ""
     meta: tuple[str, ...] = ()
     long: bool = False
     detail_html: str = ""
@@ -290,6 +294,7 @@ def _entry_body(comment: LocalComment, ticket_id: str) -> Entry:
             created_at=created_at,
             clock=clock,
             html=render_markdown(comment.body),
+            markdown=comment.body,
             files=chips_for(ticket_id, comment.files),
         )
 
@@ -311,6 +316,7 @@ def _entry_body(comment: LocalComment, ticket_id: str) -> Entry:
             created_at=created_at,
             clock=clock,
             html=render_markdown_sections(body),
+            markdown=body.strip(),
             meta=_kind_meta(kind),
             anchor=f"reply-{comment.id}",
         )
@@ -379,6 +385,7 @@ def build_entries(
             created_at=ticket.created_at,
             clock=_clock(ticket.created_at),
             html=render_markdown(ticket.description),
+            markdown=ticket.description,
             files=chips_for(ticket.id, ticket.files),
         )
     ]

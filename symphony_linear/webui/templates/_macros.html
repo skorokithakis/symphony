@@ -73,10 +73,18 @@
 {% if entry.new %}<span class="new">New</span>{% endif %}
 {%- endmacro %}
 
+{# The header copy control of a thread entry.  Its value is the stored
+   Markdown, so a paste keeps newlines and code fences instead of the rendered
+   HTML; entries without a stored body (notices, alerts, an empty ticket text)
+   do not get one, because a button that copies nothing looks broken. #}
+{% macro copy_markdown(entry) -%}
+{% if entry.markdown %}<button class="icon-btn" type="button" data-copy="{{ entry.markdown }}" aria-label="Copy the Markdown"><svg class="ic ic--sm" viewBox="0 0 20 20" aria-hidden="true"><path d="M7 7h9v9H7zM4 13V4h9"></path></svg></button>{% endif %}
+{%- endmacro %}
+
 {% macro entry(entry) -%}
 {% if entry.kind == "user" %}
 <article class="entry entry--user">
-  <header class="entry-h"><span class="who">{{ entry.who }}</span>{{ new_badge(entry) }}<time datetime="{{ entry.created_at }}" data-format="time">{{ entry.clock }}</time></header>
+  <header class="entry-h"><span class="who">{{ entry.who }}</span>{{ new_badge(entry) }}<time datetime="{{ entry.created_at }}" data-format="time">{{ entry.clock }}</time><span class="entry-tools">{{ copy_markdown(entry) }}</span></header>
   <div class="entry-b"><div class="md">{{ entry.html|safe }}</div>{{ file_list(entry.files, large=true) }}</div>
 </article>
 {% elif entry.kind == "agent" %}
@@ -89,6 +97,7 @@
     <span class="entry-tools">
       <button class="link-btn" type="button" id="{{ entry.anchor }}-open" data-open-secs="{{ entry.anchor }}">Open all</button>
       <button class="link-btn" type="button" id="{{ entry.anchor }}-close" data-close-secs="{{ entry.anchor }}">Close all</button>
+      {{ copy_markdown(entry) }}
     </span>
   </header>
   <div class="md">{{ entry.html|safe }}</div>

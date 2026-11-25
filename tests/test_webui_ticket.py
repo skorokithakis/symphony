@@ -10,6 +10,7 @@ from __future__ import annotations
 import json
 import re
 from contextlib import contextmanager
+from html import escape
 from pathlib import Path
 from typing import Iterator
 from unittest.mock import Mock
@@ -160,7 +161,8 @@ class TestTicketPage:
         assert status == 200
         assert "Default" in text
         assert "—" in text
-        assert "data-copy" not in text
+        assert "Copy the workspace path" not in text
+        assert "Copy the session id" not in text
 
     def test_all_comment_kinds_render_as_their_entry_type(self, tmp_path: Path) -> None:
         with _server(tmp_path) as (port, tracker, _state, _wake):
@@ -284,6 +286,28 @@ class TestTicketPage:
 
         assert text.index("Ticket text") < text.index("Second")
         assert 'class="who">Ticket text' in text
+
+    def test_copy_buttons_carry_the_stored_markdown(self, tmp_path: Path) -> None:
+        description = "Ticket **text**\n\n```\nfenced\n```"
+        human = "A human reply\nline two"
+        reply = "# Summary\n\nDone.\n\n```python\nprint(1)\n```"
+        with _server(tmp_path) as (port, tracker, _state, _wake):
+            ticket = _ticket(tracker.store, description=description)
+            tracker.store.add_human_comment(ticket.id, human)
+            tracker.post_comment(ticket.id, reply, "final")
+            tracker.post_comment(
+                ticket.id, "**Symphony**\n- workspace: `/tmp/w`", "workspace"
+            )
+
+            text = _page(port, ticket.id)
+
+        # The stored body, not the rendered HTML, is what a paste must produce.
+        for markdown in (description, human, reply):
+            assert f'data-copy="{escape(markdown)}"' in text
+        # The stored agent body ends with the bot footer, which is presentation.
+        assert "*Symphony" not in text
+        # Notices have no stored body of their own, so they get no control.
+        assert text.count('aria-label="Copy the Markdown"') == 3
 
     def test_draft_redirects_to_the_editor(self, tmp_path: Path) -> None:
         with _server(tmp_path) as (port, tracker, _state, _wake):
