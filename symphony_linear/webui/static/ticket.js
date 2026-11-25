@@ -57,6 +57,7 @@
   var polling = false;
   var pollQueued = false;
   var sending = false;
+  var sendInFlight = null;
   /* The first text sent with the current token.  A send whose response was
    * lost is retried with the same token; when the server reports the retry as
    * a duplicate, this is the text that actually committed. */
@@ -137,19 +138,21 @@
 
   /* One save at a time: a second request would race the first and could
    * store an older text after a newer one.  A request that arrives while one
-   * is in flight is queued, and only the latest content is sent. */
+   * is in flight is queued, and only the latest content is sent.  Resolves
+   * true when there was nothing to save or the save succeeded, and false when
+   * it failed, which app.js's flush hook uses to stay on the page. */
   function saveDraft() {
     window.clearTimeout(draftTimer);
     if (!reply || !draftDirty) {
-      return Promise.resolve();
+      return Promise.resolve(true);
     }
     if (sending) {
       // No autosave while a Send is being submitted; its finally flushes it.
-      return Promise.resolve();
+      return Promise.resolve(true);
     }
     if (draftRunning) {
       draftQueued = true;
-      return Promise.resolve();
+      return Promise.resolve(true);
     }
     var text = reply.value;
     draftDirty = false;
@@ -161,10 +164,12 @@
           draftDirty = true;
           scheduleDraft();
         }
+        return true;
       })
       .catch(function () {
         draftDirty = true;
         Sym.showNotSaved("saved");
+        return false;
       });
     var attempt = draftInFlight;
     // Clear the guard whether the save succeeded or failed, so the next poll
@@ -187,6 +192,41 @@
       saveDraft();
     }
   }
+
+  /* app.js's Ctrl+/ navigates away, so every keystroke since the last save
+   * must reach the server first: an in-flight Send is allowed to finish, any
+   * in-flight save is awaited, and the latest text is saved until nothing is
+   * dirty.  Resolves false when a save fails, which keeps app.js on the page
+   * instead of losing the text, and shows the usual page error.  A page
+   * without the composer has nothing to flush. */
+  Sym.flushDraft = function () {
+    if (!reply) {
+      return Promise.resolve(true);
+    }
+    function step() {
+      if (sending) {
+        return (sendInFlight || Promise.resolve()).then(step);
+      }
+      if (draftInFlight) {
+        return draftInFlight.then(function (saved) {
+          return saved ? step() : false;
+        });
+      }
+      if (!draftDirty) {
+        return true;
+      }
+      return saveDraft().then(function (saved) {
+        return saved ? step() : false;
+      });
+    }
+    // step() returns a plain true when nothing is dirty, so wrap it.
+    return Promise.resolve(step()).then(function (saved) {
+      if (!saved) {
+        Sym.showError("Could not save your reply. Try again.");
+      }
+      return saved;
+    });
+  };
 
   /* ---------- sending ---------- */
 
@@ -275,7 +315,7 @@
     // Let an in-flight autosave finish first: the server clears the draft as
     // part of sending, and a late save must not put the sent text back.
     var wait = draftInFlight || Promise.resolve();
-    wait
+    sendInFlight = wait
       .then(function () {
         return Sym.postJSON(replyUrl, {
           body: text,
@@ -313,6 +353,7 @@
       })
       .finally(function () {
         sending = false;
+        sendInFlight = null;
         if (uploader) {
           uploader.setLocked(false);
         }

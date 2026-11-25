@@ -398,16 +398,27 @@
     return true;
   }
 
+  /* The reply box is the only text target a prefix sequence can replay
+     into.  A list, the editor and a Done ticket have none, so a prefix key
+     there has no pending text to protect. */
+  function replyBox() {
+    var reply = document.getElementById("reply");
+    if (!reply || reply.disabled || reply.readOnly) {
+      return null;
+    }
+    return reply;
+  }
+
   /* On the ticket page a key that is not a shortcut starts a reply, so the
      user can just type.  Focusing during keydown, without preventDefault, makes
      the browser insert the key into the newly focused textarea.  The caret goes
      to the end so a saved draft is continued, not prefixed.  ``pending`` replays
-     the "s" presses that armed the state sequence, so "sure" does not become
-     "ure".  Inserting it here fires no "input"; the keystroke that follows does,
-     and the autosave then writes the whole value. */
+     the prefix presses that armed a sequence, so "sure" does not become
+     "ure".  Inserting it here fires no "input"; the keystroke that follows
+     does, and the autosave then writes the whole value. */
   function typeIntoReply(pending) {
-    var reply = document.getElementById("reply");
-    if (!reply || reply.disabled || reply.readOnly) {
+    var reply = replyBox();
+    if (!reply) {
       return;
     }
     var end = reply.value.length;
@@ -418,12 +429,59 @@
     }
   }
 
-  /* The pending buffer holds every "s" that armed the state sequence, separate
-     from the timer so the text survives an expired window; the timer only
-     decides whether a following 1/2/3 is still a state shortcut. */
+  /* One "prefix key, then a second key" mechanism for both state actions
+     ("s") and navigation ("g").  The pending buffer holds every prefix key
+     that armed a sequence, separate from the timer so the text survives an
+     expired window; the timer only decides whether the next key is still a
+     shortcut.  A state shortcut must be visible because a hidden state button
+     is how the server declines that action; the dock is hidden on the ticket
+     and editor pages, so its links are activated regardless of visibility. */
+  var PREFIX_SHORTCUTS = {
+    s: { "1": "s1", "2": "s2", "3": "s3" },
+    g: { t: "gt", a: "ga", r: "gr" },
+  };
+  var PREFIX_SEQUENCE_MS = 1500;
   var pendingReplyText = "";
-  var stateSequenceStart = 0;
-  var STATE_SEQUENCE_MS = 1500;
+  var pendingPrefix = "";
+  var prefixSequenceStart = 0;
+
+  /* The ticket page has the composer ("c" must type there), and the Done
+     ticket page has the same wrapper but no reply box.  ``#ticket`` is the
+     page's own marker (ticket.js keys off it), so neither is mistaken for a
+     list page. */
+  function isTicketPage() {
+    return document.getElementById("ticket") !== null;
+  }
+
+  function prefixShortcut(prefix, key) {
+    var shortcuts = PREFIX_SHORTCUTS[prefix];
+    return Object.prototype.hasOwnProperty.call(shortcuts, key)
+      ? shortcuts[key]
+      : null;
+  }
+
+  /* Ctrl+/ must work on every page, and on the ticket page it must not lose
+     reply text.  ticket.js's flushDraft waits for an in-flight Send and for
+     in-flight saves, then saves the latest text; it resolves false when that
+     save failed, in which case the page stays put with the error already
+     shown.  A page without the composer navigates immediately. */
+  function goToNextTicket() {
+    var main = document.getElementById("ticket");
+    var ticketId = main ? main.getAttribute("data-ticket-id") : "";
+    var url = "/next";
+    if (ticketId) {
+      url += "?after=" + encodeURIComponent(ticketId);
+    }
+    var flush = Sym.flushDraft;
+    var wait = typeof flush === "function" ? flush() : Promise.resolve(true);
+    wait
+      .then(function (saved) {
+        if (saved) {
+          window.location.assign(url);
+        }
+      })
+      .catch(function () {});
+  }
 
   document.addEventListener("keydown", function (event) {
     /* A modifier's own keydown types nothing.  Shift is the one that reaches
@@ -432,7 +490,31 @@
     if (event.key === "Shift" || event.key === "CapsLock") {
       return;
     }
-    /* An ignored key still cancels an armed "s": otherwise "s", Ctrl+C, "3"
+    /* Checked before the ignored branch below, which returns for every
+       ctrlKey and isTyping event: this is the one shortcut that must work
+       while a field has focus, and Chrome and Firefox leave Ctrl+/ unbound.
+       Other keys were rejected: browsers do not let a page take Ctrl+N, Ctrl+U
+       is view source, Ctrl+I is Firefox's Page Info, Ctrl+M mutes the tab in
+       Firefox, and GNOME's emoji picker can take Ctrl+. first.
+       Alt is excluded because AltGr reports ctrlKey on some layouts; meta is
+       excluded because this is Ctrl-only; defaultPrevented is excluded
+       because another handler already claimed the key.  A modal dialog still
+       swallows it, like every other page shortcut. */
+    if (
+      event.key === "/" &&
+      event.ctrlKey &&
+      !event.altKey &&
+      !event.metaKey &&
+      !event.defaultPrevented &&
+      document.querySelector("dialog[open]") === null
+    ) {
+      event.preventDefault();
+      pendingReplyText = "";
+      pendingPrefix = "";
+      goToNextTicket();
+      return;
+    }
+    /* An ignored key still cancels an armed prefix: otherwise "s", Ctrl+C, "3"
        would mark the ticket Done.  The event's own job is left alone (no
        preventDefault), and a modal dialog swallows every page shortcut so the
        discard confirmation and the lightbox behave like plain dialogs. */
@@ -445,40 +527,55 @@
       document.querySelector("dialog[open]") !== null;
     if (ignored) {
       pendingReplyText = "";
-      stateSequenceStart = 0;
+      pendingPrefix = "";
       return;
     }
     var key = event.key.toLowerCase();
     var now = Date.now();
-    var awaitingState =
-      stateSequenceStart !== 0 && now - stateSequenceStart <= STATE_SEQUENCE_MS;
-    /* Only a button the page actually offers is clicked: "s","2" on a ticket
+    var awaitingPrefix =
+      pendingPrefix !== "" && now - prefixSequenceStart <= PREFIX_SEQUENCE_MS;
+    /* Only a control the page actually offers is clicked: "s","2" on a ticket
        with no Send to QA falls through to the typing branch, so the reply gets
        the "s2" the user meant to type. */
-    if (awaitingState && (key === "1" || key === "2" || key === "3")) {
-      stateSequenceStart = 0;
-      if (activate("s" + key, true)) {
+    if (awaitingPrefix) {
+      var shortcut = prefixShortcut(pendingPrefix, key);
+      if (shortcut && activate(shortcut, pendingPrefix === "s")) {
         pendingReplyText = "";
+        pendingPrefix = "";
         event.preventDefault();
         return;
       }
     }
-    if (key === "s") {
-      /* Appended, not replaced, so "s","s","h" types "ssh"; the case is kept
-         because that is what the user pressed. */
-      pendingReplyText += event.key;
-      stateSequenceStart = now;
-      return;
+    /* A prefix key starts a sequence, or extends the one already armed, so
+       "s","s","h" types "ssh"; the case is kept because that is what the user
+       pressed.  A *different* prefix key cannot be a second key of the armed
+       sequence: with a reply box it falls through to typing below, which keeps
+       "sg" together in the reply, but with nothing to type into it must not
+       block the new sequence, or "s", a pause, then "g" "t" would do nothing
+       on the home page. */
+    if (Object.prototype.hasOwnProperty.call(PREFIX_SHORTCUTS, key)) {
+      if (pendingPrefix === "" || pendingPrefix === key) {
+        pendingReplyText += event.key;
+        pendingPrefix = key;
+        prefixSequenceStart = now;
+        return;
+      }
+      if (!replyBox()) {
+        pendingReplyText = event.key;
+        pendingPrefix = key;
+        prefixSequenceStart = now;
+        return;
+      }
     }
     // Any other key cancels the armed sequence but still does its own job, so
     // a stray "s" before "j" does not swallow the "j".
-    stateSequenceStart = 0;
+    pendingPrefix = "";
     if (key === "?") {
       pendingReplyText = "";
       if (openHelp()) {
         event.preventDefault();
       }
-    } else if (key === "c") {
+    } else if (key === "c" && !isTicketPage()) {
       pendingReplyText = "";
       if (activate("new", false)) {
         event.preventDefault();

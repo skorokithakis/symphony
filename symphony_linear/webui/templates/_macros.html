@@ -174,9 +174,9 @@
 <nav class="dock" aria-label="Main">
   <a class="btn btn--primary" href="/new"{% if current == "new" %} aria-current="page"{% endif %} data-shortcut="new" title="New ticket (c)"><svg class="ic" viewBox="0 0 20 20" aria-hidden="true"><path d="M10 4v12M4 10h12"></path></svg>New ticket</a>
   <div class="dock-links">
-    <a class="dock-link" href="/"{% if current == "tickets" %} aria-current="page"{% endif %}>Tickets{{ needs_input_dot(needs_input_count) }}</a>
-    <a class="dock-link" href="/archive"{% if current == "archive" %} aria-current="page"{% endif %}>Archive</a>
-    <a class="dock-link" href="/repos"{% if current == "repos" %} aria-current="page"{% endif %}>Repositories</a>
+    <a class="dock-link" data-shortcut="gt" title="Tickets (g t)" href="/"{% if current == "tickets" %} aria-current="page"{% endif %}>Tickets{{ needs_input_dot(needs_input_count) }}</a>
+    <a class="dock-link" data-shortcut="ga" title="Archive (g a)" href="/archive"{% if current == "archive" %} aria-current="page"{% endif %}>Archive</a>
+    <a class="dock-link" data-shortcut="gr" title="Repositories (g r)" href="/repos"{% if current == "repos" %} aria-current="page"{% endif %}>Repositories</a>
   </div>
 </nav>
 {%- endmacro %}

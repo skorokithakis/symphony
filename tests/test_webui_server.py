@@ -571,6 +571,73 @@ class TestArchivePage:
         assert "No done tickets." in body.decode()
 
 
+class TestNextTicket:
+    """GET /next is the "next Needs Input ticket" shortcut's redirect."""
+
+    @pytest.fixture
+    def waiting(self, tmp_path: Path) -> Path:
+        _write_ticket(
+            tmp_path,
+            "SYM-1",
+            state=STATE_NEEDS_INPUT,
+            updated_at="2026-11-20T10:00:00+00:00",
+        )
+        _write_ticket(
+            tmp_path,
+            "SYM-2",
+            state=STATE_NEEDS_INPUT,
+            updated_at="2026-11-20T12:00:00+00:00",
+        )
+        _write_ticket(
+            tmp_path,
+            "SYM-3",
+            state=STATE_NEEDS_INPUT,
+            updated_at="2026-11-20T11:00:00+00:00",
+        )
+        _write_ticket(
+            tmp_path,
+            "SYM-4",
+            state=STATE_IN_PROGRESS,
+            updated_at="2026-11-20T13:00:00+00:00",
+        )
+        return tmp_path
+
+    @pytest.mark.parametrize(
+        ("path", "expected"),
+        [
+            # The home page's Needs Input group is newest first.
+            ("/next", "/tickets/SYM-2"),
+            ("/next?after=SYM-2", "/tickets/SYM-3"),
+            ("/next?after=SYM-3", "/tickets/SYM-1"),
+            # The last ticket wraps around to the first.
+            ("/next?after=SYM-1", "/tickets/SYM-2"),
+            # A ticket outside the group, an unknown id and an empty value all
+            # start at the first ticket.
+            ("/next?after=SYM-4", "/tickets/SYM-2"),
+            ("/next?after=NOPE", "/tickets/SYM-2"),
+            ("/next?after=", "/tickets/SYM-2"),
+        ],
+    )
+    def test_follows_the_home_page_order(
+        self, waiting: Path, path: str, expected: str
+    ) -> None:
+        with _running_server(waiting) as (port, _tracker, _state):
+            status, headers, body = _request(port, "GET", path)
+
+        assert status == 303
+        assert headers["Location"] == expected
+        assert body == b""
+
+    def test_empty_group_redirects_to_the_home_page(self, tmp_path: Path) -> None:
+        _write_ticket(tmp_path, "SYM-1", state=STATE_IN_PROGRESS)
+
+        with _running_server(tmp_path) as (port, _tracker, _state):
+            status, headers, _body = _request(port, "GET", "/next")
+
+        assert status == 303
+        assert headers["Location"] == "/"
+
+
 class TestTemplates:
     def test_page_uses_external_script_and_stylesheet(self, tmp_path: Path) -> None:
         with _running_server(tmp_path) as (port, _tracker, _state):
@@ -651,6 +718,8 @@ class TestTemplates:
         # where it works instead of being omitted.
         assert "<kbd>Ctrl+K</kbd>" in text
         assert "Pick repository (editor)" in text
+        assert "<kbd>Ctrl+/</kbd>" in text
+        assert "New ticket (not on the ticket page)" in text
 
 
 class TestDock:
@@ -734,6 +803,22 @@ class TestDock:
         link = body.decode().split('href="/new"', 1)[1].split(">", 1)[0]
         assert 'data-shortcut="new"' in link
         assert 'title="New ticket (c)"' in link
+
+    def test_the_dock_links_carry_their_navigation_shortcuts(
+        self, tmp_path: Path
+    ) -> None:
+        # app.js clicks these links by name from every page, including the
+        # ticket and editor pages whose layout hides the dock, so a missing
+        # data-shortcut would silently disable "g" there.
+        _write_ticket(tmp_path, "SYM-1", state=STATE_IN_PROGRESS, title="Running")
+
+        with _running_server(tmp_path) as (port, _tracker, _state):
+            _status, _headers, body = _request(port, "GET", "/")
+
+        text = body.decode()
+        assert 'data-shortcut="gt" title="Tickets (g t)"' in text
+        assert 'data-shortcut="ga" title="Archive (g a)"' in text
+        assert 'data-shortcut="gr" title="Repositories (g r)"' in text
 
 
 # ---------------------------------------------------------------------------

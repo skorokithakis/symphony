@@ -339,3 +339,26 @@ def archive(request: Request) -> Response:
             needs_input_count=page.needs_input_count,
         )
     )
+
+
+def next_ticket(request: Request) -> Response:
+    """Redirect to the next ticket in Needs Input, wrapping at the end.
+
+    The order is the home page's Needs Input group, taken from
+    :func:`home_list` rather than re-sorted here, so the shortcut and the list
+    can never disagree.  An absent or unknown ``after`` starts at the first
+    ticket; an empty group goes to the list, whose empty state explains that
+    nothing is waiting.
+    """
+    page = home_list(request)
+    group = next(group for group in page.groups if group.title == STATE_NEEDS_INPUT)
+    ids = [row.id for row in group.rows]
+    values = request.query.get("after") or []
+    after = values[0] if values else ""
+    if not ids:
+        target = "/"
+    elif after in ids:
+        target = f"/tickets/{ids[(ids.index(after) + 1) % len(ids)]}"
+    else:
+        target = f"/tickets/{ids[0]}"
+    return Response(status=303, headers=(("Location", target),))
