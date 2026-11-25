@@ -5,6 +5,14 @@
 <meta name="viewport" content="width=device-width, initial-scale=1">
 <title>{% if needs_input_count|default(0) %}({{ needs_input_count }}) {% endif %}{% block title %}symphony{% endblock %}</title>
 <link rel="icon" type="image/png" href="{{ icon_url() }}">
+{# Manifest fetches carry no credentials, even same-origin, so Basic auth or a
+   forward-auth proxy would answer 401 without crossOrigin use-credentials. #}
+<link rel="manifest" href="{{ static_url('manifest.webmanifest') }}" crossorigin="use-credentials">
+{# iOS rounds the corners itself and fills transparency with black, so it gets
+   the full-bleed maskable tile rather than the rounded one. #}
+<link rel="apple-touch-icon" href="{{ static_url('icon-maskable-512.png') }}">
+<meta name="theme-color" content="#f3f3f9" media="(prefers-color-scheme: light)">
+<meta name="theme-color" content="#121222" media="(prefers-color-scheme: dark)">
 <link rel="stylesheet" href="{{ static_url('symphony.css') }}">
 <script src="{{ static_url('app.js') }}" defer></script>
 {% block scripts %}{% endblock %}

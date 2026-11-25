@@ -309,7 +309,8 @@ webui:
 ```
 
 Open `http://127.0.0.1:8080/`. The browser asks for the username and password
-once, using HTTP Basic auth; there is no login page.
+once, using HTTP Basic auth; there is no login page. Served over HTTPS, the UI
+can be installed as an app and then opens standalone.
 
 **Put HTTPS in front of the port before exposing it.** Basic auth sends the
 password with every request, so plain HTTP is only reasonable on localhost.

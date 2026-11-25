@@ -675,6 +675,20 @@ class TestTemplates:
         assert "onclick=" not in text
         assert ' style="' not in text
 
+    def test_page_links_the_manifest_with_credentials(self, tmp_path: Path) -> None:
+        # Browsers fetch a manifest without credentials even same-origin, so
+        # dropping crossorigin lets Basic auth answer 401 and silently
+        # disables installation.
+        with _running_server(tmp_path) as (port, _tracker, _state):
+            _status, _headers, body = _request(port, "GET", "/")
+
+        text = body.decode()
+        assert re.search(
+            r'<link rel="manifest" href="/static/manifest\.webmanifest\?v=\d+"'
+            r' crossorigin="use-credentials">',
+            text,
+        )
+
     def test_static_urls_are_versioned_by_the_file_mtime(self, tmp_path: Path) -> None:
         static_dir = Path(templates.__file__).resolve().parent / "static"
 
@@ -1498,13 +1512,14 @@ class TestSonioxDictation:
     temporary-key route must stay behind the normal dispatch pipeline.
     """
 
-    #: The policy before dictation existed.  Hard-coded on purpose: comparing
-    #: with the module's own constant would not notice a change to it.
-    _PRE_SONIOX_CSP = (
+    #: The policy without dictation.  Hard-coded on purpose: comparing with
+    #: the module's own constant would not notice a change to it.
+    _BASE_CSP = (
         "default-src 'none'; "
         "script-src 'self'; "
         "style-src 'self'; "
         "img-src 'self'; "
+        "manifest-src 'self'; "
         "font-src 'self'; "
         "connect-src 'self'; "
         "base-uri 'none'; "
@@ -1517,7 +1532,7 @@ class TestSonioxDictation:
             status, headers, _body = _request(port, "GET", "/")
 
         assert status == 200
-        assert headers["Content-Security-Policy"] == self._PRE_SONIOX_CSP
+        assert headers["Content-Security-Policy"] == self._BASE_CSP
 
     def test_csp_allows_the_soniox_websocket_with_a_key(self, tmp_path: Path) -> None:
         with _running_server(tmp_path, soniox_api_key="long-lived-soniox-key") as (
@@ -1707,6 +1722,24 @@ class TestStaticFiles:
         assert status == 200
         assert headers["Content-Type"].startswith("text/javascript")
         assert b"querySelectorAll" in body
+
+    def test_the_manifest_is_served_with_its_icons(self, tmp_path: Path) -> None:
+        # A wrong content type or a missing icon file makes the UI
+        # uninstallable with no visible error, so check both through the
+        # server rather than reading the files off disk.
+        with _running_server(tmp_path) as (port, _tracker, _state):
+            status, headers, body = _request(
+                port, "GET", "/static/manifest.webmanifest"
+            )
+            icons = [
+                _request(port, "GET", icon["src"]) for icon in json.loads(body)["icons"]
+            ]
+
+        assert status == 200
+        assert headers["Content-Type"] == "application/manifest+json"
+        for icon_status, icon_headers, _icon_body in icons:
+            assert icon_status == 200
+            assert icon_headers["Content-Type"] == "image/png"
 
     def test_only_versioned_requests_are_cacheable(self, tmp_path: Path) -> None:
         with _running_server(tmp_path) as (port, _tracker, _state):

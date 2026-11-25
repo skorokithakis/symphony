@@ -92,6 +92,8 @@ def _build_csp(*, dictation: bool) -> str:
         "script-src 'self'; "
         "style-src 'self'; "
         "img-src 'self'; "
+        # default-src 'none' would otherwise block the web app manifest.
+        "manifest-src 'self'; "
         "font-src 'self'; "
         f"{connect_src}; "
         "base-uri 'none'; "

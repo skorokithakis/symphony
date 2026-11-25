@@ -1623,6 +1623,11 @@ _NTFY_TIMEOUT_SECONDS = 10.0
 #:     uvx --from cairosvg cairosvg misc/icon.svg \
 #:         --output-width 256 --output-height 256 \
 #:         -o symphony_linear/webui/static/icon.png
+#:
+#: The installable-app icons beside it (``icon-192.png``, ``icon-512.png``)
+#: are rendered the same way at their sizes.  ``icon-maskable-512.png`` comes
+#: from a copy of the SVG with ``rx="116"`` removed, because Android and iOS
+#: crop that one to their own shape and need a full-bleed tile.
 ICON_PATH = "/static/icon.png"
 NTFY_ICON_URL = (
     "https://raw.githubusercontent.com/skorokithakis/symphony/master/"
