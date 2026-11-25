@@ -495,7 +495,41 @@ creating a ticket, waiting for the agent's reply and answering it. The token
 lives in `config.yaml`, which the sandbox masks from coding agents; Basic
 credentials are not accepted on `/api/v1`, and the bearer token is not
 accepted anywhere else. Leaving `api_token` unset disables the API: the whole
-namespace answers `404`.
+namespace answers `404`. Anyone with the token can start coding agents on any
+saved repository, so treat it like the Basic password.
+
+What an agent can do:
+
+- **Tickets:** list them (filtered by `state` and `updated_since`), read one
+  with its comments, create one as a Draft or started straight away, edit,
+  start or delete a Draft, stop it, send it to QA, mark it Done, reopen it,
+  and reply to the agent.
+- **Repositories:** list, add, rename (the name only, never the URL) and
+  remove.
+- **Models:** list the aliases configured under `models:`.
+
+The API is built to be used by an agent that has read nothing but the guide:
+
+- Every ticket carries an `allowed_actions` list, so the caller never needs to
+  know the state machine. `start` only appears when Start would succeed.
+- Every error is `{"error": "...", "hint": "..."}`, and the hint says what to
+  do next, for example to wait until the ticket is in Needs Input before
+  replying.
+- Every agent comment has a `kind` taken from its footer (`final`, `error`,
+  `workspace` and so on). The guide tells the caller to wait for a
+  turn-ending comment newer than the last one it saw, rather than trusting the
+  latest comment: when a turn fails, the ticket moves to Needs Input before the
+  error comment is posted.
+- A reply sent over the API leaves your unsent browser composer text and its
+  pending attachments alone.
+
+Known limits:
+
+- A retried reply can post twice. The browser's Send has a client token that
+  prevents this; the API does not.
+- There is no pagination: a list returns every ticket and a ticket returns all
+  of its comments.
+- File uploads are not available over the API.
 
 ## Configuration
 
