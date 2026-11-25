@@ -52,6 +52,7 @@ from symphony_linear.config import AppConfig
 from symphony_linear.local_tracker import LocalTicketStore
 from symphony_linear.presence import TicketPresence
 from symphony_linear.state import StateManager
+from symphony_linear.turn_activity import TurnActivity
 from symphony_linear.webui.agent_api import error_response, is_agent_api_path
 from symphony_linear.webui.http_types import Request, Response, Route, WebUIApp
 from symphony_linear.webui.routes import routes_for
@@ -735,6 +736,10 @@ class WebUIServer:
         The in-memory viewer presence shared with the local tracker, which
         uses it to suppress the Needs Input push while a ticket's page is
         being watched.  ``None`` disables presence tracking (tests).
+    turn_activity:
+        The in-memory turn-activity record shared with the orchestrator, which
+        records each running turn's last output so the ticket page can show
+        its age.  ``None`` disables the age (tests).
     """
 
     def __init__(
@@ -749,6 +754,7 @@ class WebUIServer:
         routes: Sequence[Route] | None = None,
         max_concurrent: int = _MAX_CONCURRENT_REQUESTS,
         presence: TicketPresence | None = None,
+        turn_activity: TurnActivity | None = None,
     ) -> None:
         webui = config.webui
         if webui is None:
@@ -770,6 +776,7 @@ class WebUIServer:
             on_wake=on_wake,
             static_root=static_root or _STATIC_ROOT,
             presence=presence,
+            turn_activity=turn_activity,
         )
         self._thread: threading.Thread | None = None
         self._server: _WebUIServer | None = None

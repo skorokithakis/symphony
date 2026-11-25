@@ -62,12 +62,14 @@ symphony_linear/
   github_tracker.py GitHub Projects v2 backend adapter implementing the Tracker protocol
   local_tracker.py  Built-in tracker: on-disk ticket store under <workspace>/tickets/, fixed workflow states
   presence.py       In-memory viewer presence shared by the web UI and the local tracker (Needs Input push gate)
+  turn_activity.py  In-memory record of each running turn's last agent output, shown as an age on the ticket page
   webui/            Web UI for the built-in tracker: server.py (the single dispatch choke point),
                     routes.py (route table), api.py (JSON endpoints), views.py / editor.py /
                     ticket.py (list, editor and ticket pages), files.py (uploaded-file serving),
-                    markdown.py (safe Markdown), title.py (optional Anthropic titles),
-                    agent_api.py + agent_api.md (the bearer-authenticated /api/v1 API and its
-                    guide), templates/ and static/
+                    markdown.py (safe Markdown), title.py (optional Anthropic
+                    titles), summary.py (optional one-line reply summaries),
+                    agent_api.py + agent_api.md (the bearer-authenticated /api/v1
+                    API and its guide), templates/ and static/
   sandbox.py        Single function: run_in_sandbox() → builds the bwrap argv and returns a Popen
   agent_runner.py   Shared sandbox process runner; drains pipes and enforces turn watchdogs
   opencode.py       OpenCode adapter: run_initial / run_resume; parses OpenCode NDJSON
@@ -555,6 +557,34 @@ shutting down, or the ticket is no longer triggered — see `_is_still_triggered
   is touched, so it stays within the read-only GET rule. `TicketPresence` is
   optional on both constructors, so a tracker or server built without one
   behaves exactly as before (tests, or a tracker with no web UI attached).
+- **The ticket page's "last output" age is a per-turn in-memory record.**
+  `agent_runner.run` takes an optional `on_output` callback, invoked from the
+  stdout and stderr drain threads on every chunk — the idle watchdog's own
+  signal, which is why a turn that streams only logs still looks alive.
+  Threaded through `run_initial`/`run_resume`/`_execute` of all three adapters;
+  `Orchestrator._output_callback` binds it to the ticket id and records into
+  `TurnActivity` (`turn_activity.py`: monotonic timestamps, thread-safe, never
+  persisted). Only agent turns report (initial and resume, not
+  `.symphony/setup` or the QA serve), and `_task_wrapper` clears the ticket's
+  entry when its task ends so the next turn never shows the previous one's
+  age. `cli.main` builds one instance shared by the `Orchestrator` and
+  `WebUIServer`; both params default to `None`, so the Linear and GitHub
+  backends and every test run exactly as before. The page shows the age only
+  in In Progress and only after the first chunk, formatted like `working_for`
+  (seconds under a minute, then minutes). Home rows deliberately do not show
+  it: their poll fingerprint would change every tick.
+- **Reply summaries are generated only from the post path.** With
+  `webui.anthropic_api_key` set, `cli._create_tracker` passes
+  `webui/summary.py`'s `agent_reply_hook` as `LocalTracker`'s optional
+  `on_agent_reply`, which fires only from `post_comment` for agent-reply
+  kinds (`is_agent_kind` in `tracker.py`). The hook starts a daemon thread
+  that asks the Messages API (through `symphony_linear/anthropic.py`, shared
+  with titles) for one line and stores it on `LocalComment.summary` through
+  `LocalTicketStore.set_comment_summary`; a deleted ticket or comment is a
+  no-op and `updated_at` is untouched. `webui/views.py` shows it only on a
+  non-failed Needs Input row, and only for the latest agent reply. It is never
+  sent to ntfy, shown on the ticket page, or exposed by `/api/v1`, and a GET
+  never generates one.
 - **Every web UI request goes through one dispatch choke point.**
   `_WebUIHandler.handle_one_request` parses the request and `_dispatch` does,
   in order: authentication (Basic for the browser routes, including static

@@ -29,6 +29,21 @@ def is_bot_comment(body: str) -> bool:
     return _BOT_MARKER in body
 
 
+def is_agent_kind(kind: str | None) -> bool:
+    """True for the kind strings the Orchestrator stores on an agent reply.
+
+    ``final`` is a plain reply.  The orchestrator appends `` · model: <id>``
+    when the ticket overrode the model, and reports a turn's context size as
+    ``context: N tokens`` (also with the model suffix), so both prefixes count.
+    The helper lives here rather than in the web layer because the local
+    tracker needs the same rule to decide which comments get a summary; the
+    web UI imports it from here too.
+    """
+    if kind is None:
+        return False
+    return kind == "final" or kind.startswith(("final · ", "context: "))
+
+
 # ---------------------------------------------------------------------------
 # Per-issue model override resolution
 # ---------------------------------------------------------------------------

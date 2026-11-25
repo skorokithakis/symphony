@@ -56,3 +56,28 @@ def test_run_returns_raw_result_and_forwards_adapter_environment() -> None:
     assert sandbox.call_args.kwargs["env"] == env
     assert sandbox.call_args.kwargs["stdout"] is subprocess.PIPE
     assert sandbox.call_args.kwargs["stderr"] is subprocess.PIPE
+
+
+def test_on_output_fires_for_every_chunk_on_both_streams() -> None:
+    """The web UI's age signal is the idle watchdog's, not stdout alone.
+
+    A chunk on either stream means the agent is alive, so both drain threads
+    must report it; counting stdout only would show a stale age while a turn
+    streams nothing but logs.
+    """
+    proc = _ExitedPopen(b"agent stdout", b"agent stderr")
+    calls: list[None] = []
+
+    with patch("symphony_linear.agent_runner.run_in_sandbox", return_value=proc):
+        agent_runner.run(
+            cmd=["agent", "run"],
+            workspace_path="/workspace",
+            tmp_path="/workspace/tmp",
+            timeout_seconds=60,
+            idle_timeout_seconds=30,
+            on_subprocess=lambda process: None,
+            env={"HOME": "/home/test"},
+            on_output=lambda: calls.append(None),
+        )
+
+    assert len(calls) == 2

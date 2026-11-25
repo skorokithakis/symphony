@@ -12,18 +12,9 @@ It returns immediately; the request and the write happen on a daemon thread so
 Start never waits for the API.  Nothing is retried, and a failure changes
 nothing: the fallback title stays in place and one WARNING is logged.
 
-The request shape follows the current Messages API reference: ``POST
-https://api.anthropic.com/v1/messages`` with ``x-api-key`` and
-``anthropic-version`` headers, and a body of ``model``, ``max_tokens`` and
-``messages``.  The base URL comes from ``webui.anthropic_base_url`` when it
-is set, so a gateway can front the API; only the ``/v1/messages`` path is
-fixed.  The reply is a JSON object whose ``content`` is a list of
-blocks; only ``{"type": "text"}`` blocks carry the title.
-
-The key comes from ``config.yaml``, which the sandbox masks from the coding
-agents.  It is never logged and never included in an exception message or a
-repr: a log line carries at most the exception type, the HTTP status or the
-ticket id.
+The HTTP request itself lives in ``symphony_linear/anthropic.py``, shared with
+the reply summaries the home page shows.  This module keeps the title prompt,
+the cleaning of the reply and the Start trigger.
 """
 
 from __future__ import annotations
@@ -33,26 +24,14 @@ import threading
 
 import httpx
 
+from symphony_linear.anthropic import clean_line, complete
 from symphony_linear.config import AppConfig
 from symphony_linear.local_tracker import LocalTicketStore
 
 logger = logging.getLogger(__name__)
 
-#: Product-owner's fixed model id.  ``claude-haiku-5-5`` is listed in the
-#: current Messages API model reference ("fastest model for high-volume,
-#: real-time tasks").
-MODEL = "claude-haiku-5-5"
-
-#: Default Messages API base URL.  ``webui.anthropic_base_url`` replaces it
-#: for a gateway or proxy; the ``/v1/messages`` path is always appended.
-_DEFAULT_BASE_URL = "https://api.anthropic.com"
-_ANTHROPIC_VERSION = "2026-10-21"
-
 #: A title needs a handful of tokens; the cap also bounds a runaway reply.
 _MAX_TOKENS = 64
-
-#: The request must not hold the thread for long: nobody is waiting on it.
-_TIMEOUT_SECONDS = 20.0
 
 #: Longest title kept, in characters, after the reply is cleaned.
 _MAX_TITLE_CHARS = 80
@@ -66,8 +45,6 @@ _PROMPT = (
     "only: one line, at most 70 characters, no surrounding quotes, no "
     "trailing period and no preamble.\n\nTask:\n{description}"
 )
-
-_QUOTE_CHARS = "\"'`\u2018\u2019\u201c\u201d"
 
 
 # ---------------------------------------------------------------------------
@@ -91,36 +68,7 @@ def clean_title(raw: str) -> str:
     ``_MAX_TITLE_CHARS``.  Returns an empty string when nothing usable is
     left; the caller then treats the reply as a failure.
     """
-    line = next((line.strip() for line in raw.splitlines() if line.strip()), "")
-    line = line.strip(_QUOTE_CHARS).strip()
-    line = " ".join(line.split())
-    if len(line) > _MAX_TITLE_CHARS:
-        line = line[:_MAX_TITLE_CHARS].rstrip()
-    return line
-
-
-def _text_from_response(response: httpx.Response) -> str | None:
-    """Return the concatenated text blocks of a Messages reply, or ``None``."""
-    try:
-        payload = response.json()
-    except ValueError:
-        return None
-    if not isinstance(payload, dict):
-        return None
-    blocks = payload.get("content")
-    if not isinstance(blocks, list):
-        return None
-    texts = [
-        block["text"]
-        for block in blocks
-        if isinstance(block, dict)
-        and block.get("type") == "text"
-        and isinstance(block.get("text"), str)
-    ]
-    if not texts:
-        return None
-    # Newlines let ``clean_title`` keep only the first line of a chatty reply.
-    return "\n".join(texts)
+    return clean_line(raw, max_chars=_MAX_TITLE_CHARS)
 
 
 def generate_title(
@@ -132,39 +80,18 @@ def generate_title(
 ) -> str | None:
     """Ask the Messages API for a title, returning ``None`` on any failure.
 
-    *base_url* is the optional ``webui.anthropic_base_url``; the fixed
-    ``/v1/messages`` path is appended to it, so a gateway only has to speak
-    the same Messages API at that path.  *transport* exists for tests, which
-    pass ``httpx.MockTransport`` so no request leaves the process.  The key is
-    only ever placed in the request headers.
+    *base_url* is the optional ``webui.anthropic_base_url``.  *transport*
+    exists for tests, which pass ``httpx.MockTransport`` so no request leaves
+    the process.
     """
-    headers = {
-        "x-api-key": api_key,
-        "anthropic-version": _ANTHROPIC_VERSION,
-        "content-type": "application/json",
-    }
-    body = {
-        "model": MODEL,
-        "max_tokens": _MAX_TOKENS,
-        "messages": [{"role": "user", "content": _prompt(description)}],
-    }
-    url = f"{base_url or _DEFAULT_BASE_URL}/v1/messages"
-    try:
-        with httpx.Client(timeout=_TIMEOUT_SECONDS, transport=transport) as client:
-            response = client.post(url, headers=headers, json=body)
-    except httpx.HTTPError as exc:
-        # The exception type only: a transport error's message can echo the
-        # request, and the key must never reach a log.
-        logger.warning("Automatic title request failed: %s", type(exc).__name__)
-        return None
-
-    if response.status_code != httpx.codes.OK:
-        logger.warning("Automatic title request returned HTTP %s", response.status_code)
-        return None
-
-    text = _text_from_response(response)
+    text = complete(
+        _prompt(description),
+        api_key=api_key,
+        max_tokens=_MAX_TOKENS,
+        base_url=base_url,
+        transport=transport,
+    )
     if text is None:
-        logger.warning("Automatic title response was not in the expected shape")
         return None
 
     title = clean_title(text)

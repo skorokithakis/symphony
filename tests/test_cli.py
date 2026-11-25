@@ -14,6 +14,7 @@ from symphony_linear.config import load_config
 from symphony_linear.local_tracker import STATE_IN_PROGRESS, LocalTracker
 from symphony_linear.presence import TicketPresence
 from symphony_linear.tracker import TransitionTarget
+from symphony_linear.turn_activity import TurnActivity
 
 
 # ---------------------------------------------------------------------------
@@ -588,3 +589,26 @@ class TestCreateTracker:
         server_presence = mock_webui_class.call_args.kwargs["presence"]
         assert isinstance(tracker_presence, TicketPresence)
         assert tracker_presence is server_presence
+
+    def test_main_shares_one_turn_activity_between_orchestrator_and_web_ui(
+        self, tmp_path: Path
+    ) -> None:
+        """The web UI can only show ages the orchestrator actually records."""
+        _write_config(tmp_path, _CONFIG_WITH_WEBUI)
+
+        with (
+            mock.patch("symphony_linear.cli.load_state") as mock_load_state,
+            mock.patch("symphony_linear.cli._create_tracker") as mock_create_tracker,
+            mock.patch("symphony_linear.cli.Orchestrator") as mock_orch_class,
+            mock.patch("symphony_linear.cli.WebUIServer") as mock_webui_class,
+        ):
+            mock_load_state.return_value = mock.MagicMock()
+            mock_create_tracker.return_value = LocalTracker(tmp_path)
+            mock_orch_class.return_value = mock.MagicMock()
+
+            main(["--workspace", str(tmp_path)])
+
+        orchestrator_activity = mock_orch_class.call_args.kwargs["turn_activity"]
+        server_activity = mock_webui_class.call_args.kwargs["turn_activity"]
+        assert isinstance(orchestrator_activity, TurnActivity)
+        assert orchestrator_activity is server_activity

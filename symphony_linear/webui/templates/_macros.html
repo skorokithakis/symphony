@@ -53,7 +53,7 @@
       <span class="mark mark--unread"></span><span class="sr">Unread.</span>
       {%- endif -%}
     </span>
-    <span class="row-title">{{ row.title }}</span>
+    <span class="row-title">{{ row.title }}{% if row.summary %}<span class="row-summary">{{ row.summary }}</span>{% endif %}</span>
     <span class="row-sub">
       <span class="row-id">{{ row.id }}</span>
       <span class="row-repo"{% if row.repo_url %} title="{{ row.repo_url }}"{% endif %}>{{ row.repo }}</span>
@@ -115,7 +115,7 @@
 {%- endmacro %}
 
 {% macro working(page) -%}
-<p class="working" id="working" role="status">Working, {{ page.working_for }}</p>
+<p class="working" id="working" role="status">Working, {{ page.working_for }}{% if page.last_output_ago %} · last output {{ page.last_output_ago }} ago{% endif %}</p>
 {%- endmacro %}
 
 {% macro state_forms(page) -%}
@@ -138,6 +138,12 @@
   {% elif page.ticket.state == "Needs Input" %}
   <button class="btn" type="submit" form="ticket-state-done" id="act-done" data-shortcut="sd" data-shortcut-key="d" title="Done (s d)">Done</button>
   <button class="btn" type="submit" form="ticket-state-qa" id="act-qa" data-shortcut="sq" data-shortcut-key="q" title="Send to QA (s q)">Send to QA</button>
+  {#- Retry posts the fixed "Retry." comment instead of the composer text.
+      formaction keeps the composer form's token and Model choice, and
+      formnovalidate lets it fire with an empty textarea, which the composer's
+      required attribute would otherwise block.  It has no keyboard shortcut
+      by design, so it carries no data-shortcut attributes. #}
+  {% if page.retry %}<button class="btn" type="submit" formaction="/tickets/{{ page.ticket.id }}/retry" formnovalidate id="act-retry">Retry</button>{% endif %}
   <span class="kbd-hint">Ctrl+Enter to send</span>
   {{ send_reason(page) }}
   <button class="btn btn--primary" type="submit" id="act-send">Send</button>

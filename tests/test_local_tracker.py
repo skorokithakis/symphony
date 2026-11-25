@@ -608,6 +608,94 @@ class TestComments:
         assert [comment.body for comment in stored.comments] == ["hello", "different"]
         assert stored.accepted_send_tokens == ["t1", "t2"]
 
+    def test_add_human_comment_once_stores_a_chosen_model(
+        self, store: LocalTicketStore
+    ) -> None:
+        ticket = store.create_draft(description="x", model="opus")
+        store.set_state(ticket.id, STATE_NEEDS_INPUT)
+        store.set_reply_draft(ticket.id, "still writing")
+        _put_file(store, ticket.id, "shot.png", b"png", target="reply")
+
+        comment = store.add_human_comment_once(
+            ticket.id,
+            "Retry.",
+            token="t1",
+            consume_composer=False,
+            model="sonnet",
+            set_model=True,
+        )
+
+        assert comment is not None
+        stored = store.get(ticket.id)
+        assert stored is not None
+        assert stored.model == "sonnet"
+        # Retry must not take the reply the human is still writing.
+        assert stored.reply_draft == "still writing"
+        assert [item.original_name for item in stored.pending_files] == ["shot.png"]
+        assert comment.files == []
+
+        # An explicit Default (the empty model field) clears the stored alias.
+        store.add_human_comment_once(
+            ticket.id,
+            "Retry.",
+            token="t2",
+            consume_composer=False,
+            model=None,
+            set_model=True,
+        )
+        cleared = store.get(ticket.id)
+        assert cleared is not None
+        assert cleared.model is None
+
+    def test_add_human_comment_once_leaves_the_model_alone_without_a_choice(
+        self, store: LocalTicketStore
+    ) -> None:
+        ticket = store.create_draft(description="x", model="opus")
+        store.set_state(ticket.id, STATE_NEEDS_INPUT)
+
+        store.add_human_comment_once(ticket.id, "hello", token="t1")
+
+        stored = store.get(ticket.id)
+        assert stored is not None
+        assert stored.model == "opus"
+
+    def test_add_human_comment_once_retry_only_requires_needs_input(
+        self, store: LocalTicketStore
+    ) -> None:
+        ticket = store.create_draft(description="x")
+        store.set_state(ticket.id, STATE_QA)
+
+        with pytest.raises(ValueError):
+            store.add_human_comment_once(
+                ticket.id, "Retry.", token="t1", retry_only=True
+            )
+
+        stored = store.get(ticket.id)
+        assert stored is not None
+        assert stored.comments == []
+
+    def test_add_human_comment_once_retry_only_accepts_a_duplicate_token(
+        self, store: LocalTicketStore
+    ) -> None:
+        """The first attempt did the work; the window closing afterwards is not
+        an error for a retry whose response was lost."""
+        ticket = store.create_draft(description="x")
+        store.set_state(ticket.id, STATE_NEEDS_INPUT)
+        first = store.add_human_comment_once(
+            ticket.id, "Retry.", token="t1", retry_only=True
+        )
+        store.set_state(ticket.id, STATE_QA)
+
+        duplicate = store.add_human_comment_once(
+            ticket.id, "Retry.", token="t1", retry_only=True
+        )
+
+        assert first is not None
+        assert duplicate is None
+        stored = store.get(ticket.id)
+        assert stored is not None
+        assert [comment.body for comment in stored.comments] == ["Retry."]
+
     def test_add_human_comment_once_is_safe_under_concurrency(
         self, store: LocalTicketStore
     ) -> None:

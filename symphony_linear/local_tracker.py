@@ -40,6 +40,7 @@ from symphony_linear.tracker import (
     TrackerError,
     TrackerNotFoundError,
     TransitionTarget,
+    is_agent_kind,
     model_label_name,
 )
 
@@ -394,11 +395,17 @@ class LocalComment(BaseModel):
     ``None`` for a human comment.  The web UI uses it to style bot comments;
     the orchestrator only looks at ``body``, which includes the appended file
     references when ``files`` is not empty.
+
+    ``summary`` is the web UI's one-line account of an agent reply, shown on
+    the home page's Needs Input rows.  It is ``None`` for human comments, for
+    replies summarised without ``webui.anthropic_api_key``, and until the
+    background request lands.
     """
 
     id: str
     body: str
     kind: str | None = None
+    summary: str | None = None
     created_at: str = Field(default_factory=_iso_now)
     files: list[LocalFile] = Field(default_factory=list)
 
@@ -1165,6 +1172,9 @@ class LocalTicketStore:
         *,
         token: str,
         consume_composer: bool = True,
+        model: str | None = None,
+        set_model: bool = False,
+        retry_only: bool = False,
     ) -> LocalComment | None:
         """Append a human comment unless *token* was already accepted.
 
@@ -1175,9 +1185,26 @@ class LocalTicketStore:
 
         ``consume_composer`` is true for the browser's Send, which sends what
         is in the composer: the pending files move onto the new comment and
-        the saved draft text is cleared.  The agent API replies from its own
-        client, so it passes ``False`` and leaves the browser's draft text and
-        pending attachments exactly as they were.
+        the saved draft text is cleared.  The agent API and the composer's
+        Retry reply from outside the composer text, so they pass ``False`` and
+        leave the browser's draft text and pending attachments exactly as they
+        were.
+
+        ``retry_only`` is true for Retry, which has a narrower window than a
+        reply: it is only meaningful while the ticket waits for input with a
+        failed turn.  The Needs Input half is checked here so it cannot race a
+        state change between the caller's read and this append; the failed-turn
+        half lives in the orchestrator's StateManager and is the caller's
+        read-only check.  A duplicate token is still reported as success
+        before this check, because the first attempt already did the work.
+
+        ``set_model`` says the caller did supply the composer's Model choice:
+        ``model`` is then stored on the ticket in this same locked write, with
+        ``None`` meaning Default.  It is separate from ``model`` because an
+        absent model field means the ticket has no model control at all (no
+        aliases configured, or a caller that does not choose models), and that
+        must leave a previously stored model alone rather than clearing it.
+        The caller validates the alias, as with :meth:`update_draft`.
         """
         with self._lock:
             ticket = self._require(ticket_id)
@@ -1186,7 +1213,13 @@ class LocalTicketStore:
                 # ticket has moved on since: the first attempt's comment is
                 # the one the user sees.
                 return None
-            if ticket.state not in REPLY_STATES:
+            if retry_only:
+                if ticket.state != STATE_NEEDS_INPUT:
+                    raise ValueError(
+                        f"Ticket {ticket_id} is in state {ticket.state!r} and "
+                        f"cannot retry"
+                    )
+            elif ticket.state not in REPLY_STATES:
                 raise ValueError(
                     f"Ticket {ticket_id} is in state {ticket.state!r} and "
                     f"cannot take a reply"
@@ -1220,10 +1253,25 @@ class LocalTicketStore:
                         "reply_draft_saved_at": None,
                     }
                 )
+            if set_model:
+                update["model"] = model
             updated = ticket.model_copy(update=update)
             self._persist(updated)
             self._tickets[ticket_id] = updated
             return comment.model_copy(deep=True)
+
+    def token_accepted(self, ticket_id: str, token: str) -> bool:
+        """Return whether *token* already committed a comment on the ticket.
+
+        Retry's narrow eligibility window makes the duplicate check special:
+        a retry whose first response was lost must still report success even
+        if the ticket has moved on since.  The caller can therefore skip its
+        failed-turn check for a token this reports as accepted; the append
+        itself checks the token again under the same lock it writes with, so a
+        token that is not accepted yet is still deduplicated there.
+        """
+        with self._lock:
+            return token in self._require(ticket_id).accepted_send_tokens
 
     def add_comment(
         self, ticket_id: str, body: str, *, kind: str | None = None
@@ -1313,6 +1361,33 @@ class LocalTicketStore:
             self._persist(updated)
             self._tickets[ticket_id] = updated
             return True
+
+    def set_comment_summary(
+        self, ticket_id: str, comment_id: str, summary: str
+    ) -> bool:
+        """Store *summary* on one comment; ``False`` when either is gone.
+
+        Summaries are generated in the background, so the ticket may have been
+        deleted by the time the reply arrives.  That is a no-op rather than an
+        error: nothing is retried and nothing else changes.  ``updated_at`` is
+        deliberately untouched, exactly like a reply draft: the summary
+        describes a reply that already counts as activity, so it must not
+        reorder the home list when it lands.
+        """
+        with self._lock:
+            ticket = self._tickets.get(ticket_id)
+            if ticket is None:
+                return False
+            for index, comment in enumerate(ticket.comments):
+                if comment.id != comment_id:
+                    continue
+                comments = list(ticket.comments)
+                comments[index] = comment.model_copy(update={"summary": summary})
+                updated = ticket.model_copy(update={"comments": comments})
+                self._persist(updated)
+                self._tickets[ticket_id] = updated
+                return True
+            return False
 
     def set_seen_comment(self, ticket_id: str, comment_id: str) -> None:
         """Advance the ticket's seen marker to *comment_id*.
@@ -1630,6 +1705,14 @@ _TRANSITION_EXPECTED: dict[TransitionTarget, frozenset[str]] = {
 }
 
 
+#: The web UI's optional reply-summary hook.  It receives this tracker's
+#: store (the summary is written onto the comment that was just posted), the
+#: ticket id, the new comment id, and the agent's reply text without the bot
+#: footer.  The CLI supplies one only when ``webui.anthropic_api_key`` is set,
+#: and it starts its own thread so posting stays fast.
+AgentReplyCallback = Callable[[LocalTicketStore, str, str, str], None]
+
+
 class LocalTracker:
     """Tracker protocol implementation backed by ``LocalTicketStore``.
 
@@ -1645,6 +1728,7 @@ class LocalTracker:
         ntfy: _NtfyConfig | None = None,
         public_url: str | None = None,
         presence: TicketPresence | None = None,
+        on_agent_reply: AgentReplyCallback | None = None,
     ) -> None:
         self.store = LocalTicketStore(workspace / "tickets")
         # Notifications hang off the tracker because transition_to is the one
@@ -1658,6 +1742,13 @@ class LocalTracker:
         # ``None`` is a tracker with no web UI attached (tests, or a path that
         # constructs the tracker on its own), and then nothing suppresses.
         self._presence = presence
+        # The web UI's optional reply-summary hook.  It lives here, rather than
+        # the tracker calling the Anthropic API itself, so this module stays
+        # free of that dependency; the CLI installs it only when
+        # ``webui.anthropic_api_key`` is set.  It is called with this tracker's
+        # store because the store is created here and the hook needs it to
+        # write the result.
+        self._on_agent_reply = on_agent_reply
 
     # ------------------------------------------------------------------
     # Tracker protocol methods
@@ -1702,6 +1793,13 @@ class LocalTracker:
         comment = self.store.add_comment(
             id, body + _BOT_FOOTER.format(kind=kind), kind=kind
         )
+        # Only agent replies get a summary: an error, a workspace notice or a
+        # QA notice has nothing to summarise for the human, and the home page
+        # only looks at agent-kind comments anyway.  The hook is passed the
+        # reply without the footer, which is presentation the model should not
+        # have to see.
+        if self._on_agent_reply is not None and is_agent_kind(kind):
+            self._on_agent_reply(self.store, id, comment.id, body)
         return self._to_comment(id, comment)
 
     def edit_comment(self, id: str, body: str, kind: str) -> None:

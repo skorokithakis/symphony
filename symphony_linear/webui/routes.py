@@ -65,6 +65,7 @@ from symphony_linear.webui.api import (
     api_start_new,
     api_state,
     api_ticket,
+    api_retry,
     api_upload_file,
     api_upload_new_file,
 )
@@ -86,12 +87,18 @@ from symphony_linear.webui.repos import (
     repos_page,
 )
 from symphony_linear.webui.static import serve_static
-from symphony_linear.webui.ticket import post_reply, post_state, ticket_page
+from symphony_linear.webui.ticket import (
+    post_reply,
+    post_retry,
+    post_state,
+    ticket_page,
+)
 from symphony_linear.webui.views import archive, home, next_ticket
 
 _TICKET_EDIT = re.compile(r"^/tickets/(?P<ticket_id>[^/]+)/edit$")
 _TICKET_START = re.compile(r"^/tickets/(?P<ticket_id>[^/]+)/start$")
 _TICKET_DISCARD = re.compile(r"^/tickets/(?P<ticket_id>[^/]+)/discard$")
+_TICKET_RETRY = re.compile(r"^/tickets/(?P<ticket_id>[^/]+)/retry$")
 
 _API_TICKET = re.compile(r"^/api/tickets/(?P<ticket_id>[^/]+)$")
 _API_TICKET_EDIT = re.compile(r"^/api/tickets/(?P<ticket_id>[^/]+)/edit$")
@@ -100,6 +107,7 @@ _API_TICKET_DISCARD = re.compile(r"^/api/tickets/(?P<ticket_id>[^/]+)/discard$")
 _API_TICKET_DRAFT = re.compile(r"^/api/tickets/(?P<ticket_id>[^/]+)/draft$")
 _API_TICKET_SEEN = re.compile(r"^/api/tickets/(?P<ticket_id>[^/]+)/seen$")
 _API_TICKET_REPLY = re.compile(r"^/api/tickets/(?P<ticket_id>[^/]+)/reply$")
+_API_TICKET_RETRY = re.compile(r"^/api/tickets/(?P<ticket_id>[^/]+)/retry$")
 _API_TICKET_STATE = re.compile(r"^/api/tickets/(?P<ticket_id>[^/]+)/state$")
 _API_TICKET_FILES = re.compile(r"^/api/tickets/(?P<ticket_id>[^/]+)/files$")
 _API_TICKET_FILE = re.compile(
@@ -134,6 +142,7 @@ ROUTES: tuple[Route, ...] = (
     Route("POST", re.compile(r"^/new/discard$"), post_discard_new),
     Route("POST", _TICKET_DISCARD, post_discard_draft),
     Route("POST", re.compile(r"^/tickets/(?P<ticket_id>[^/]+)/reply$"), post_reply),
+    Route("POST", _TICKET_RETRY, post_retry),
     Route("POST", re.compile(r"^/tickets/(?P<ticket_id>[^/]+)/state$"), post_state),
     # The agent API.  These are ordinary routes, so the body cap and the
     # security headers still apply; the server authenticates /api/v1 with a
@@ -186,6 +195,7 @@ ROUTES: tuple[Route, ...] = (
     Route("POST", _API_TICKET_DRAFT, api_draft_text),
     Route("POST", _API_TICKET_SEEN, api_seen),
     Route("POST", _API_TICKET_REPLY, api_reply),
+    Route("POST", _API_TICKET_RETRY, api_retry),
     Route("POST", _API_TICKET_STATE, api_state),
     Route("GET", re.compile(r"^/static/(?P<path>.+)$"), serve_static),
 )

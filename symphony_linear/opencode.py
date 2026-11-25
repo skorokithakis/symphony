@@ -191,6 +191,7 @@ def run_initial(
     timeout_seconds: int,
     idle_timeout_seconds: int,
     on_subprocess: Callable[[subprocess.Popen[bytes]], None],
+    on_output: Callable[[], None] | None = None,
     hide_paths: list[str] | None = None,
     extra_rw_paths: list[str] | None = None,
     attachments_path: str | None = None,
@@ -217,6 +218,9 @@ def run_initial(
         on_subprocess: Called with the :class:`subprocess.Popen` handle
             immediately after launch.  The caller can use this to register
             the process for external cancellation.
+        on_output: Optional callback invoked from the output drain threads
+            on every chunk from stdout or stderr.  The web UI uses it to
+            show how long ago the agent last wrote anything.
         hide_paths: Paths to conceal inside the sandbox.  Defaults to empty
             list (no extra hiding).
         extra_rw_paths: Additional host paths to bind read-write inside the
@@ -267,6 +271,7 @@ def run_initial(
         timeout_seconds=timeout_seconds,
         idle_timeout_seconds=idle_timeout_seconds,
         on_subprocess=on_subprocess,
+        on_output=on_output,
         hide_paths=hide_paths or [],
         extra_rw_paths=extra_rw_paths or [],
         attachments_path=attachments_path,
@@ -284,6 +289,7 @@ def run_resume(
     timeout_seconds: int,
     idle_timeout_seconds: int,
     on_subprocess: Callable[[subprocess.Popen[bytes]], None],
+    on_output: Callable[[], None] | None = None,
     hide_paths: list[str] | None = None,
     extra_rw_paths: list[str] | None = None,
     attachments_path: str | None = None,
@@ -312,6 +318,8 @@ def run_resume(
             producing output on stdout or stderr before raising
             :class:`OpenCodeTimeout` with the idle-stall reason.
         on_subprocess: Called with the Popen handle immediately after launch.
+        on_output: Optional callback invoked from the output drain threads
+            on every chunk from stdout or stderr.
         hide_paths: Paths to conceal inside the sandbox.  Defaults to empty
             list (no extra hiding).
         extra_rw_paths: Additional host paths to bind read-write inside the
@@ -370,6 +378,7 @@ def run_resume(
         timeout_seconds=timeout_seconds,
         idle_timeout_seconds=idle_timeout_seconds,
         on_subprocess=on_subprocess,
+        on_output=on_output,
         hide_paths=hide_paths or [],
         extra_rw_paths=extra_rw_paths or [],
         attachments_path=attachments_path,
@@ -438,6 +447,7 @@ def _execute(
     timeout_seconds: int,
     idle_timeout_seconds: int,
     on_subprocess: Callable[[subprocess.Popen[bytes]], None],
+    on_output: Callable[[], None] | None = None,
     hide_paths: list[str] | None = None,
     extra_rw_paths: list[str] | None = None,
     attachments_path: str | None = None,
@@ -456,6 +466,7 @@ def _execute(
         idle_timeout_seconds=idle_timeout_seconds,
         on_subprocess=on_subprocess,
         env=env,
+        on_output=on_output,
         hide_paths=hide_paths,
         extra_rw_paths=extra_rw_paths or [],
         attachments_path=attachments_path,

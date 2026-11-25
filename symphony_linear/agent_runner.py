@@ -20,6 +20,12 @@ framing still resets the idle watchdog. After a timeout the process is killed
 and reaped, drain threads get up to ten seconds to flush output, and the
 raw decoded streams are returned for the adapter to handle. A final reap keeps
 processes from escaping on other error paths.
+
+The drain threads also invoke an optional ``on_output`` callback for every
+chunk, on either stream. It exists so the web UI can show how long ago the
+agent last wrote anything; it is deliberately the same signal as the idle
+watchdog rather than parsed protocol events, so a tool call that streams no
+JSON still counts as activity.
 """
 
 from __future__ import annotations
@@ -79,6 +85,7 @@ def run(
     on_subprocess: Callable[[subprocess.Popen[bytes]], None],
     *,
     env: dict[str, str],
+    on_output: Callable[[], None] | None = None,
     hide_paths: list[str] | None = None,
     extra_rw_paths: list[str] | None = None,
     attachments_path: str | None = None,
@@ -90,6 +97,10 @@ def run(
     ``timeout_reason`` is ``None`` when the process exits before either
     watchdog limit. Callers are responsible for parsing output, validating
     the return code, and raising adapter-specific exceptions.
+
+    ``on_output`` is called from the drain threads on every chunk received,
+    on stdout and stderr alike. It must be cheap and thread-safe; an
+    exception there would kill a drain thread and stall the turn.
     """
     proc = run_in_sandbox(
         cmd=cmd,
@@ -128,6 +139,8 @@ def run(
             if not chunk:
                 break
             chunks.append(chunk)
+            if on_output is not None:
+                on_output()
             with activity_lock:
                 last_activity = time.monotonic()
         stream.close()

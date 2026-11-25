@@ -20,11 +20,13 @@ from symphony_linear.local_tracker import (
     STATE_DONE,
     STATE_IN_PROGRESS,
     STATE_NEEDS_INPUT,
+    STATE_QA,
     LocalTracker,
 )
 from symphony_linear.presence import TicketPresence
+from symphony_linear.state import TicketStatus
 from tests.test_webui_server import _origin, _request, _state_entry
-from tests.test_webui_ticket import _server, _ticket
+from tests.test_webui_ticket import _MODELS, _server, _ticket
 
 # ---------------------------------------------------------------------------
 # Helpers
@@ -285,6 +287,22 @@ class TestTicketPoll:
         assert data["has_composer"] is True
         assert data["page_title"] == f"{ticket.id} · A ticket · symphony"
         assert data["needs_input_count"] == 0
+
+    def test_the_snapshot_carries_the_stored_model(self, tmp_path: Path) -> None:
+        with _server(tmp_path, models=_MODELS) as (port, tracker, _state, _wake):
+            named = _ticket(tracker.store, model="sonnet")
+            plain = _ticket(tracker.store, model=None)
+
+            named_data = _get_json(port, f"/api/tickets/{named.id}")
+            plain_data = _get_json(port, f"/api/tickets/{plain.id}")
+
+        # The page rewrites its Details Model cell from this without a reload.
+        assert named_data["model"] == "sonnet"
+        assert plain_data["model"] == "Default"
+        # The composer select follows the same stored value: its own empty
+        # string is the Default option.
+        assert named_data["composer_model"] == "sonnet"
+        assert plain_data["composer_model"] == ""
 
     def test_a_state_change_refreshes_the_action_bar(self, tmp_path: Path) -> None:
         with _server(tmp_path) as (port, tracker, _state, wake):
@@ -558,6 +576,21 @@ class TestReplyDraftApi:
         assert stored is not None
         assert stored.comments == []
 
+    def test_sending_stores_the_chosen_model(self, tmp_path: Path) -> None:
+        with _server(tmp_path, models=_MODELS) as (port, tracker, _state, _wake):
+            ticket = _ticket(tracker.store, model="sonnet")
+
+            status, _payload = _post_json(
+                port,
+                f"/api/tickets/{ticket.id}/reply",
+                {"body": "hello", "token": "t", "model": "opus"},
+            )
+            stored = tracker.store.get(ticket.id)
+
+        assert status == 200
+        assert stored is not None
+        assert stored.model == "opus"
+
     def test_an_empty_reply_is_refused(self, tmp_path: Path) -> None:
         with _server(tmp_path) as (port, tracker, _state, _wake):
             ticket = _ticket(tracker.store)
@@ -569,6 +602,144 @@ class TestReplyDraftApi:
             )
 
         assert status == 400
+
+
+# ---------------------------------------------------------------------------
+# Retry
+# ---------------------------------------------------------------------------
+
+
+class TestRetryApi:
+    def test_retry_posts_the_fixed_comment_and_keeps_the_composer(
+        self, tmp_path: Path
+    ) -> None:
+        with _server(tmp_path) as (port, tracker, state, wake):
+            ticket = _ticket(tracker.store)
+            state.upsert(_state_entry(ticket.id, status=TicketStatus.failed))
+            _post_json(
+                port, f"/api/tickets/{ticket.id}/draft", {"text": "still writing"}
+            )
+
+            status, payload = _post_json(
+                port, f"/api/tickets/{ticket.id}/retry", {"retry_token": "retry-1"}
+            )
+            stored = tracker.store.get(ticket.id)
+
+        assert status == 200
+        assert payload["duplicate"] is False
+        assert payload["retry_token"] != "retry-1"
+        assert stored is not None
+        assert [comment.body for comment in stored.comments] == ["Retry."]
+        assert stored.reply_draft == "still writing"
+        assert "retry-1" in stored.accepted_send_tokens
+        wake.assert_called_once()
+
+    def test_a_reused_token_does_not_post_twice(self, tmp_path: Path) -> None:
+        with _server(tmp_path) as (port, tracker, state, _wake):
+            ticket = _ticket(tracker.store)
+            state.upsert(_state_entry(ticket.id, status=TicketStatus.failed))
+            path = f"/api/tickets/{ticket.id}/retry"
+
+            first_status, first = _post_json(port, path, {"retry_token": "same"})
+            second_status, second = _post_json(port, path, {"retry_token": "same"})
+            stored = tracker.store.get(ticket.id)
+
+        assert first_status == second_status == 200
+        assert first["duplicate"] is False
+        assert second["duplicate"] is True
+        assert second["retry_token"] != first["retry_token"]
+        assert stored is not None
+        assert [comment.body for comment in stored.comments] == ["Retry."]
+
+    def test_retry_stores_the_chosen_model(self, tmp_path: Path) -> None:
+        with _server(tmp_path, models=_MODELS) as (port, tracker, state, _wake):
+            ticket = _ticket(tracker.store, model="sonnet")
+            state.upsert(_state_entry(ticket.id, status=TicketStatus.failed))
+
+            _post_json(
+                port,
+                f"/api/tickets/{ticket.id}/retry",
+                {"retry_token": "retry-1", "model": "opus"},
+            )
+            stored = tracker.store.get(ticket.id)
+
+        assert stored is not None
+        assert stored.model == "opus"
+
+    def test_retry_requires_its_own_token(self, tmp_path: Path) -> None:
+        """A Send token must not be accepted on the Retry endpoint."""
+        with _server(tmp_path) as (port, tracker, state, _wake):
+            ticket = _ticket(tracker.store)
+            state.upsert(_state_entry(ticket.id, status=TicketStatus.failed))
+            status, _payload = _post_json(
+                port, f"/api/tickets/{ticket.id}/retry", {"token": "send-token"}
+            )
+            stored = tracker.store.get(ticket.id)
+
+        assert status == 400
+        assert stored is not None
+        assert stored.comments == []
+
+    def test_retry_without_a_token_is_refused(self, tmp_path: Path) -> None:
+        with _server(tmp_path) as (port, tracker, _state, _wake):
+            ticket = _ticket(tracker.store)
+            status, _payload = _post_json(port, f"/api/tickets/{ticket.id}/retry", {})
+            stored = tracker.store.get(ticket.id)
+
+        assert status == 400
+        assert stored is not None
+        assert stored.comments == []
+
+    def test_retry_on_a_healthy_needs_input_ticket_is_refused(
+        self, tmp_path: Path
+    ) -> None:
+        with _server(tmp_path) as (port, tracker, state, _wake):
+            ticket = _ticket(tracker.store)
+            state.upsert(_state_entry(ticket.id))
+            status, _payload = _post_json(
+                port, f"/api/tickets/{ticket.id}/retry", {"retry_token": "retry-1"}
+            )
+            stored = tracker.store.get(ticket.id)
+
+        assert status == 409
+        assert stored is not None
+        assert stored.comments == []
+
+    def test_retry_while_the_agent_works_is_refused(self, tmp_path: Path) -> None:
+        with _server(tmp_path) as (port, tracker, state, _wake):
+            ticket = _ticket(tracker.store, state=STATE_IN_PROGRESS)
+            # The failed-turn half passes, so the store's locked state check is
+            # what refuses this one.
+            state.upsert(_state_entry(ticket.id, status=TicketStatus.failed))
+            status, _payload = _post_json(
+                port, f"/api/tickets/{ticket.id}/retry", {"retry_token": "retry-1"}
+            )
+            stored = tracker.store.get(ticket.id)
+
+        assert status == 409
+        assert stored is not None
+        assert stored.comments == []
+
+    def test_a_reused_token_succeeds_after_the_ticket_moves_on(
+        self, tmp_path: Path
+    ) -> None:
+        """A lost retry response is still success after the window closes."""
+        with _server(tmp_path) as (port, tracker, state, _wake):
+            ticket = _ticket(tracker.store)
+            state.upsert(_state_entry(ticket.id, status=TicketStatus.failed))
+            path = f"/api/tickets/{ticket.id}/retry"
+
+            first_status, first = _post_json(port, path, {"retry_token": "same"})
+            tracker.store.set_state(ticket.id, STATE_QA)
+            state.upsert(_state_entry(ticket.id))
+            second_status, second = _post_json(port, path, {"retry_token": "same"})
+            stored = tracker.store.get(ticket.id)
+
+        assert first_status == second_status == 200
+        assert first["duplicate"] is False
+        assert second["duplicate"] is True
+        assert stored is not None
+        assert [comment.body for comment in stored.comments] == ["Retry."]
 
 
 # ---------------------------------------------------------------------------

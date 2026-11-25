@@ -38,6 +38,7 @@ from symphony_linear.tracker import (
     is_bot_comment,
     model_for_issue,
 )
+from symphony_linear.turn_activity import TurnActivity
 from symphony_linear.webhook import WebhookServer
 from symphony_linear.workspace import (
     ServeScriptMissing,
@@ -235,12 +236,17 @@ class Orchestrator:
         tracker: Tracker,
         workspace: Path,
         webhook_server: WebhookServer | None = None,
+        turn_activity: TurnActivity | None = None,
     ) -> None:
         self._config = config
         self._state = state
         self._tracker = tracker
         self._workspace = workspace
         self._webhook_server = webhook_server
+        # Shared with the web UI, which shows how long ago each running turn
+        # last wrote output.  None when there is no web UI (Linear and GitHub
+        # backends, tests): adapters then get no on_output callback.
+        self._turn_activity = turn_activity
 
         self._executor = ThreadPoolExecutor(max_workers=5)
 
@@ -1692,11 +1698,31 @@ class Orchestrator:
             logger.exception("Task for %s failed unexpectedly", ticket_id)
         finally:
             with self._task_lock:
+                # Clear the activity before releasing the task slot: a new
+                # turn can only be scheduled after this pop, and its freshly
+                # recorded output must not be wiped by this one finishing.
+                if self._turn_activity is not None:
+                    self._turn_activity.clear(ticket_id)
                 self._active_tasks.pop(ticket_id, None)
                 self._turn_input_marker.pop(ticket_id, None)
             with self._subprocess_lock:
                 self._subprocesses.pop(ticket_id, None)
                 self._cancelled.discard(ticket_id)
+
+    def _output_callback(self, ticket_id: str) -> Callable[[], None] | None:
+        """Return the turn-output callback for *ticket_id*, if there is one.
+
+        None when no ``TurnActivity`` was supplied, so adapters skip the call
+        in the Linear and GitHub deployments that run without a web UI.  The
+        callback runs on the adapter's drain threads; ``record_output`` takes
+        its own lock.
+        """
+        if self._turn_activity is None:
+            return None
+        # Bind the record in a local: mypy does not narrow the attribute
+        # inside the closure, and the attribute is never reassigned anyway.
+        activity = self._turn_activity
+        return lambda: activity.record_output(ticket_id)
 
     # ==================================================================
     # Cancellation (B1 + S1)
@@ -2307,6 +2333,9 @@ class Orchestrator:
                 on_subprocess=lambda proc: (self._register_subprocess(tid, proc), None)[
                     1
                 ],
+                # Only agent turns count; .symphony/setup and the QA serve run
+                # outside the adapter and never report output.
+                on_output=self._output_callback(tid),
                 hide_paths=self._sandbox_hide_paths_for(issue.identifier),
                 extra_rw_paths=self._config.sandbox.extra_rw_paths,
                 attachments_path=host_attachments_dir,
@@ -2689,6 +2718,7 @@ class Orchestrator:
                 on_subprocess=lambda proc: (self._register_subprocess(tid, proc), None)[
                     1
                 ],
+                on_output=self._output_callback(tid),
                 hide_paths=self._sandbox_hide_paths_for(
                     ticket_state.ticket_identifier, ticket_state.workspace_path
                 ),

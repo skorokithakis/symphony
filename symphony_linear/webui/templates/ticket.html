@@ -15,6 +15,7 @@
       data-api-seen="/api/tickets/{{ page.ticket.id }}/seen"
       data-api-state="/api/tickets/{{ page.ticket.id }}/state"
       data-api-reply="/api/tickets/{{ page.ticket.id }}/reply"
+      data-api-retry="/api/tickets/{{ page.ticket.id }}/retry"
       data-api-draft="/api/tickets/{{ page.ticket.id }}/draft"
       data-api-upload="/api/tickets/{{ page.ticket.id }}/files">
   <header class="thead">
@@ -30,7 +31,7 @@
       <summary>Details</summary>
       <dl>
         <div><dt>Branch</dt><dd>{{ page.branch or "—" }}</dd></div>
-        <div><dt>Model</dt><dd>{{ page.model }}</dd></div>
+        <div><dt>Model</dt><dd id="ticket-model">{{ page.model }}</dd></div>
         <div>
           <dt>Workspace</dt>
           <dd>{{ page.workspace or "—" }}</dd>
@@ -60,6 +61,7 @@
     <p class="drop">Drop files to attach<small>Any file type, up to 50 MB each</small></p>
     <button class="jump" type="button" id="jump" hidden>Jump to latest<svg class="ic ic--sm" viewBox="0 0 20 20" aria-hidden="true"><path d="M5 8l5 5 5-5"></path></svg></button>
     <input type="hidden" name="token" value="{{ page.token }}">
+    <input type="hidden" name="retry_token" value="{{ page.retry_token }}">
     <ul class="files" id="pending-files" data-target="reply"{% if not page.pending_files %} hidden{% endif %}>{{ pending_files(page.pending_files, "reply") }}</ul>
     <label class="sr" for="reply">Reply</label>
     <textarea id="reply" name="body" rows="3" required placeholder="Write a reply. You can also write notes while the agent works.">{% if page.reply_draft.startswith("\n") %}&#10;{% endif %}{{ page.reply_draft }}</textarea>
@@ -78,6 +80,13 @@
           <svg class="ic ic-expand" viewBox="0 0 20 20" aria-hidden="true"><path d="M4 8V4h4M16 12v4h-4M4 4l5 5M16 16l-5-5"></path></svg>
           <svg class="ic ic-shrink" viewBox="0 0 20 20" aria-hidden="true"><path d="M9 5v4H5M11 15v-4h4M9 9L4 4M11 11l5 5"></path></svg>
         </button>
+        {% if page.composer_models %}
+        <label class="sr" for="composer-model">Model</label>
+        <select class="input composer-model" id="composer-model" name="model"{% if page.ticket.state == "In Progress" %} disabled{% endif %}>
+          <option value=""{% if not page.composer_model %} selected{% endif %}>Default</option>
+          {% for alias in page.composer_models %}<option value="{{ alias }}"{% if alias == page.composer_model %} selected{% endif %}>{{ alias }}</option>{% endfor %}
+        </select>
+        {% endif %}
         {{ saved_indicator(page.reply_draft_saved_at) }}
       </div>
       <div class="composer-actions" id="composer-actions">{{ composer_actions(page) }}</div>

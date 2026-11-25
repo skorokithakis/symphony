@@ -389,7 +389,16 @@ body.sym { min-height: 100dvh; }
 .row:active { background: var(--sunken); box-shadow: none; }
 .row:focus-visible { outline-offset: -2px; }
 .row-mark { grid-area: mark; align-self: start; display: inline-flex; height: 1.35em; align-items: center; }
-.row-title { grid-area: title; line-height: 1.35; text-wrap: pretty; }
+.row-title { grid-area: title; min-width: 0; line-height: 1.35; text-wrap: pretty; }
+/* The one-line agent summary a Needs Input row shows under its title.  The
+   block sits inside the title grid area rather than in an area of its own, so
+   the phone and desktop layouts place it the same way.  min-width: 0 on the
+   parent is what lets the ellipsis win over the grid track's auto minimum. */
+.row-summary {
+  display: block; margin-top: 1px;
+  overflow: hidden; text-overflow: ellipsis; white-space: nowrap;
+  font-size: var(--t-sm); font-weight: 400; color: var(--ink-2);
+}
 .row-sub {
   grid-area: sub; min-width: 0;
   display: flex; flex-wrap: wrap; column-gap: var(--s3);
@@ -702,6 +711,14 @@ a.file:hover { border-color: var(--ink-3); background: var(--sunken); }
   font: 400 var(--t-xs)/1 var(--font-mono); color: var(--ink-3);
 }
 .composer-tools .saved { margin-left: var(--s2); }
+/* The composer's Model select is a native control, so Send and Retry carry
+   the choice without JavaScript.  It is compact because it shares the tools
+   row with the icon buttons and the saved indicator; the .composer prefix is
+   needed to beat the editor's full-width .input rule. */
+.composer .composer-model {
+  width: auto; max-width: 12rem; min-height: 32px; padding: 0 var(--s2);
+  font-size: var(--t-xs);
+}
 .composer-actions { flex: 1 1 100%; display: flex; flex-wrap: wrap; align-items: center; gap: var(--s2); }
 .composer-actions .btn { padding: 0 var(--s3); }
 .composer-actions .btn--primary { margin-left: auto; padding: 0 var(--s4); }

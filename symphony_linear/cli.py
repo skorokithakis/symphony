@@ -21,8 +21,9 @@ from symphony_linear.presence import TicketPresence
 from symphony_linear.sandbox_path import resolve_sandbox_path
 from symphony_linear.state import load_state
 from symphony_linear.tracker import Tracker, model_label_name
+from symphony_linear.turn_activity import TurnActivity
 from symphony_linear.webhook import WebhookServer
-from symphony_linear.webui import WebUIServer
+from symphony_linear.webui import WebUIServer, summary
 
 logger = get_logger(__name__)
 
@@ -102,6 +103,10 @@ def main(argv: list[str] | None = None) -> None:
     # ticket, so both must share the same object.
     state = load_state(workspace)
     presence = TicketPresence()
+    # Like presence, the turn-activity record is one instance per process: the
+    # orchestrator writes a ticket's agent output time, the web UI reads it to
+    # show the age on the ticket page.
+    turn_activity = TurnActivity()
     tracker = _create_tracker(config, workspace, presence=presence)
 
     # Auto-provision the trigger field/label and model alias labels on startup.
@@ -110,7 +115,11 @@ def main(argv: list[str] | None = None) -> None:
 
     # Create and run the orchestrator daemon.
     orchestrator = Orchestrator(
-        config=config, state=state, tracker=tracker, workspace=workspace
+        config=config,
+        state=state,
+        tracker=tracker,
+        workspace=workspace,
+        turn_activity=turn_activity,
     )
     if config.webhook is not None:
         webhook_server = WebhookServer(
@@ -129,6 +138,7 @@ def main(argv: list[str] | None = None) -> None:
             config=config,
             on_wake=orchestrator.wake,
             presence=presence,
+            turn_activity=turn_activity,
         )
     try:
         # Start inside the try so a failed bind/thread start still runs
@@ -192,6 +202,7 @@ def _create_tracker(
             ntfy=config.webui.ntfy,
             public_url=config.webui.public_url,
             presence=presence,
+            on_agent_reply=summary.agent_reply_hook(config.webui),
         )
     # The model_validator guarantees this is unreachable, but be defensive.
     raise RuntimeError("No tracker backend configured")

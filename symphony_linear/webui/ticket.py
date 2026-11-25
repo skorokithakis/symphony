@@ -36,6 +36,8 @@ from symphony_linear.local_tracker import (
     LocalTicket,
 )
 from symphony_linear.state import TicketState
+from symphony_linear.tracker import is_agent_kind
+from symphony_linear.webui import editor
 from symphony_linear.webui.files import FileChip, chips_for
 from symphony_linear.webui.http_types import Request, Response
 from symphony_linear.webui.markdown import (
@@ -46,10 +48,10 @@ from symphony_linear.webui.markdown import (
 from symphony_linear.webui.templates import render, render_macro
 from symphony_linear.webui.views import (
     display_title,
-    is_agent_kind,
     needs_input_count,
     repo_names,
     short_repo,
+    turn_failed,
 )
 
 #: State name -> (CSS class, label).  The labels follow the design mock, which
@@ -107,6 +109,11 @@ _SHORT_NOTICE = 180
 MAX_TOKEN_LENGTH = 200
 _MAX_TOKEN_LENGTH = MAX_TOKEN_LENGTH
 
+#: The fixed human comment Retry posts.  It is deliberately a comment rather
+#: than a state action: every failure path already resumes on a human comment
+#: (the orchestrator's comment-gated retry is the only retry route there is).
+RETRY_BODY = "Retry."
+
 
 # ---------------------------------------------------------------------------
 # Entry model
@@ -154,7 +161,15 @@ class TicketPage:
     session: str | None
     entries: tuple[Entry, ...] = field(default_factory=tuple)
     working_for: str | None = None
+    #: Age of the running turn's last output, already formatted (e.g. "40 s").
+    #: None until the turn produces its first output, and always None outside
+    #: In Progress.
+    last_output_ago: str | None = None
     token: str = ""
+    #: Retry's own idempotency token.  It is separate from ``token`` so a Retry
+    #: whose response was lost can never be mistaken for a duplicate of a Send
+    #: (or the other way round), which would clear a reply that never posted.
+    retry_token: str = ""
     has_composer: bool = False
     send_reason: str | None = None
     state_actions: tuple[str, ...] = ()
@@ -165,6 +180,13 @@ class TicketPage:
     seen_comment_id: str | None = None
     needs_input_count: int = 0
     page_title: str = ""
+    #: The composer's Model select: the aliases to offer, in configuration
+    #: order, and the stored model when it is still one of them.  Like the
+    #: editor, an alias the configuration no longer defines reads as Default.
+    #: ``retry`` is set only in Needs Input when the last turn failed.
+    composer_models: tuple[str, ...] = ()
+    composer_model: str = ""
+    retry: bool = False
 
 
 # ---------------------------------------------------------------------------
@@ -190,12 +212,12 @@ def _clock(value: str) -> str:
     return parsed.astimezone(timezone.utc).strftime("%H:%M UTC")
 
 
-def _elapsed(start: str) -> str:
-    """Return a coarse but precise elapsed time, like the design mock."""
-    parsed = _parse_datetime(start)
-    if parsed is None:
-        return "0 s"
-    seconds = max(0, int((datetime.now(timezone.utc) - parsed).total_seconds()))
+def _format_duration(seconds: int) -> str:
+    """Format *seconds* the way the design mock does.
+
+    Seconds under a minute are exact because that is the range a stalled turn
+    is judged in; above that the minutes (and hours) carry the meaning.
+    """
     if seconds < 60:
         return f"{seconds} s"
     if seconds < 3600:
@@ -203,6 +225,15 @@ def _elapsed(start: str) -> str:
     if seconds < 86400:
         return f"{seconds // 3600} h {(seconds % 3600) // 60} min"
     return f"{seconds // 86400} d {(seconds % 86400) // 3600} h"
+
+
+def _elapsed(start: str) -> str:
+    """Return a coarse but precise elapsed time, like the design mock."""
+    parsed = _parse_datetime(start)
+    if parsed is None:
+        return "0 s"
+    seconds = max(0, int((datetime.now(timezone.utc) - parsed).total_seconds()))
+    return _format_duration(seconds)
 
 
 def _strip_footer(body: str) -> str:
@@ -411,6 +442,16 @@ def _state_entry(request: Request, ticket_id: str) -> TicketState | None:
     return None
 
 
+def retry_allowed(request: Request, ticket_id: str) -> bool:
+    """Whether Retry should be accepted for *ticket_id* right now.
+
+    This is only the failed-turn half; the store checks Needs Input inside its
+    locked append transaction, where a state change cannot race it.  The
+    read here is deliberately side-effect free.
+    """
+    return turn_failed(_state_entry(request, ticket_id))
+
+
 def page_for(
     request: Request, ticket: LocalTicket, *, include_entries: bool = True
 ) -> TicketPage:
@@ -421,9 +462,16 @@ def page_for(
     working_for = (
         _elapsed(ticket.state_changed_at) if ticket.state == STATE_IN_PROGRESS else None
     )
+    last_output_ago: str | None = None
+    if working_for is not None and request.app.turn_activity is not None:
+        output_age = request.app.turn_activity.output_age(ticket.id)
+        if output_age is not None:
+            last_output_ago = _format_duration(max(0, int(output_age)))
     title = display_title(ticket)
     names = repo_names(request.app.store.list_repos())
     last_comment_id = ticket.comments[-1].id if ticket.comments else ""
+    # An empty alias is not a selectable choice: "" is the Default option.
+    composer_models = tuple(alias for alias in request.app.config.models if alias)
     page = TicketPage(
         ticket=ticket,
         title=title,
@@ -441,10 +489,15 @@ def page_for(
             else ()
         ),
         working_for=working_for,
+        last_output_ago=last_output_ago,
         # The token is the Send idempotency token.  It is rendered on every
         # composer page, not only when Send is allowed, so that a state change
         # picked up by the poll re-enables Send without a fresh fragment.
         token=secrets.token_urlsafe(24),
+        # Retry gets its own token rather than sharing Send's: the two actions
+        # are independent requests, so a lost Retry response must not make the
+        # next Send look like a duplicate (and clear the reply text).
+        retry_token=secrets.token_urlsafe(24),
         has_composer=ticket.state != STATE_DONE,
         send_reason=(
             "The agent is working. You can send when it stops."
@@ -459,6 +512,15 @@ def page_for(
         seen_comment_id=ticket.seen_comment_id,
         needs_input_count=needs_input_count(request),
         page_title=f"{ticket.id} · {title} · symphony",
+        composer_models=composer_models,
+        composer_model=(
+            ticket.model
+            if ticket.model is not None and ticket.model in composer_models
+            else ""
+        ),
+        # Retry is the composer's recovery action: only a Needs Input ticket
+        # whose last turn (or workspace setup) failed has anything to retry.
+        retry=ticket.state == STATE_NEEDS_INPUT and turn_failed(state_entry),
     )
     return page
 
@@ -488,6 +550,11 @@ def snapshot(request: Request, ticket: LocalTicket, after: str) -> dict[str, obj
         "last_comment_id": page.last_comment_id,
         "title": page.title,
         "page_title": page.page_title,
+        # The Details row shows the stored model, which a Send can change.
+        "model": page.model,
+        # The composer select's value for the same stored model.  The page
+        # updates it only while the user has not made a choice of their own.
+        "composer_model": page.composer_model,
         "state_html": render_macro("state_tag", page),
         "actions_html": render_macro("composer_actions", page),
         "state_forms_html": render_macro("state_forms", page),
@@ -589,12 +656,84 @@ def post_reply(request: Request) -> Response:
     if not body or not token or len(token) > _MAX_TOKEN_LENGTH:
         return _bad_request()
 
+    # An absent model field means the page had no Model select, so a stored
+    # model stays as it is; a submitted field (including the empty Default
+    # value) is validated exactly like the editor's and stored with the reply.
+    set_model = "model" in form
+    model = editor.model_from_form(request, form) if set_model else None
+
     # The allowed-state check lives inside the store call, in the same locked
     # transaction as the append; a state check here would be racy.
     try:
-        request.app.store.add_human_comment_once(ticket.id, body, token=token)
+        request.app.store.add_human_comment_once(
+            ticket.id,
+            body,
+            token=token,
+            model=model,
+            set_model=set_model,
+        )
     except ValueError:
         return _conflict()
+    request.app.on_wake()
+    return _redirect(ticket.id)
+
+
+def post_retry(request: Request) -> Response:
+    """Post the fixed "Retry." comment for a failed turn.
+
+    The no-JavaScript path only: the Retry button submits the composer form
+    here with ``formaction``, so its own token and the Model choice arrive in
+    the same shape Send reads.  Retry has a narrower window than a normal
+    reply: the ticket must be in Needs Input (checked inside the store's
+    locked transaction) and its last turn must have failed.  A duplicate token
+    is still accepted and reports success, because its first attempt did the
+    work.
+
+    The submitted composer text is not part of the Retry comment, and pending
+    files stay where they are.  A browser without JavaScript has not
+    autosaved what the human typed, so a body that differs from the stored
+    draft is saved as the draft before the redirect re-renders it.
+    """
+    match = request.match
+    if match is None:
+        return _not_found()
+    ticket = request.app.store.get(match.group("ticket_id"))
+    if ticket is None:
+        return _not_found()
+
+    form = _form(request)
+    if form is None:
+        return _bad_request()
+    token = _field(form, "retry_token").strip()
+    if not token or len(token) > _MAX_TOKEN_LENGTH:
+        return _bad_request()
+
+    set_model = "model" in form
+    model = editor.model_from_form(request, form) if set_model else None
+    # Eligibility first, the token only when ineligible: a replay whose first
+    # attempt committed after this check began must still report success.
+    if not retry_allowed(request, ticket.id) and not request.app.store.token_accepted(
+        ticket.id, token
+    ):
+        return _conflict()
+    try:
+        comment = request.app.store.add_human_comment_once(
+            ticket.id,
+            RETRY_BODY,
+            token=token,
+            consume_composer=False,
+            model=model,
+            set_model=set_model,
+            retry_only=True,
+        )
+    except ValueError:
+        return _conflict()
+    # A replayed token (comment is None) must not save its stale body over a
+    # draft edited or sent since the first attempt.
+    if comment is not None and "body" in form:
+        body = _field(form, "body")
+        if body != ticket.reply_draft:
+            request.app.store.set_reply_draft(ticket.id, body)
     request.app.on_wake()
     return _redirect(ticket.id)
 

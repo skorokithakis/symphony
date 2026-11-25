@@ -322,17 +322,26 @@ def editor_values(
 
     description = _field(form, "description")
     repo = _selected_repo(form)
+    return title, description, repo, model_from_form(request, form)
 
+
+def model_from_form(request: Request, form: dict[str, list[str]]) -> str | None:
+    """Return the alias chosen in a Model select, or None for Default.
+
+    The composer's select uses this too, so "validated like the editor" stays
+    one rule.  An unknown value reads as Default instead of failing: the
+    select is the only writer and a page left open across a configuration
+    change posts an alias the daemon no longer defines.
+    """
     aliases = request.app.config.models
     # Store the alias, not the provider/model id: LocalTracker turns it into
     # the ``Model: <alias>`` label the orchestrator resolves through the same
     # ``models:`` map.  An empty alias is never a choice: it is how the
     # Default option says "no model".
-    model = next(
+    return next(
         (value for value in form.get("model", []) if value and value in aliases),
         None,
     )
-    return title, description, repo, model
 
 
 def validation_errors(

@@ -51,7 +51,10 @@ _AGENT_TOKEN = "agent-token-123"
 
 
 def _config(
-    *, api_token: str | None = None, soniox_api_key: str | None = None
+    *,
+    api_token: str | None = None,
+    soniox_api_key: str | None = None,
+    models: dict[str, str] | None = None,
 ) -> AppConfig:
     block: dict[str, object] = {
         "port": 8080,
@@ -62,7 +65,10 @@ def _config(
         block["api_token"] = api_token
     if soniox_api_key is not None:
         block["soniox_api_key"] = soniox_api_key
-    return AppConfig.model_validate({"webui": block})
+    data: dict[str, object] = {"webui": block}
+    if models is not None:
+        data["models"] = models
+    return AppConfig.model_validate(data)
 
 
 def _basic(username: str = _USERNAME, password: str = _PASSWORD) -> str:

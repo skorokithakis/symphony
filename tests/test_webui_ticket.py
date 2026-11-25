@@ -8,6 +8,7 @@ the footer and the stored ``kind`` match what the orchestrator writes.
 from __future__ import annotations
 
 import json
+import re
 from contextlib import contextmanager
 from pathlib import Path
 from typing import Iterator
@@ -26,8 +27,9 @@ from symphony_linear.local_tracker import (
     LocalTracker,
 )
 from symphony_linear.presence import TicketPresence
-from symphony_linear.state import StateManager, load_state
+from symphony_linear.state import StateManager, TicketStatus, load_state
 from symphony_linear.tracker import TransitionTarget
+from symphony_linear.turn_activity import TurnActivity
 from symphony_linear.webui.server import WebUIServer
 from tests.test_webui_server import (
     _config,
@@ -45,7 +47,10 @@ from tests.test_webui_server import (
 
 @contextmanager
 def _server(
-    tmp_path: Path, presence: TicketPresence | None = None
+    tmp_path: Path,
+    presence: TicketPresence | None = None,
+    turn_activity: TurnActivity | None = None,
+    models: dict[str, str] | None = None,
 ) -> Iterator[tuple[int, LocalTracker, StateManager, Mock]]:
     tracker = LocalTracker(tmp_path, presence=presence)
     state = load_state(tmp_path)
@@ -53,10 +58,11 @@ def _server(
     server = WebUIServer(
         store=tracker.store,
         state=state,
-        config=_config(),
+        config=_config(models=models),
         on_wake=wake,
         port=0,
         presence=presence,
+        turn_activity=turn_activity,
     )
     server.start()
     try:
@@ -102,6 +108,14 @@ def _page(port: int, ticket_id: str) -> str:
     status, _headers, body = _request(port, "GET", f"/tickets/{ticket_id}")
     assert status == 200
     return body.decode()
+
+
+#: Two aliases, enough to prove the select offers the configured aliases and
+#: preselects the stored one.
+_MODELS = {
+    "sonnet": "anthropic/claude-sonnet-4-5",
+    "opus": "anthropic/claude-opus-5",
+}
 
 
 # ---------------------------------------------------------------------------
@@ -304,6 +318,37 @@ class TestTicketPage:
         assert 'value="stop"' in text
         assert "state--progress" in text
 
+    def test_working_line_shows_the_age_of_the_last_agent_output(
+        self, tmp_path: Path
+    ) -> None:
+        activity = TurnActivity()
+        with _server(tmp_path, turn_activity=activity) as (port, tracker, _s, _w):
+            ticket = _ticket(tracker.store, state=STATE_IN_PROGRESS)
+            activity.record_output(ticket.id)
+            text = _page(port, ticket.id)
+
+        assert re.search(r"Working, [^<]* · last output \d+ s ago</p>", text)
+
+    def test_working_line_has_no_output_age_before_the_first_chunk(
+        self, tmp_path: Path
+    ) -> None:
+        with _server(tmp_path, turn_activity=TurnActivity()) as (port, tracker, _s, _w):
+            ticket = _ticket(tracker.store, state=STATE_IN_PROGRESS)
+            text = _page(port, ticket.id)
+
+        assert "Working, " in text
+        assert "last output" not in text
+
+    def test_output_age_is_not_shown_outside_in_progress(self, tmp_path: Path) -> None:
+        """A left-over record must not leak onto a ticket that is not running."""
+        activity = TurnActivity()
+        with _server(tmp_path, turn_activity=activity) as (port, tracker, _s, _w):
+            ticket = _ticket(tracker.store)
+            activity.record_output(ticket.id)
+            text = _page(port, ticket.id)
+
+        assert "last output" not in text
+
     def test_needs_input_page_offers_send_qa_and_done(self, tmp_path: Path) -> None:
         with _server(tmp_path) as (port, tracker, _state, _wake):
             ticket = _ticket(tracker.store)
@@ -489,6 +534,244 @@ class TestSend:
         assert status == 403
         assert stored is not None
         assert stored.comments == []
+
+
+# ---------------------------------------------------------------------------
+# The composer's Model select
+# ---------------------------------------------------------------------------
+
+
+class TestComposerModel:
+    def test_the_select_offers_the_aliases_and_preselects_the_stored_model(
+        self, tmp_path: Path
+    ) -> None:
+        with _server(tmp_path, models=_MODELS) as (port, tracker, _state, _wake):
+            ticket = _ticket(tracker.store, model="opus")
+            text = _page(port, ticket.id)
+
+        assert 'id="composer-model"' in text
+        assert 'name="model"' in text
+        assert '<option value="">Default</option>' in text
+        assert '<option value="sonnet">sonnet</option>' in text
+        assert '<option value="opus" selected>opus</option>' in text
+
+    def test_the_select_is_hidden_without_configured_aliases(
+        self, tmp_path: Path
+    ) -> None:
+        with _server(tmp_path) as (port, tracker, _state, _wake):
+            ticket = _ticket(tracker.store, model=None)
+            text = _page(port, ticket.id)
+
+        assert 'id="composer-model"' not in text
+        assert 'name="model"' not in text
+
+    def test_the_select_follows_send_and_is_disabled_while_the_agent_works(
+        self, tmp_path: Path
+    ) -> None:
+        with _server(tmp_path, models=_MODELS) as (port, tracker, _state, _wake):
+            working = _ticket(tracker.store, state=STATE_IN_PROGRESS, model="opus")
+            waiting = _ticket(tracker.store, model="opus")
+            working_text = _page(port, working.id)
+            waiting_text = _page(port, waiting.id)
+
+        assert 'id="composer-model" name="model" disabled' in working_text
+        assert 'id="composer-model" name="model" disabled' not in waiting_text
+
+
+# ---------------------------------------------------------------------------
+# Retry
+# ---------------------------------------------------------------------------
+
+
+class TestRetry:
+    def test_retry_appears_only_for_a_failed_turn_in_needs_input(
+        self, tmp_path: Path
+    ) -> None:
+        with _server(tmp_path) as (port, tracker, state, _wake):
+            failed = _ticket(tracker.store, title="Failed")
+            state.upsert(_state_entry(failed.id, status=TicketStatus.failed))
+            setup_failed = _ticket(tracker.store, title="Setup failed")
+            state.upsert(_state_entry(setup_failed.id, setup_error="clone failed"))
+            healthy = _ticket(tracker.store, title="Healthy")
+            state.upsert(_state_entry(healthy.id))
+            untracked = _ticket(tracker.store, title="Untracked")
+            running = _ticket(tracker.store, state=STATE_IN_PROGRESS, title="Running")
+            state.upsert(_state_entry(running.id, status=TicketStatus.failed))
+            in_qa = _ticket(tracker.store, state=STATE_QA, title="In QA")
+            state.upsert(_state_entry(in_qa.id, status=TicketStatus.failed))
+
+            texts = {
+                name: _page(port, ticket.id)
+                for name, ticket in (
+                    ("failed", failed),
+                    ("setup_failed", setup_failed),
+                    ("healthy", healthy),
+                    ("untracked", untracked),
+                    ("running", running),
+                    ("in_qa", in_qa),
+                )
+            }
+
+        assert 'id="act-retry"' in texts["failed"]
+        assert 'id="act-retry"' in texts["setup_failed"]
+        assert 'id="act-retry"' not in texts["healthy"]
+        assert 'id="act-retry"' not in texts["untracked"]
+        assert 'id="act-retry"' not in texts["running"]
+        assert 'id="act-retry"' not in texts["in_qa"]
+
+    def test_the_button_submits_the_composer_form_to_the_retry_route(
+        self, tmp_path: Path
+    ) -> None:
+        with _server(tmp_path) as (port, tracker, state, _wake):
+            ticket = _ticket(tracker.store)
+            state.upsert(_state_entry(ticket.id, status=TicketStatus.failed))
+            text = _page(port, ticket.id)
+
+        assert f'formaction="/tickets/{ticket.id}/retry"' in text
+        # The composer textarea is required; Retry must fire with it empty.
+        assert "formnovalidate" in text
+
+    def test_retry_posts_the_fixed_comment_and_keeps_the_draft(
+        self, tmp_path: Path
+    ) -> None:
+        with _server(tmp_path) as (port, tracker, state, wake):
+            ticket = _ticket(tracker.store)
+            state.upsert(_state_entry(ticket.id, status=TicketStatus.failed))
+            tracker.store.set_reply_draft(ticket.id, "still writing")
+
+            status, headers, _body = _post(
+                port,
+                f"/tickets/{ticket.id}/retry",
+                {"retry_token": "retry-1"},
+            )
+            stored = tracker.store.get(ticket.id)
+
+        assert status == 303
+        assert headers["Location"] == f"/tickets/{ticket.id}"
+        assert stored is not None
+        assert [comment.body for comment in stored.comments] == ["Retry."]
+        assert stored.reply_draft == "still writing"
+        assert stored.accepted_send_tokens == ["retry-1"]
+        wake.assert_called_once()
+
+    def test_retry_saves_unsaved_composer_text_as_the_draft(
+        self, tmp_path: Path
+    ) -> None:
+        """The no-JS form submits the textarea; the redirect must not lose it."""
+        with _server(tmp_path) as (port, tracker, state, _wake):
+            ticket = _ticket(tracker.store)
+            state.upsert(_state_entry(ticket.id, status=TicketStatus.failed))
+            tracker.store.set_reply_draft(ticket.id, "old draft")
+
+            status, _headers, _body = _post(
+                port,
+                f"/tickets/{ticket.id}/retry",
+                {"retry_token": "retry-1", "body": "typed but not saved"},
+            )
+            stored = tracker.store.get(ticket.id)
+
+        assert status == 303
+        assert stored is not None
+        assert stored.reply_draft == "typed but not saved"
+        # The textarea content is a draft, never part of the Retry comment.
+        assert [comment.body for comment in stored.comments] == ["Retry."]
+
+    def test_retry_stores_the_chosen_model(self, tmp_path: Path) -> None:
+        with _server(tmp_path, models=_MODELS) as (port, tracker, state, _wake):
+            ticket = _ticket(tracker.store, model="sonnet")
+            state.upsert(_state_entry(ticket.id, status=TicketStatus.failed))
+
+            _post(
+                port,
+                f"/tickets/{ticket.id}/retry",
+                {"retry_token": "retry-1", "model": "opus"},
+            )
+            stored = tracker.store.get(ticket.id)
+
+        assert stored is not None
+        assert stored.model == "opus"
+
+    def test_retry_requires_its_own_token(self, tmp_path: Path) -> None:
+        """A Send token in the Retry route must not post anything."""
+        with _server(tmp_path) as (port, tracker, state, _wake):
+            ticket = _ticket(tracker.store)
+            state.upsert(_state_entry(ticket.id, status=TicketStatus.failed))
+            status, _headers, _body = _post(
+                port, f"/tickets/{ticket.id}/retry", {"token": "send-token"}
+            )
+            stored = tracker.store.get(ticket.id)
+
+        assert status == 400
+        assert stored is not None
+        assert stored.comments == []
+
+    def test_retry_without_a_token_is_a_bad_request(self, tmp_path: Path) -> None:
+        with _server(tmp_path) as (port, tracker, _state, _wake):
+            ticket = _ticket(tracker.store)
+            status, _headers, _body = _post(port, f"/tickets/{ticket.id}/retry", {})
+            stored = tracker.store.get(ticket.id)
+
+        assert status == 400
+        assert stored is not None
+        assert stored.comments == []
+
+    def test_retry_on_a_healthy_needs_input_ticket_is_refused(
+        self, tmp_path: Path
+    ) -> None:
+        with _server(tmp_path) as (port, tracker, state, _wake):
+            ticket = _ticket(tracker.store)
+            state.upsert(_state_entry(ticket.id))
+            status, _headers, _body = _post(
+                port, f"/tickets/{ticket.id}/retry", {"retry_token": "retry-1"}
+            )
+            stored = tracker.store.get(ticket.id)
+
+        assert status == 409
+        assert stored is not None
+        assert stored.comments == []
+
+    def test_retry_while_the_agent_works_is_refused(self, tmp_path: Path) -> None:
+        with _server(tmp_path) as (port, tracker, state, _wake):
+            ticket = _ticket(tracker.store, state=STATE_IN_PROGRESS)
+            # The failed-turn half passes, so the store's locked state check is
+            # what refuses this one.
+            state.upsert(_state_entry(ticket.id, status=TicketStatus.failed))
+            status, _headers, _body = _post(
+                port, f"/tickets/{ticket.id}/retry", {"retry_token": "retry-1"}
+            )
+            stored = tracker.store.get(ticket.id)
+
+        assert status == 409
+        assert stored is not None
+        assert stored.comments == []
+
+    def test_a_reused_retry_token_succeeds_after_the_ticket_moves_on(
+        self, tmp_path: Path
+    ) -> None:
+        """The first attempt's comment is the result; a lost response is not an
+        error just because the ticket has since left Needs Input."""
+        with _server(tmp_path) as (port, tracker, state, _wake):
+            ticket = _ticket(tracker.store)
+            state.upsert(_state_entry(ticket.id, status=TicketStatus.failed))
+            path = f"/tickets/{ticket.id}/retry"
+
+            first, _headers, _body = _post(port, path, {"retry_token": "same"})
+            tracker.store.set_state(ticket.id, STATE_QA)
+            state.upsert(_state_entry(ticket.id))
+            second, _headers, _body = _post(port, path, {"retry_token": "same"})
+            stored = tracker.store.get(ticket.id)
+
+        assert first == second == 303
+        assert stored is not None
+        assert [comment.body for comment in stored.comments] == ["Retry."]
+
+    def test_an_unknown_ticket_is_404(self, tmp_path: Path) -> None:
+        with _server(tmp_path) as (port, _tracker, _state, _wake):
+            status, _headers, _body = _post(
+                port, "/tickets/SYM-404/retry", {"retry_token": "retry-1"}
+            )
+
+        assert status == 404
 
 
 # ---------------------------------------------------------------------------

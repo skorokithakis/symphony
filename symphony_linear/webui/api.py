@@ -42,6 +42,8 @@ from symphony_linear.webui.title import schedule_generation
 from symphony_linear.webui.ticket import (
     DRAFT_TEXT_STATES,
     MAX_TOKEN_LENGTH,
+    RETRY_BODY,
+    retry_allowed,
     snapshot,
     state_action_target,
     ticket_for,
@@ -287,11 +289,25 @@ def api_reply(request: Request) -> Response:
     token = _text(payload, "token").strip()
     if not body or not token or len(token) > MAX_TOKEN_LENGTH:
         return _error("Write a reply first.", status=400)
+    # Present only when the page rendered a Model select; an absent field
+    # leaves a stored model alone instead of clearing it.
+    set_model = "model" in payload
+    model = (
+        editor.model_from_form(request, {"model": [_text(payload, "model")]})
+        if set_model
+        else None
+    )
     # The allowed-state check is inside the store call, in the same locked
     # transaction as the append.  A retry of an already accepted token still
     # succeeds even if the ticket has moved on since.
     try:
-        comment = request.app.store.add_human_comment_once(ticket.id, body, token=token)
+        comment = request.app.store.add_human_comment_once(
+            ticket.id,
+            body,
+            token=token,
+            model=model,
+            set_model=set_model,
+        )
     except ValueError:
         return _error(
             "This ticket cannot take a reply now. The agent may be working, "
@@ -307,6 +323,70 @@ def api_reply(request: Request) -> Response:
     return _json(
         {
             "token": secrets.token_urlsafe(24),
+            "duplicate": comment is None,
+        }
+    )
+
+
+def api_retry(request: Request) -> Response:
+    """Post the fixed "Retry." comment and return a fresh retry token.
+
+    Retry uses its own token, separate from Send's, so a lost response can
+    never make the next reply look like a duplicate of this Retry (or the
+    other way round).  The composer's text and pending files are not consumed
+    by this comment, so they stay for the reply the human is still writing.
+
+    Retry is narrower than a reply: only a Needs Input ticket whose last turn
+    failed accepts it.  The Needs Input half is checked by the store inside
+    the append transaction; the failed-turn half is the read-only StateManager
+    check here.  A token that already committed still reports success, even if
+    the ticket has moved on, because its first attempt did the work.
+    """
+    ticket = _ticket(request)
+    if ticket is None:
+        return _error("Ticket not found.", status=404)
+    payload = _body(request)
+    if payload is None:
+        return _error("Bad request.", status=400)
+    token = _text(payload, "retry_token").strip()
+    if not token or len(token) > MAX_TOKEN_LENGTH:
+        return _error("Reload the page and try again.", status=400)
+    set_model = "model" in payload
+    model = (
+        editor.model_from_form(request, {"model": [_text(payload, "model")]})
+        if set_model
+        else None
+    )
+    # Eligibility first, the token only when ineligible: a replay whose first
+    # attempt committed after this check began must still report success.
+    if not retry_allowed(request, ticket.id) and not request.app.store.token_accepted(
+        ticket.id, token
+    ):
+        return _error(
+            "This ticket cannot retry now. Its last turn may not have failed, "
+            "or the ticket may have moved on; reload the page.",
+            status=409,
+        )
+    try:
+        comment = request.app.store.add_human_comment_once(
+            ticket.id,
+            RETRY_BODY,
+            token=token,
+            consume_composer=False,
+            model=model,
+            set_model=set_model,
+            retry_only=True,
+        )
+    except ValueError:
+        return _error(
+            "This ticket cannot retry now. Its last turn may not have failed, "
+            "or the ticket may have moved on; reload the page.",
+            status=409,
+        )
+    request.app.on_wake()
+    return _json(
+        {
+            "retry_token": secrets.token_urlsafe(24),
             "duplicate": comment is None,
         }
     )

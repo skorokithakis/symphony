@@ -1,5 +1,5 @@
 /* The ticket page: thread polling, the reply autosave, the composer's large
- * mode and the fetch-backed Send and state actions.
+ * mode and the fetch-backed Send, Retry and state actions.
  *
  * Two rules this file must never break:
  *  - a poll may append entries and replace the action bar, but it must never
@@ -35,6 +35,7 @@
   var pollUrl = main.getAttribute("data-api-poll");
   var seenUrl = main.getAttribute("data-api-seen");
   var replyUrl = main.getAttribute("data-api-reply");
+  var retryUrl = main.getAttribute("data-api-retry");
   var draftUrl = main.getAttribute("data-api-draft");
   var uploadBase = main.getAttribute("data-api-upload");
 
@@ -70,6 +71,9 @@
    * lost is retried with the same token; when the server reports the retry as
    * a duplicate, this is the text that actually committed. */
   var sendAttempt = null;
+  /* Set once the user picks a model, so a poll never overwrites a deliberate
+   * choice with the model another tab stored. */
+  var modelTouched = false;
   var draftTimer = null;
   var draftDirty = false;
   var draftInFlight = null;
@@ -242,6 +246,22 @@
     return document.getElementById("act-send");
   }
 
+  function retryButton() {
+    return document.getElementById("act-retry");
+  }
+
+  function modelSelect() {
+    return document.getElementById("composer-model");
+  }
+
+  /* The chosen Model alias, or null when the page has no select (no aliases
+   * configured).  null is never sent: the server reads an absent field as
+   * "leave the stored model alone" rather than as Default. */
+  function chosenModel() {
+    var select = modelSelect();
+    return select ? select.value : null;
+  }
+
   function reasonElement() {
     return document.getElementById("send-reason");
   }
@@ -256,9 +276,21 @@
   }
 
   function applyBusyState() {
+    var busy = uploadBusy || sending;
     var button = sendButton();
     if (button) {
-      button.disabled = uploadBusy || sending || stateSendDisabled;
+      button.disabled = busy || stateSendDisabled;
+    }
+    // The select follows Send's rule.  Send's server-rendered disabled state
+    // lives in the actions fragment the poll replaces; the select sits outside
+    // it, so this is what carries a state change over to it.
+    var select = modelSelect();
+    if (select) {
+      select.disabled = busy || stateSendDisabled;
+    }
+    var retry = retryButton();
+    if (retry) {
+      retry.disabled = busy;
     }
     var reason = reasonElement();
     if (!reason) {
@@ -312,6 +344,7 @@
     window.clearTimeout(draftTimer);
     draftDirty = false;
     draftQueued = false;
+    var model = chosenModel();
     var tokenField = composer.querySelector('input[name="token"]');
     var token = tokenField ? tokenField.value : "";
     // Keep the first text for this token across retries, so a duplicate
@@ -325,10 +358,14 @@
     var wait = draftInFlight || Promise.resolve();
     sendInFlight = wait
       .then(function () {
-        return Sym.postJSON(replyUrl, {
+        var payload = {
           body: text,
           token: tokenField ? tokenField.value : "",
-        });
+        };
+        if (model !== null) {
+          payload.model = model;
+        }
+        return Sym.postJSON(replyUrl, payload);
       })
       .then(function (data) {
         // On a duplicate, the committed reply is the first attempt's text,
@@ -365,6 +402,53 @@
         if (uploader) {
           uploader.setLocked(false);
         }
+        applyBusyState();
+        if (draftDirty) {
+          saveDraft();
+        }
+      });
+  }
+
+  /* Retry posts the fixed "Retry." comment instead of the composer text.  It
+   * uses its own token field and rotates only that one: if a Retry response
+   * is lost, the next Send must not reuse Retry's token (the server would
+   * report it as a duplicate and the browser would clear a reply that never
+   * posted), and the reverse must not happen either.  Double taps are still
+   * blocked by the shared sending flag and the disabled button.  The textarea
+   * and pending files are deliberately untouched. */
+  function retryReply(event) {
+    if (event) {
+      event.preventDefault();
+    }
+    if (!composer || sending) {
+      return;
+    }
+    var button = retryButton();
+    if (button && button.disabled) {
+      return;
+    }
+    var tokenField = composer.querySelector('input[name="retry_token"]');
+    var payload = { retry_token: tokenField ? tokenField.value : "" };
+    var model = chosenModel();
+    if (model !== null) {
+      payload.model = model;
+    }
+    sending = true;
+    applyBusyState();
+    sendInFlight = Sym.postJSON(retryUrl, payload)
+      .then(function (data) {
+        if (tokenField && data && data.retry_token) {
+          tokenField.value = data.retry_token;
+        }
+        Sym.clearError();
+        poll();
+      })
+      .catch(function (error) {
+        Sym.showError(error.message);
+      })
+      .finally(function () {
+        sending = false;
+        sendInFlight = null;
         applyBusyState();
         if (draftDirty) {
           saveDraft();
@@ -415,6 +499,23 @@
 
     if (data.title && titleEl && titleEl.textContent !== data.title) {
       titleEl.textContent = data.title;
+    }
+
+    // The Model row is the stored model; a Send that changed it should show
+    // here without a reload.
+    var modelEl = document.getElementById("ticket-model");
+    if (modelEl && data.model && modelEl.textContent !== data.model) {
+      modelEl.textContent = data.model;
+    }
+
+    // The composer's select follows the stored model too, unless the user has
+    // picked one of their own: a deliberate choice is not overwritten.
+    var selectEl = modelSelect();
+    if (selectEl && !modelTouched) {
+      var storedModel = data.composer_model || "";
+      if (selectEl.value !== storedModel) {
+        selectEl.value = storedModel;
+      }
     }
 
     if (data.state_html !== stateHtml) {
@@ -520,7 +621,13 @@
       return;
     }
     if (form === composer) {
-      sendReply(event);
+      // Retry is a submit button inside the composer form with its own
+      // formaction; the submitter is what tells the two requests apart.
+      if (event.submitter && event.submitter.id === "act-retry") {
+        retryReply(event);
+      } else {
+        sendReply(event);
+      }
       return;
     }
     var url = form.getAttribute("data-api-state");
@@ -571,6 +678,12 @@
     });
   }
 
+  var initialModelSelect = modelSelect();
+  if (initialModelSelect) {
+    initialModelSelect.addEventListener("change", function () {
+      modelTouched = true;
+    });
+  }
   captureServerSendState();
   applyBusyState();
 

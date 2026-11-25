@@ -62,6 +62,7 @@ from symphony_linear.tracker import (
     TrackerTransientError,
     TransitionTarget,
 )
+from symphony_linear.turn_activity import TurnActivity
 from symphony_linear.webhook import WebhookServer
 from symphony_linear.workspace import SecretsError, SetupFailed, WorkspaceError
 
@@ -560,6 +561,68 @@ class TestNewTicketPipeline:
         _, kw = mock_finalize.call_args
         assert kw.get("on_subprocess") is not None
         assert kw.get("auto_branch") is True  # global default
+
+    def test_turn_output_activity_is_recorded_and_cleared_with_the_task(
+        self, orchestrator: Orchestrator, linear: FakeLinearClient
+    ) -> None:
+        """The ticket page's output age is a per-turn record.
+
+        The callback must reach the adapter's ``on_output``, and the record
+        must be dropped when the task ends so the next turn never shows the
+        previous one's age.
+        """
+        # Without a record (Linear and GitHub deployments) adapters get None.
+        assert orchestrator._output_callback("ticket-1") is None
+
+        activity = TurnActivity()
+        orchestrator._turn_activity = activity
+
+        with (
+            mock.patch("symphony_linear.orchestrator.clone_workspace") as mock_clone,
+            mock.patch(
+                "symphony_linear.orchestrator.finalize_workspace"
+            ) as mock_finalize,
+            mock.patch(
+                "symphony_linear.orchestrator.load_project_config"
+            ) as mock_load_config,
+            mock.patch("symphony_linear.orchestrator.run_initial") as mock_run_initial,
+        ):
+            issue = self._setup_mocks(
+                mock_clone, mock_finalize, mock_load_config, mock_run_initial, linear
+            )
+            orchestrator._new_ticket_pipeline(issue)
+
+        on_output = mock_run_initial.call_args.kwargs["on_output"]
+        assert on_output is not None
+        on_output()
+        assert activity.output_age("ticket-1") is not None
+
+        orchestrator._task_wrapper("ticket-1", lambda: None)
+        assert activity.output_age("ticket-1") is None
+
+    def test_turn_activity_is_cleared_before_the_task_slot_is_released(
+        self, orchestrator: Orchestrator
+    ) -> None:
+        """A finishing task must not wipe the next turn's fresh output age.
+
+        A new task can only be submitted for the ticket after the slot is
+        released, so clearing the record while the slot is still held is what
+        makes that race impossible.
+        """
+        activity = TurnActivity()
+        seen_in_flight: list[bool] = []
+
+        def clear(ticket_id: str) -> None:
+            # The wrapper holds _task_lock here; read the map directly rather
+            # than trying to re-acquire the non-reentrant lock.
+            seen_in_flight.append(ticket_id in orchestrator._active_tasks)
+
+        with mock.patch.object(activity, "clear", side_effect=clear):
+            orchestrator._turn_activity = activity
+            orchestrator._active_tasks["ticket-1"] = Future()
+            orchestrator._task_wrapper("ticket-1", lambda: None)
+
+        assert seen_in_flight == [True]
 
     def test_in_progress_transition_precedes_workspace_prep(
         self, orchestrator: Orchestrator, linear: FakeLinearClient
@@ -2808,6 +2871,31 @@ class TestResumePipeline:
             orchestrator._resume_pipeline(ts)
         updated = orchestrator._state.get("ticket-1")
         assert updated is not None and updated.status == TicketStatus.needs_input
+
+    def test_resume_turn_records_its_output_activity(
+        self, orchestrator: Orchestrator, linear: FakeLinearClient
+    ) -> None:
+        """Resume turns report output to the same record as initial turns."""
+        activity = TurnActivity()
+        orchestrator._turn_activity = activity
+        ts = self._make_ts()
+        orchestrator._state.upsert(ts)
+        linear.set_response("list_comments_since", [_make_comment("c1", "Fix please")])
+        with (
+            mock.patch(
+                "symphony_linear.orchestrator.load_project_config",
+                return_value=ProjectConfig(),
+            ),
+            mock.patch(
+                "symphony_linear.orchestrator.run_resume", return_value=("Done!", None)
+            ) as mock_run_resume,
+        ):
+            orchestrator._resume_pipeline(ts)
+
+        on_output = mock_run_resume.call_args.kwargs["on_output"]
+        assert on_output is not None
+        on_output()
+        assert activity.output_age("ticket-1") is not None
 
     def test_in_progress_transition_precedes_config_load(
         self, orchestrator: Orchestrator, linear: FakeLinearClient

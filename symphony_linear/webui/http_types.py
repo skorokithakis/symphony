@@ -18,6 +18,7 @@ from symphony_linear.config import AppConfig
 from symphony_linear.local_tracker import LocalTicketStore
 from symphony_linear.presence import TicketPresence
 from symphony_linear.state import StateManager
+from symphony_linear.turn_activity import TurnActivity
 
 #: Default request-body limit.  A route may raise it explicitly; the file
 #: upload routes do so and stream the body instead of buffering it.
@@ -37,6 +38,10 @@ class WebUIApp:
     #: this ticket's page is being watched.  ``None`` means no presence
     #: tracking (tests and other construction paths).
     presence: TicketPresence | None = None
+    #: Shared with the orchestrator, which records each running turn's last
+    #: output.  ``None`` means the page never shows an output age (tests and
+    #: other construction paths).
+    turn_activity: TurnActivity | None = None
 
     @property
     def dictation_enabled(self) -> bool:

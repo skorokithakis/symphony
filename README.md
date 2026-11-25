@@ -286,10 +286,11 @@ webui:
   host: 127.0.0.1          # default
   username: admin
   password: change-me
-  # Optional. Enables automatic titles (see Titles below).
+  # Optional. Enables automatic titles and reply summaries (see Titles and
+  # summaries below).
   # anthropic_api_key: ${ANTHROPIC_API_KEY}
   # Optional. Base URL for the Messages API, e.g. an Anthropic-compatible
-  # gateway (see Titles below).
+  # gateway (see Titles and summaries below).
   # anthropic_base_url: https://anthropic-gateway.example.com
   # Optional. Soniox API key enabling microphone dictation in the reply and
   # ticket-text boxes (see Dictation below).
@@ -337,7 +338,7 @@ Tickets are in one of five fixed states:
 |---|---|---|
 | Draft | an idea in the editor; nothing has run | Start, Discard |
 | In Progress | the agent is working | Stop |
-| Needs Input | the agent has replied and is waiting for you | Send, Send to QA, Done |
+| Needs Input | the agent has replied and is waiting for you | Send, Send to QA, Done, Retry (after a failed turn) |
 | QA | your `.symphony/serve` script is running | Send, Back to Needs Input, Done |
 | Done | finished and archived | Reopen |
 
@@ -380,6 +381,22 @@ Progress; the page says so next to the disabled button and re-enables it when
 the turn finishes. In QA, sending resumes the agent, which pulls the ticket out
 of QA and stops the serve on the next tick.
 
+When a turn fails, or the ticket's workspace setup does, the ticket returns to
+Needs Input with an error comment and the composer grows a **Retry** button.
+Retry posts the fixed comment `Retry.`, which is exactly what resumes the
+agent; it deliberately does not use the composer's text or its pending
+attachments, so the reply you are writing stays where it is. A failed turn is
+never retried on its own, so Retry is the quick path when nothing needs to
+change in your instructions.
+
+The composer's **Model** dropdown lists Default plus the aliases under the
+top-level `models:` map (the same control the editor has, and it is absent when
+no aliases are configured). The choice is sent with Send and with Retry and
+stored on the ticket, so it applies from the next turn; changing it does not
+interrupt a turn that is already running, and like Send it is unavailable while
+the agent works. The Details panel shows the model currently stored on the
+ticket.
+
 ### Repositories
 
 The editor's Repository field is a dropdown of the repositories you have
@@ -403,8 +420,10 @@ The editor's Model dropdown lists the aliases under the top-level `models:`
 map. What you pick is stored on the ticket and presented to the orchestrator
 as a `Model: <alias>` label, so the usual model resolution applies (see
 [Model override](#model-override)). Choosing "Default" uses the agent's own
-default. The editor only edits Drafts, so the model cannot be changed after
-Start.
+default. The reply composer offers the same dropdown on a started ticket, so
+the model can be changed with a Send or a Retry; see [Reply
+composer](#reply-composer). The stored model only affects turns that start
+after the change.
 
 ### Attachments
 
@@ -420,11 +439,11 @@ Only the four image types are ever served inline. Every other upload downloads
 as an attachment; an HTML or SVG file served inline from the UI's origin would
 run with your credentials.
 
-### Titles
+### Titles and summaries
 
 With `webui.anthropic_api_key` set, the editor hides the Title field. Start
 stores an empty title and asks the Anthropic Messages API for one in the
-background, using a model id fixed in `symphony_linear/webui/title.py`. Until
+background, using a model id fixed in `symphony_linear/anthropic.py`. Until
 it arrives, and if the request fails, the first line of the ticket text is
 shown as the title. Nothing is retried and no error is shown; the fallback just
 stays.
@@ -432,7 +451,15 @@ stays.
 Without the key, the editor shows the Title field and Start refuses an empty
 one.
 
-`webui.anthropic_base_url` points that request at an Anthropic-compatible
+The same key also turns on one-line summaries of agent replies. When the
+daemon posts a reply, a background request asks for a single line saying what
+the agent did and what it needs from you next, and that line appears under the
+title on the ticket's row in the Needs Input list. It is absent while the
+request runs, if it fails, and on any other list or page: the ticket page
+already shows the full reply. As with titles, nothing is retried, no error is
+shown, and neither the prompt nor the model is configurable.
+
+`webui.anthropic_base_url` points both requests at an Anthropic-compatible
 gateway or proxy instead of `https://api.anthropic.com`. It takes the same
 form as the SDK's `ANTHROPIC_BASE_URL`: everything before `/v1`, since
 `/v1/messages` is always appended. The gateway must accept the `x-api-key`
@@ -660,7 +687,7 @@ linear:
 #   # REQUIRED. HTTP Basic auth credentials. There is no login page.
 #   username: admin
 #   password: change-me
-#   # Optional. Anthropic API key for automatic ticket titles.
+#   # Optional. Anthropic API key for automatic ticket titles and reply summaries.
 #   # anthropic_api_key: ${ANTHROPIC_API_KEY}
 #   # Optional. Messages API base URL, e.g. an Anthropic-compatible gateway.
 #   # anthropic_base_url: https://anthropic-gateway.example.com
@@ -1186,10 +1213,11 @@ session id.
   Input; there is no email or webhook notification and nothing is sent for
   other events (replies, QA, Done).
 - **No search and no named projects.** The web UI groups tickets by state.
-  Repositories are a free-text field with recent values offered as chips;
-  there is nothing to name or organise.
-- **No auto-retry.** A failed turn moves the ticket to `failed` and stays
-  there. Comment on the ticket to re-trigger.
+  Saved repositories have a name, but there are no projects to group
+  tickets under.
+- **No auto-retry.** A failed turn is not run again by itself. The ticket
+  goes back to the needs-input state with an error comment. Use the composer's
+  Retry button, or comment on the ticket, to try again.
 - **Single workspace per ticket.** A ticket's workspace is reused across
   turns; the agent works in the same clone every time.
 - **Trigger-only enrolment.** The Linear trigger condition (a label by default,
@@ -1201,8 +1229,6 @@ session id.
   UI. Running both means two daemons with separate workspace directories.
 - **No migration.** There is no import from Linear or GitHub; web UI tickets
   stay in their own store.
-- **The model is fixed after Start.** The web UI editor only edits Drafts, so
-  a model chosen there cannot be changed once the ticket starts.
 - **No priority.** Tickets are picked in whatever order the tracker returns
   them. There is no queue.
 - **One QA serve at a time.** A single `.symphony/serve` runs globally with

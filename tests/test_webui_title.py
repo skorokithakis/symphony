@@ -17,6 +17,7 @@ from typing import Any
 import httpx
 import pytest
 
+from symphony_linear import anthropic
 from symphony_linear.config import AppConfig
 from symphony_linear.local_tracker import (
     STATE_IN_PROGRESS,
@@ -57,7 +58,7 @@ def _reply(text: str, *, status: int = 200) -> httpx.Response:
             "id": "msg_test",
             "type": "message",
             "role": "assistant",
-            "model": title.MODEL,
+            "model": anthropic.MODEL,
             "content": [{"type": "text", "text": text}],
             "stop_reason": "end_turn",
         },
@@ -150,7 +151,7 @@ class TestGenerateTitle:
         assert request.headers["content-type"] == "application/json"
 
         body = json.loads(request.content)
-        assert body["model"] == title.MODEL == "claude-haiku-5-5"
+        assert body["model"] == anthropic.MODEL == "claude-haiku-5-5"
         assert 0 < body["max_tokens"] <= 256
         assert body["messages"][0]["role"] == "user"
         assert "The widget breaks on load." in body["messages"][0]["content"]

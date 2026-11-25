@@ -25,6 +25,7 @@ from symphony_linear.local_tracker import (
     repo_short_name,
 )
 from symphony_linear.state import TicketState, TicketStatus
+from symphony_linear.tracker import is_agent_kind
 from symphony_linear.webui.http_types import Request, Response
 from symphony_linear.webui.templates import render
 
@@ -42,13 +43,6 @@ _HOME_GROUPS: tuple[tuple[str, str, str], ...] = (
 # ---------------------------------------------------------------------------
 # Unread
 # ---------------------------------------------------------------------------
-
-
-def is_agent_kind(kind: str | None) -> bool:
-    """True for the kind strings the orchestrator stores on an agent reply."""
-    if kind is None:
-        return False
-    return kind == "final" or kind.startswith(("final · ", "context: "))
 
 
 def is_unread_comment(kind: str | None) -> bool:
@@ -90,6 +84,7 @@ class Row:
 
     id: str
     title: str
+    summary: str | None
     repo: str
     repo_url: str
     updated_at: str
@@ -208,19 +203,52 @@ def _elapsed_text(start: str, now: datetime) -> str:
 # ---------------------------------------------------------------------------
 
 
+def turn_failed(state_entry: TicketState | None) -> bool:
+    """True when the ticket's last turn failed.
+
+    Both a failed status and a sticky setup error mean "the agent stopped
+    before replying", so the ticket page's Retry button and the home row's
+    failed flag share this one rule.
+    """
+    return state_entry is not None and (
+        state_entry.status == TicketStatus.failed or bool(state_entry.setup_error)
+    )
+
+
+def latest_agent_summary(ticket: LocalTicket) -> str | None:
+    """Return the summary of the ticket's latest agent reply, or ``None``.
+
+    The *latest* reply decides: an older summary must not outlive a newer reply
+    that has none.  Summaries need ``webui.anthropic_api_key`` and arrive
+    asynchronously, so the newest turn may legitimately have no summary yet.
+    """
+    for comment in reversed(ticket.comments):
+        if is_agent_kind(comment.kind):
+            summary = (comment.summary or "").strip()
+            return summary or None
+    return None
+
+
 def _row(
     ticket: LocalTicket,
     state_entry: TicketState | None,
     now: datetime,
     names: Mapping[str, str],
 ) -> Row:
-    failed = state_entry is not None and (
-        state_entry.status == TicketStatus.failed or bool(state_entry.setup_error)
-    )
+    failed = turn_failed(state_entry)
     working = ticket.state == STATE_IN_PROGRESS and not failed
+    # Only a waiting-on-you row shows the summary: In Progress has a live turn,
+    # QA is about the serve, and a failed row's flag already says what happened
+    # while its last "reply" may be the failure notice rather than an answer.
+    summary = (
+        latest_agent_summary(ticket)
+        if ticket.state == STATE_NEEDS_INPUT and not failed
+        else None
+    )
     return Row(
         id=ticket.id,
         title=display_title(ticket),
+        summary=summary,
         repo=short_repo(ticket.repo, names),
         repo_url=ticket.repo.strip(),
         updated_at=ticket.updated_at,
