@@ -39,27 +39,26 @@ from symphony_linear.local_tracker import (
 
 logger = logging.getLogger(__name__)
 
-#: The home page shows one line under a Needs Input row's title.  The prompt is
-#: fixed rather than configurable (unlike model labels): the row has room for a
-#: sentence, and a per-workspace prompt would make the pages of two workspaces
-#: describe the same reply differently.
+#: The home page shows the summary under a Needs Input row's title.  The prompt
+#: is fixed rather than configurable (unlike model labels): the row has room for
+#: a short paragraph, and a per-workspace prompt would make the pages of two
+#: workspaces describe the same reply differently.
 _PROMPT = (
     "Summarise the software-agent reply below for the person who asked for the "
-    "work. Reply with the summary only: one line, at most about 120 "
+    "work. Be terse. Reply with the summary only: one line, about 120 "
     "characters, saying what the agent did and what it needs from the user "
     "next, no surrounding quotes, no trailing period and no preamble.\n\n"
     "Reply:\n{reply}"
 )
 
-#: A summary needs a few more tokens than a title; the cap also bounds a
-#: runaway reply.
-_MAX_TOKENS = 128
-
-#: Longest summary kept, in characters, after the reply is cleaned.  It is
-#: deliberately above the "about 120" the prompt asks for: the model treats
-#: that as approximate, and a cap at 120 cut ordinary summaries mid-sentence.
-#: This only stops a runaway reply; about five wrapped lines on a phone.
-_MAX_SUMMARY_CHARS = 200
+#: The prompt asks for about 120 characters, but the model treats that as
+#: approximate, and an earlier cap near the target cut ordinary summaries
+#: mid-sentence.  So everything the model returns is shown, up to a hard cap
+#: of 500 characters that only stops a runaway reply.  500 characters is
+#: about 125 tokens; the token limit sits above that so the API never cuts a
+#: reply before the character cap does.
+_MAX_TOKENS = 256
+_MAX_SUMMARY_CHARS = 500
 
 #: The reply is sent whole unless it is enormous.  Agent replies can include
 #: attachment references and long tool output; a summary prompt that large
@@ -98,7 +97,9 @@ def summarise_reply(
     if text is None:
         return None
 
-    summary = clean_line(text, max_chars=_MAX_SUMMARY_CHARS)
+    # clean_line keeps only the first line, which suits titles.  A summary the
+    # model splits over several lines is shown whole instead, joined into one.
+    summary = clean_line(" ".join(text.splitlines()), max_chars=_MAX_SUMMARY_CHARS)
     if not summary:
         logger.warning("Reply summary response was empty")
         return None

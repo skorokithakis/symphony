@@ -110,7 +110,7 @@ def _needs_input_ticket(tracker: LocalTracker, title: str = "A ticket") -> str:
 class TestSummariseReply:
     def test_sends_the_reply_and_returns_one_clean_line(self) -> None:
         transport, seen = _capture(
-            lambda request: _reply('"Fixed the widget; please check the logs."\nExtra')
+            lambda request: _reply('"Fixed the widget;\nplease check the logs."')
         )
 
         result = summary.summarise_reply(
@@ -133,7 +133,7 @@ class TestSummariseReply:
         assert "what it needs from the user next" in prompt
 
     def test_caps_the_summary_and_the_prompt(self) -> None:
-        transport, seen = _capture(lambda request: _reply("word " * 100))
+        transport, seen = _capture(lambda request: _reply("word " * 200))
 
         result = summary.summarise_reply("text", api_key="sk-test", transport=transport)
 

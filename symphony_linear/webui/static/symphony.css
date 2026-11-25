@@ -394,7 +394,7 @@ body.sym { min-height: 100dvh; }
    inside the title grid area rather than in an area of its own, so the phone
    and desktop layouts place it the same way.  It wraps instead of ending in an
    ellipsis: on a phone one line cut it off after about 45 characters, and
-   summary.py caps it at 200, so a row grows by about five lines at most. */
+   summary.py caps it at 500, so a runaway row grows by about twelve lines. */
 .row-summary {
   display: block; margin-top: 1px;
   text-wrap: pretty;
