@@ -324,6 +324,42 @@
     if (button && button.disabled) {
       return;
     }
+    /* Send is usable while dictation is recording: it stops the recording and
+     * posts once Soniox has delivered the final text, so the send never races
+     * the transcription.  `sending` covers the wait as well, which is what
+     * makes a second Send, or Ctrl+Enter, during the wait a no-op.  A failed
+     * recording rejects: its error is already shown, the confirmed text stays
+     * in the box, and no reply is posted. */
+    var finishing =
+      typeof Sym.finishDictation === "function" ? Sym.finishDictation() : null;
+    if (!finishing) {
+      submitReply();
+      return;
+    }
+    sending = true;
+    applyBusyState();
+    sendInFlight = finishing.then(
+      function () {
+        sending = false;
+        sendInFlight = null;
+        applyBusyState();
+        submitReply();
+      },
+      function () {
+        sending = false;
+        sendInFlight = null;
+        applyBusyState();
+      },
+    );
+  }
+
+  /* The normal Send path: every rule applies to the text as it is once any
+   * dictation has finished. */
+  function submitReply() {
+    var button = sendButton();
+    if (button && button.disabled) {
+      return;
+    }
     var text = reply.value;
     if (!text.trim()) {
       Sym.showError("Write a reply first.");
