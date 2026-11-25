@@ -253,7 +253,10 @@
       })
       .then(function (data) {
         if (data && data.redirect) {
-          window.location.assign(data.redirect);
+          // Replace, not assign: the editor URL of a started ticket redirects
+          // to the ticket page, so leaving it in history made Back look like
+          // it did nothing.  Back now goes to the page before the editor.
+          window.location.replace(data.redirect);
         }
       })
       .catch(function (error) {
@@ -304,7 +307,9 @@
         return Sym.postJSON(discardUrl, {});
       })
       .then(function (data) {
-        window.location.assign((data && data.redirect) || "/");
+        // Replace, not assign: the discarded Draft's editor URL is a 404 now,
+        // so it must not stay in history for Back to reach.
+        window.location.replace((data && data.redirect) || "/");
       })
       .catch(function (error) {
         Sym.showError(error.message);
