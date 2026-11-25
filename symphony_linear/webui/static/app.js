@@ -434,16 +434,56 @@
      that armed a sequence, separate from the timer so the text survives an
      expired window; the timer only decides whether the next key is still a
      shortcut.  A state shortcut must be visible because a hidden state button
-     is how the server declines that action; the dock is hidden on the ticket
-     and editor pages, so its links are activated regardless of visibility. */
+     is how the server declines that action; the phone layout hides the dock on
+     the ticket and editor pages, so on a phone its links are activated
+     regardless of visibility.
+     Only the lowercase prefix key arms a sequence: the check is against
+     event.key, never its lowercased form, so a Shift-held "S" that starts
+     "So" or "SQL" types normally.  The second key is still matched
+     case-insensitively, as it always was. */
   var PREFIX_SHORTCUTS = {
-    s: { "1": "s1", "2": "s2", "3": "s3" },
+    s: { n: "sn", q: "sq", d: "sd" },
     g: { t: "gt", a: "ga", r: "gr" },
   };
   var PREFIX_SEQUENCE_MS = 1500;
   var pendingReplyText = "";
   var pendingPrefix = "";
   var prefixSequenceStart = 0;
+  var prefixExpiryTimer = 0;
+
+  /* The armed prefix is one attribute on <body>; a control's badge letter
+     comes from its own data-shortcut-key, and the CSS decides which controls
+     answer which prefix.  Nothing is bound or created per element, so the
+     ticket poll can replace the composer's buttons while a sequence is armed
+     and the next render still badges correctly.  Expiry hides the badge on its
+     own timer: waiting for the next keydown would leave it up on an idle
+     page. */
+  function setArmedPrefix(prefix) {
+    if (prefix) {
+      document.body.setAttribute("data-shortcut-prefix", prefix);
+    } else {
+      document.body.removeAttribute("data-shortcut-prefix");
+    }
+  }
+
+  function armPrefix(prefix) {
+    pendingPrefix = prefix;
+    prefixSequenceStart = Date.now();
+    setArmedPrefix(prefix);
+    window.clearTimeout(prefixExpiryTimer);
+    prefixExpiryTimer = window.setTimeout(function () {
+      setArmedPrefix("");
+    }, PREFIX_SEQUENCE_MS);
+  }
+
+  /* A key ended the sequence.  pendingReplyText deliberately survives, because
+     "s", a pause, "ure" must still type "sure". */
+  function disarmPrefix() {
+    pendingPrefix = "";
+    window.clearTimeout(prefixExpiryTimer);
+    prefixExpiryTimer = 0;
+    setArmedPrefix("");
+  }
 
   /* The ticket page has the composer ("c" must type there), and the Done
      ticket page has the same wrapper but no reply box.  ``#ticket`` is the
@@ -484,10 +524,16 @@
   }
 
   document.addEventListener("keydown", function (event) {
-    /* A modifier's own keydown types nothing.  Shift is the one that reaches
-       here (ctrlKey, altKey and metaKey are in ``ignored``), and returning
-       before the buffer is touched is what lets "s", Shift+U type "sU". */
-    if (event.key === "Shift" || event.key === "CapsLock") {
+    /* A modifier's own keydown types nothing.  Shift must not disarm: it is
+       what "s", Shift+U relies on to type "sU", and Shift plus the second key
+       of a sequence still fires it.  CapsLock does end the sequence (the user
+       is leaving the keyboard's letter case alone), and since it types
+       nothing the pending reply text survives. */
+    if (event.key === "Shift") {
+      return;
+    }
+    if (event.key === "CapsLock") {
+      disarmPrefix();
       return;
     }
     /* Checked before the ignored branch below, which returns for every
@@ -510,11 +556,11 @@
     ) {
       event.preventDefault();
       pendingReplyText = "";
-      pendingPrefix = "";
+      disarmPrefix();
       goToNextTicket();
       return;
     }
-    /* An ignored key still cancels an armed prefix: otherwise "s", Ctrl+C, "3"
+    /* An ignored key still cancels an armed prefix: otherwise "s", Ctrl+C, "d"
        would mark the ticket Done.  The event's own job is left alone (no
        preventDefault), and a modal dialog swallows every page shortcut so the
        discard confirmation and the lightbox behave like plain dialogs. */
@@ -527,49 +573,53 @@
       document.querySelector("dialog[open]") !== null;
     if (ignored) {
       pendingReplyText = "";
-      pendingPrefix = "";
+      disarmPrefix();
       return;
     }
     var key = event.key.toLowerCase();
     var now = Date.now();
     var awaitingPrefix =
       pendingPrefix !== "" && now - prefixSequenceStart <= PREFIX_SEQUENCE_MS;
-    /* Only a control the page actually offers is clicked: "s","2" on a ticket
+    /* Only a control the page actually offers is clicked: "s","q" on a ticket
        with no Send to QA falls through to the typing branch, so the reply gets
-       the "s2" the user meant to type. */
+       the "sq" the user meant to type. */
     if (awaitingPrefix) {
       var shortcut = prefixShortcut(pendingPrefix, key);
       if (shortcut && activate(shortcut, pendingPrefix === "s")) {
         pendingReplyText = "";
-        pendingPrefix = "";
+        disarmPrefix();
         event.preventDefault();
         return;
       }
     }
     /* A prefix key starts a sequence, or extends the one already armed, so
        "s","s","h" types "ssh"; the case is kept because that is what the user
-       pressed.  A *different* prefix key cannot be a second key of the armed
-       sequence: with a reply box it falls through to typing below, which keeps
-       "sg" together in the reply, but with nothing to type into it must not
-       block the new sequence, or "s", a pause, then "g" "t" would do nothing
-       on the home page. */
-    if (Object.prototype.hasOwnProperty.call(PREFIX_SHORTCUTS, key)) {
-      if (pendingPrefix === "" || pendingPrefix === key) {
+       pressed.  The key is matched exactly and Shift must be up, so only the
+       unshifted prefix arms: "So" and "SQL" start with an ordinary letter.
+       The shiftKey check also covers Caps Lock, under which Shift+S reports
+       the lowercase "s" while still typing an ordinary letter.  A *different*
+       prefix key cannot be a second key of the armed sequence: with a reply
+       box it falls through to typing below, which keeps "sg" together in the
+       reply, but with nothing to type into it must not block the new sequence,
+       or "s", a pause, then "g" "t" would do nothing on the home page. */
+    if (
+      !event.shiftKey &&
+      Object.prototype.hasOwnProperty.call(PREFIX_SHORTCUTS, event.key)
+    ) {
+      if (pendingPrefix === "" || pendingPrefix === event.key) {
         pendingReplyText += event.key;
-        pendingPrefix = key;
-        prefixSequenceStart = now;
+        armPrefix(event.key);
         return;
       }
       if (!replyBox()) {
         pendingReplyText = event.key;
-        pendingPrefix = key;
-        prefixSequenceStart = now;
+        armPrefix(event.key);
         return;
       }
     }
     // Any other key cancels the armed sequence but still does its own job, so
     // a stray "s" before "j" does not swallow the "j".
-    pendingPrefix = "";
+    disarmPrefix();
     if (key === "?") {
       pendingReplyText = "";
       if (openHelp()) {

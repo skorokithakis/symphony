@@ -302,6 +302,29 @@ body.sym { min-height: 100dvh; }
 }
 .link-btn:hover { color: var(--ink); text-decoration-thickness: 2px; }
 
+/* The armed-prefix key badge.  While app.js has a prefix armed on <body>,
+   every control that sequence can reach shows its second key: the state
+   buttons for "s", the dock links for "g".  The letter comes from the
+   control's own data-shortcut-key, and the armed prefix must match the
+   control's data-shortcut, so the markup, not the stylesheet, holds the
+   mapping.  Absolute positioning keeps the badge out of the button's layout,
+   and a disabled control shows nothing because activate() would refuse it.
+   The dock is only hidden in the phone layout: on desktop its rail is on the
+   ticket and editor pages too, so their "g" badges do appear there, which is
+   right because those links work there. */
+.sym [data-shortcut-key] { position: relative; }
+.sym[data-shortcut-prefix="s"] [data-shortcut^="s"][data-shortcut-key]:not(:disabled):not([aria-disabled="true"])::after,
+.sym[data-shortcut-prefix="g"] [data-shortcut^="g"][data-shortcut-key]:not(:disabled):not([aria-disabled="true"])::after {
+  content: attr(data-shortcut-key);
+  position: absolute; top: -7px; right: -7px;
+  display: inline-flex; align-items: center; justify-content: center;
+  min-width: 18px; height: 18px; padding: 0 4px;
+  border: 1px solid var(--rule-2); border-radius: var(--r-round);
+  background: var(--surface); color: var(--ink); box-shadow: var(--shadow-1);
+  font: 600 var(--t-xs)/1 var(--font-mono);
+  pointer-events: none;
+}
+
 /* ---------- 5. State tags ----------
    Each state has its own label, its own glyph shape and its own border or fill. */
 

@@ -327,22 +327,22 @@ class TestTicketPage:
     @pytest.mark.parametrize(
         ("state", "buttons"),
         [
-            (STATE_IN_PROGRESS, {"act-stop": ("s1", "Stop (s 1)")}),
+            (STATE_IN_PROGRESS, {"act-stop": ("sn", "Stop (s n)")}),
             (
                 STATE_NEEDS_INPUT,
                 {
-                    "act-done": ("s3", "Done (s 3)"),
-                    "act-qa": ("s2", "Send to QA (s 2)"),
+                    "act-done": ("sd", "Done (s d)"),
+                    "act-qa": ("sq", "Send to QA (s q)"),
                 },
             ),
             (
                 STATE_QA,
                 {
-                    "act-done": ("s3", "Done (s 3)"),
-                    "act-needs-input": ("s1", "Back to Needs Input (s 1)"),
+                    "act-done": ("sd", "Done (s d)"),
+                    "act-needs-input": ("sn", "Back to Needs Input (s n)"),
                 },
             ),
-            (STATE_DONE, {"act-reopen": ("s1", "Reopen (s 1)")}),
+            (STATE_DONE, {"act-reopen": ("sn", "Reopen (s n)")}),
         ],
     )
     def test_each_state_action_carries_its_keyboard_shortcut(
@@ -355,6 +355,9 @@ class TestTicketPage:
         for button_id, (shortcut, title) in buttons.items():
             tag = text.split(f'id="{button_id}"', 1)[1].split(">", 1)[0]
             assert f'data-shortcut="{shortcut}"' in tag
+            # The badge's letter comes from this attribute, so a button without
+            # it would fire but show no key while "s" is armed.
+            assert f'data-shortcut-key="{shortcut[-1]}"' in tag
             assert f'title="{title}"' in tag
 
     def test_unknown_ticket_is_404(self, tmp_path: Path) -> None:

@@ -84,7 +84,7 @@
     <span>This ticket is done. Reopen it to work on it again.</span>
     <form method="post" action="/tickets/{{ page.ticket.id }}/state" data-api-state="/api/tickets/{{ page.ticket.id }}/state">
       <input type="hidden" name="action" value="reopen">
-      <button class="btn" type="submit" id="act-reopen" data-shortcut="s1" title="Reopen (s 1)">Reopen</button>
+      <button class="btn" type="submit" id="act-reopen" data-shortcut="sn" data-shortcut-key="n" title="Reopen (s n)">Reopen</button>
     </form>
   </div>
   {% endif %}

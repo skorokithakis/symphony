@@ -132,18 +132,18 @@
 
 {% macro composer_actions(page) -%}
   {% if page.ticket.state == "In Progress" %}
-  <button class="btn" type="submit" form="ticket-state-stop" id="act-stop" data-shortcut="s1" title="Stop (s 1)"><svg class="ic ic--sm" viewBox="0 0 20 20" aria-hidden="true"><path d="M6 6h8v8H6z"></path></svg>Stop</button>
+  <button class="btn" type="submit" form="ticket-state-stop" id="act-stop" data-shortcut="sn" data-shortcut-key="n" title="Stop (s n)"><svg class="ic ic--sm" viewBox="0 0 20 20" aria-hidden="true"><path d="M6 6h8v8H6z"></path></svg>Stop</button>
   {{ send_reason(page) }}
   <button class="btn btn--primary" type="submit" id="act-send" disabled aria-describedby="send-reason">Send</button>
   {% elif page.ticket.state == "Needs Input" %}
-  <button class="btn" type="submit" form="ticket-state-done" id="act-done" data-shortcut="s3" title="Done (s 3)">Done</button>
-  <button class="btn" type="submit" form="ticket-state-qa" id="act-qa" data-shortcut="s2" title="Send to QA (s 2)">Send to QA</button>
+  <button class="btn" type="submit" form="ticket-state-done" id="act-done" data-shortcut="sd" data-shortcut-key="d" title="Done (s d)">Done</button>
+  <button class="btn" type="submit" form="ticket-state-qa" id="act-qa" data-shortcut="sq" data-shortcut-key="q" title="Send to QA (s q)">Send to QA</button>
   <span class="kbd-hint">Ctrl+Enter to send</span>
   {{ send_reason(page) }}
   <button class="btn btn--primary" type="submit" id="act-send">Send</button>
   {% elif page.ticket.state == "QA" %}
-  <button class="btn" type="submit" form="ticket-state-done" id="act-done" data-shortcut="s3" title="Done (s 3)">Done</button>
-  <button class="btn" type="submit" form="ticket-state-needs-input" id="act-needs-input" data-shortcut="s1" title="Back to Needs Input (s 1)">Back to Needs Input</button>
+  <button class="btn" type="submit" form="ticket-state-done" id="act-done" data-shortcut="sd" data-shortcut-key="d" title="Done (s d)">Done</button>
+  <button class="btn" type="submit" form="ticket-state-needs-input" id="act-needs-input" data-shortcut="sn" data-shortcut-key="n" title="Back to Needs Input (s n)">Back to Needs Input</button>
   <span class="kbd-hint">Ctrl+Enter to send</span>
   {{ send_reason(page) }}
   <button class="btn btn--primary" type="submit" id="act-send">Send</button>
@@ -174,9 +174,9 @@
 <nav class="dock" aria-label="Main">
   <a class="btn btn--primary" href="/new"{% if current == "new" %} aria-current="page"{% endif %} data-shortcut="new" title="New ticket (c)"><svg class="ic" viewBox="0 0 20 20" aria-hidden="true"><path d="M10 4v12M4 10h12"></path></svg>New ticket</a>
   <div class="dock-links">
-    <a class="dock-link" data-shortcut="gt" title="Tickets (g t)" href="/"{% if current == "tickets" %} aria-current="page"{% endif %}>Tickets{{ needs_input_dot(needs_input_count) }}</a>
-    <a class="dock-link" data-shortcut="ga" title="Archive (g a)" href="/archive"{% if current == "archive" %} aria-current="page"{% endif %}>Archive</a>
-    <a class="dock-link" data-shortcut="gr" title="Repositories (g r)" href="/repos"{% if current == "repos" %} aria-current="page"{% endif %}>Repositories</a>
+    <a class="dock-link" data-shortcut="gt" data-shortcut-key="t" title="Tickets (g t)" href="/"{% if current == "tickets" %} aria-current="page"{% endif %}>Tickets{{ needs_input_dot(needs_input_count) }}</a>
+    <a class="dock-link" data-shortcut="ga" data-shortcut-key="a" title="Archive (g a)" href="/archive"{% if current == "archive" %} aria-current="page"{% endif %}>Archive</a>
+    <a class="dock-link" data-shortcut="gr" data-shortcut-key="r" title="Repositories (g r)" href="/repos"{% if current == "repos" %} aria-current="page"{% endif %}>Repositories</a>
   </div>
 </nav>
 {%- endmacro %}

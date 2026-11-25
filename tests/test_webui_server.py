@@ -827,9 +827,12 @@ class TestDock:
             _status, _headers, body = _request(port, "GET", "/")
 
         text = body.decode()
-        assert 'data-shortcut="gt" title="Tickets (g t)"' in text
-        assert 'data-shortcut="ga" title="Archive (g a)"' in text
-        assert 'data-shortcut="gr" title="Repositories (g r)"' in text
+        assert 'data-shortcut="gt" data-shortcut-key="t" title="Tickets (g t)"' in text
+        assert 'data-shortcut="ga" data-shortcut-key="a" title="Archive (g a)"' in text
+        assert (
+            'data-shortcut="gr" data-shortcut-key="r" title="Repositories (g r)"'
+            in text
+        )
 
 
 # ---------------------------------------------------------------------------
