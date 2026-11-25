@@ -1,5 +1,72 @@
 # Changelog
 
+## [0.9.0](https://github.com/skorokithakis/symphony/compare/v0.8.0...v0.9.0) (2026-11-25)
+
+
+### ⚠ BREAKING CHANGES
+
+* The webui.ntfy config block is no longer accepted and fails validation. Remove it from config.yaml.
+
+### Features
+
+* Add a bearer-authenticated agent API at /api/v1 ([3dbab99](https://github.com/skorokithakis/symphony/commit/3dbab99aecd5ea76e84dda8dfd6a815485804544))
+* Add a built-in tracker with a web UI ([0a3b80b](https://github.com/skorokithakis/symphony/commit/0a3b80bd56c9d9c122888c4aa3ef882716e07da6))
+* Add a copy Markdown button to ticket page messages ([6ff13b7](https://github.com/skorokithakis/symphony/commit/6ff13b738a41b38d6bfeeb5999450a509f4b2898))
+* Add a Needs Input dot and keyboard shortcuts to the web UI ([d5b7a97](https://github.com/skorokithakis/symphony/commit/d5b7a971d35234214bb5cfc5a13a0899a8016eb6))
+* Add a rule after each ticket group heading in the web UI ([dfd7ba3](https://github.com/skorokithakis/symphony/commit/dfd7ba3102f3884523c69863bf7916f89df86cf1))
+* Add a shortcuts help dialog and a Ctrl+K repository picker to the web UI ([a710b1a](https://github.com/skorokithakis/symphony/commit/a710b1a110786460e3277b4819c11806577ac77b))
+* Add a Symphony icon to ntfy notifications and the web UI ([c9dba4e](https://github.com/skorokithakis/symphony/commit/c9dba4e7e2240871201dd2cc6cb43634fd0dbc0f))
+* Add configurable Anthropic base URL for automatic titles ([0e69a0b](https://github.com/skorokithakis/symphony/commit/0e69a0bfcc0980e152417f475b8b0eb3b0cc1b52))
+* Add model and repository dropdowns to the web UI editor ([c4c6b4f](https://github.com/skorokithakis/symphony/commit/c4c6b4f3906b31c2430e3376d9a6a0edecc424b5))
+* Add navigation and next Needs Input shortcuts to the web UI ([897f76b](https://github.com/skorokithakis/symphony/commit/897f76bd87e137fff497c7a7040830d6d653d109))
+* Add Soniox microphone dictation to the web UI ([e2e2fea](https://github.com/skorokithakis/symphony/commit/e2e2fea73b002336d2c3e316b4cb85e9dbe59a34))
+* Add Web Push notifications to the web UI ([ac03750](https://github.com/skorokithakis/symphony/commit/ac03750ebb3811967b1d2f8819bbe7fd2ff52fd9))
+* Adopt the new web UI stylesheet ([7e64851](https://github.com/skorokithakis/symphony/commit/7e648517a39546d7d4abc1e8c16fa35666a68e3b))
+* Cache-bust web UI static files ([e4d6dca](https://github.com/skorokithakis/symphony/commit/e4d6dca98e4baa53c1a64fd1f28839b46078b382))
+* Change the icon and re-tint the web UI to match it ([9cd7ca2](https://github.com/skorokithakis/symphony/commit/9cd7ca2e2aea21d44ee0e05c2cfc03c1a85dec37))
+* Focus the ticket text input on the new ticket page ([49cea6e](https://github.com/skorokithakis/symphony/commit/49cea6e1ac1ab029c719c8bc945907e6b07bf716))
+* Improve web UI Markdown images and list editing ([e78d521](https://github.com/skorokithakis/symphony/commit/e78d5212e5a2a8f25b48843aba700e6c51ed8276))
+* Make the web UI installable as a PWA ([b0ad1ec](https://github.com/skorokithakis/symphony/commit/b0ad1ecdc02fb4bfadd01564c6bc81ec15933df0))
+* Replace the c new-ticket shortcut with g n on every page ([5cdc8a6](https://github.com/skorokithakis/symphony/commit/5cdc8a6150b16719ec5592cf5993267698f69908))
+* Send ntfy notifications when a web UI ticket needs input ([1c95368](https://github.com/skorokithakis/symphony/commit/1c953689ad57e0659f186868c85c87ab0d45678e))
+* Show last agent output, add Retry and a per-turn model choice, and summarise replies in the web UI ([79c31f4](https://github.com/skorokithakis/symphony/commit/79c31f4bfec276480efa1e32ca1a2693a97d303f))
+* Show reply summaries in full on the home page ([3be8d92](https://github.com/skorokithakis/symphony/commit/3be8d9246aac6cf44eee5b0e57e85e05fa8954cb))
+* Show whole reply summaries up to 500 characters ([7571488](https://github.com/skorokithakis/symphony/commit/7571488bc501113f5a7936865e6d8dc7c24f5efc))
+* Skip the Needs Input push while the ticket page is being watched ([78545ff](https://github.com/skorokithakis/symphony/commit/78545ffbbd69de1c5e95c4cc8d37c2107fcf9285))
+* Sort the editor's repository list by name and add a Recent group ([8bec91d](https://github.com/skorokithakis/symphony/commit/8bec91ddd108210c83d33903941e91791f9dedc0))
+* Start dictation immediately and allow sending while recording ([ea38f03](https://github.com/skorokithakis/symphony/commit/ea38f03f8fb9522174d0667905db2e9cef93c11b))
+* Type into the reply box on unrecognised keys in the ticket page ([4291158](https://github.com/skorokithakis/symphony/commit/42911582b1a437b6f652396310ac4a167c17a154))
+* Use letter state shortcuts and show key badges while a prefix is armed ([f2a4785](https://github.com/skorokithakis/symphony/commit/f2a4785b976d400386f8f162d78ffc7a4bc2321a))
+
+
+### Bug Fixes
+
+* Always right-align the ticket composer buttons ([1829aea](https://github.com/skorokithakis/symphony/commit/1829aeaf2a4186dc85a9213bfbc0b4c9c90b2857))
+* Delete ticket dirs that contain read-only directory trees ([8d82ad5](https://github.com/skorokithakis/symphony/commit/8d82ad548f5857226181502437a30eeba0b1ec20))
+* Disable thinking in Anthropic calls so reply summaries get text ([3c5705c](https://github.com/skorokithakis/symphony/commit/3c5705c4da38baa5776886bd45d69d06d2f212b9))
+* Don't create a Draft from the editor until it has text ([7696f09](https://github.com/skorokithakis/symphony/commit/7696f099512ddc1d17069942aee0c6078213c214))
+* Keep the editor out of history after Start or Discard ([edf506f](https://github.com/skorokithakis/symphony/commit/edf506f7cee4274c07e7f4b3e2822dfd07843259))
+* Keep the editor's Start enabled during dictation ([c46fcd3](https://github.com/skorokithakis/symphony/commit/c46fcd3f44357b9dd27be5c262a1c0cd15087d03))
+* Keep the push bell on the wordmark row in the desktop rail ([f088193](https://github.com/skorokithakis/symphony/commit/f088193799304ebe860cf74cec8c66f5e32e48c0))
+* Keep ticket actions blocked during dictation across refreshes ([3fce850](https://github.com/skorokithakis/symphony/commit/3fce850cafaddc85953a939c8680609ad81a779e))
+* Make OpenCode's lock directory writable inside the sandbox ([756b515](https://github.com/skorokithakis/symphony/commit/756b515840e138aa941e1ab6b5bfc2bf504cbef9))
+* Remove the double focus outline on the reply box ([fc20adb](https://github.com/skorokithakis/symphony/commit/fc20adba2c863319a14800629df38d0a0fe0949b))
+* Serve the ntfy icon from GitHub instead of an unauthenticated route ([ea22a5c](https://github.com/skorokithakis/symphony/commit/ea22a5c166edd5c60d5e8547668019ddd0b5f392))
+* Show saved repository names in the web UI ticket list and ticket page ([acb9952](https://github.com/skorokithakis/symphony/commit/acb9952cef563aff722197a7b9aa123457f3d5f9))
+* Sort the repository list by name everywhere ([ae210d8](https://github.com/skorokithakis/symphony/commit/ae210d8e95cc9dc93edc3785ff1cadf2f5487401))
+* Stop cutting reply summaries mid-sentence ([5aa8f86](https://github.com/skorokithakis/symphony/commit/5aa8f8666911f3abf85de9345e1879f71a92f5b0))
+
+
+### Documentation
+
+* Describe the agent API's capabilities and limits in the README ([b2ce17c](https://github.com/skorokithakis/symphony/commit/b2ce17cc86cbbe60139afa440f5f42939b032f80))
+* List the editor Ctrl+Enter shortcut in the web UI help dialog ([38d182c](https://github.com/skorokithakis/symphony/commit/38d182cac3b871e2204bdd776d35fcaf6332cff6))
+
+
+### Code Refactoring
+
+* Remove ntfy notifications ([2ffdcc0](https://github.com/skorokithakis/symphony/commit/2ffdcc0013fa5a2060a383b9c2e27c8692205cde))
+
 ## [0.8.0](https://github.com/skorokithakis/symphony/compare/v0.7.0...v0.8.0) (2026-10-16)
 
 
