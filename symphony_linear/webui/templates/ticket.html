@@ -3,7 +3,7 @@
 
 {% block title %}{{ page.ticket.id }} · {{ page.title }} · symphony{% endblock %}
 
-{% block scripts %}<script src="{{ static_url('lists.js') }}" defer></script><script src="{{ static_url('upload.js') }}" defer></script><script src="{{ static_url('ticket.js') }}" defer></script>{% endblock %}
+{% block scripts %}<script src="{{ static_url('lists.js') }}" defer></script><script src="{{ static_url('upload.js') }}" defer></script><script src="{{ static_url('ticket.js') }}" defer></script>{% if dictation_enabled %}<script src="{{ static_url('dictation.js') }}" defer></script>{% endif %}{% endblock %}
 
 {% block content %}
 <header class="bar">
@@ -69,6 +69,11 @@
         <button class="icon-btn" type="button" id="composer-attach" aria-label="Attach files">
           <svg class="ic" viewBox="0 0 20 20" aria-hidden="true"><path d="M15 9.5l-5.6 5.6a2.6 2.6 0 01-3.7-3.7l6.2-6.2a1.8 1.8 0 012.5 2.5l-6 6"></path></svg>
         </button>
+        {% if dictation_enabled %}
+        <button class="icon-btn dictation-btn" type="button" data-dictation="reply" aria-label="Start dictation" aria-pressed="false" hidden>
+          <svg class="ic" viewBox="0 0 20 20" aria-hidden="true"><path d="M10 3.5a2 2 0 00-2 2v4a2 2 0 004 0v-4a2 2 0 00-2-2zM5.5 9a4.5 4.5 0 009 0M10 13.5V17M7.5 17h5"></path></svg>
+        </button>
+        {% endif %}
         <button class="icon-btn" type="button" id="composer-size" aria-pressed="false" aria-label="Make the composer large">
           <svg class="ic ic-expand" viewBox="0 0 20 20" aria-hidden="true"><path d="M4 8V4h4M16 12v4h-4M4 4l5 5M16 16l-5-5"></path></svg>
           <svg class="ic ic-shrink" viewBox="0 0 20 20" aria-hidden="true"><path d="M9 5v4H5M11 15v-4h4M9 9L4 4M11 11l5 5"></path></svg>

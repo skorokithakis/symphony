@@ -38,6 +38,17 @@ class WebUIApp:
     #: tracking (tests and other construction paths).
     presence: TicketPresence | None = None
 
+    @property
+    def dictation_enabled(self) -> bool:
+        """Whether the page may offer microphone dictation.
+
+        The long-lived Soniox key is the on/off switch; without it there is no
+        temporary-key route and no WebSocket origin in the CSP, so the page
+        must not render a button either.
+        """
+        webui = self.config.webui
+        return webui is not None and webui.soniox_api_key is not None
+
 
 @dataclass(frozen=True)
 class Request:

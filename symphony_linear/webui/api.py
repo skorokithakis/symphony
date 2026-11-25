@@ -23,6 +23,8 @@ from pathlib import Path
 from typing import Any
 from urllib.parse import unquote
 
+import httpx
+
 from symphony_linear.local_tracker import (
     STATE_DRAFT,
     TARGET_DESCRIPTION,
@@ -132,6 +134,89 @@ def api_archive(request: Request) -> Response:
             "needs_input_count": page.needs_input_count,
         }
     )
+
+
+# ---------------------------------------------------------------------------
+# Dictation
+# ---------------------------------------------------------------------------
+
+#: Soniox mints a short-lived key here.  The browser never sees the long-lived
+#: key; it connects to the WebSocket with the temporary one over the
+#: ``soniox-api-key`` subprotocol.  A single-use key with a 60-second window is
+#: plenty: it only has to survive the connection handshake.
+_SONIOX_TEMPORARY_KEY_URL = "https://api.soniox.com/v1/auth/temporary-api-key"
+_SONIOX_KEY_TIMEOUT_SECONDS = 10.0
+
+
+def _soniox_error_message(response: httpx.Response) -> str:
+    """Return Soniox's own message for a refused key request.
+
+    REST errors carry ``message``; the fallback is the status, because a
+    proxy's HTML error page has nothing a page could show.
+    """
+    try:
+        payload = response.json()
+    except ValueError:
+        payload = None
+    if isinstance(payload, dict):
+        message = payload.get("message")
+        if isinstance(message, str) and message:
+            return message
+    return f"Soniox returned HTTP {response.status_code}."
+
+
+def api_soniox_key(request: Request) -> Response:
+    """Mint one temporary Soniox key for the browser's recording.
+
+    The route is registered only when ``webui.soniox_api_key`` is set, and
+    this second check keeps a direct caller from reaching Soniox without it.
+    Soniox's error message is relayed so the page can show why dictation
+    failed; the long-lived key itself is only ever in the request header and
+    is never logged or returned.
+    """
+    webui = request.app.config.webui
+    api_key = webui.soniox_api_key if webui is not None else None
+    if not api_key:
+        return _error("Dictation is not configured.", status=404)
+    body = {
+        "usage_type": "transcribe_websocket",
+        "expires_in_seconds": 60,
+        "single_use": True,
+    }
+    headers = {"Authorization": f"Bearer {api_key}"}
+    try:
+        response = httpx.post(
+            _SONIOX_TEMPORARY_KEY_URL,
+            headers=headers,
+            json=body,
+            timeout=_SONIOX_KEY_TIMEOUT_SECONDS,
+        )
+    except httpx.HTTPError as exc:
+        # The exception type only: a transport error's message can echo the
+        # request, and the key must never reach a log.
+        logger.warning("Soniox temporary key request failed: %s", type(exc).__name__)
+        return _error("Could not reach Soniox. Try again.", status=502)
+
+    if not response.is_success:
+        logger.warning(
+            "Soniox temporary key request returned HTTP %s", response.status_code
+        )
+        # A gateway error rather than Soniox's own 4xx status: mirroring a 401
+        # would make the browser prompt for Basic credentials again.  The
+        # upstream message is relayed, but a proxy that echoes the request must
+        # not turn it into a way to read the long-lived key back.
+        message = _soniox_error_message(response).replace(api_key, "[redacted]")
+        return _error(message, status=502)
+
+    try:
+        payload = response.json()
+    except ValueError:
+        payload = None
+    temporary = payload.get("api_key") if isinstance(payload, dict) else None
+    if not isinstance(temporary, str) or not temporary:
+        logger.warning("Soniox temporary key response was not in the expected shape")
+        return _error("Soniox returned no temporary key.", status=502)
+    return _json({"api_key": temporary})
 
 
 # ---------------------------------------------------------------------------

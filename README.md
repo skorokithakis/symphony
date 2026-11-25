@@ -291,6 +291,9 @@ webui:
   # Optional. Base URL for the Messages API, e.g. an Anthropic-compatible
   # gateway (see Titles below).
   # anthropic_base_url: https://anthropic-gateway.example.com
+  # Optional. Soniox API key enabling microphone dictation in the reply and
+  # ticket-text boxes (see Dictation below).
+  # soniox_api_key: ${SONIOX_API_KEY}
   # Optional. Bearer token for the JSON API at /api/v1, for an external agent
   # (see Agent API below). Unset disables the API: /api/v1 then answers 404.
   # api_token: ${SYMPHONY_WEBUI_API_TOKEN}
@@ -435,6 +438,29 @@ form as the SDK's `ANTHROPIC_BASE_URL`: everything before `/v1`, since
 `/v1/messages` is always appended. The gateway must accept the `x-api-key`
 header and the fixed model id. The key is still the on/off switch; setting
 only the base URL does nothing.
+
+### Dictation
+
+With `webui.soniox_api_key` set, the ticket reply box and the editor's ticket
+text box get a microphone button. It records from the microphone and streams
+the audio to [Soniox](https://soniox.com)'s real-time Speech-to-Text API,
+inserting the recognised words at the cursor as they arrive. Click it again to
+stop: the last confirmed words stay in the box and the button returns to its
+idle state.
+
+The long-lived key stays on the daemon. Each recording first asks
+`POST /api/soniox-key` for a single-use temporary key that has 60 seconds in
+which to open the connection, then the browser opens the WebSocket directly to
+`wss://stt-rt.soniox.com`; audio is not proxied through Symphony. The route
+uses the same Basic auth and same-origin check as every other page and is not
+registered at all without the key, and the Content-Security-Policy allows the
+Soniox WebSocket origin only when dictation is configured. The key needs the
+**Temporary API keys** permission and the real-time speech-to-text permission.
+
+The button stays hidden when dictation is not configured, when the page is not
+on HTTPS (or localhost), when the browser has no microphone API, or when it
+cannot record a format Soniox accepts. Dictation needs JavaScript; without it
+both text boxes work as before.
 
 ### Notifications
 
@@ -638,6 +664,9 @@ linear:
 #   # anthropic_api_key: ${ANTHROPIC_API_KEY}
 #   # Optional. Messages API base URL, e.g. an Anthropic-compatible gateway.
 #   # anthropic_base_url: https://anthropic-gateway.example.com
+#   # Optional. Soniox API key for microphone dictation in the reply and
+#   # ticket-text boxes. Unset hides the microphone button.
+#   # soniox_api_key: ${SONIOX_API_KEY}
 #   # Optional. Bearer token for the JSON API at /api/v1, for an external
 #   # agent. Unset disables the API: /api/v1 then answers 404.
 #   # api_token: ${SYMPHONY_WEBUI_API_TOKEN}

@@ -21,6 +21,7 @@ from pathlib import Path
 from typing import Iterator
 from unittest.mock import Mock, patch
 
+import httpx
 import pytest
 
 from symphony_linear.config import AppConfig
@@ -49,7 +50,9 @@ _AGENT_TOKEN = "agent-token-123"
 # ---------------------------------------------------------------------------
 
 
-def _config(*, api_token: str | None = None) -> AppConfig:
+def _config(
+    *, api_token: str | None = None, soniox_api_key: str | None = None
+) -> AppConfig:
     block: dict[str, object] = {
         "port": 8080,
         "username": _USERNAME,
@@ -57,6 +60,8 @@ def _config(*, api_token: str | None = None) -> AppConfig:
     }
     if api_token is not None:
         block["api_token"] = api_token
+    if soniox_api_key is not None:
+        block["soniox_api_key"] = soniox_api_key
     return AppConfig.model_validate({"webui": block})
 
 
@@ -188,13 +193,14 @@ def _running_server(
     routes: Sequence[Route] | None = None,
     max_concurrent: int = 32,
     api_token: str | None = None,
+    soniox_api_key: str | None = None,
 ) -> Iterator[tuple[int, LocalTracker, StateManager]]:
     tracker = LocalTracker(tmp_path)
     state = load_state(tmp_path)
     server = WebUIServer(
         store=tracker.store,
         state=state,
-        config=_config(api_token=api_token),
+        config=_config(api_token=api_token, soniox_api_key=soniox_api_key),
         on_wake=Mock(),
         port=0,
         static_root=static_root,
@@ -1476,6 +1482,176 @@ class TestResponseHeaders:
         assert body == b""
         assert int(headers["Content-Length"]) > 0
         assert headers["Content-Security-Policy"] == _CSP
+
+
+class TestSonioxDictation:
+    """The optional dictation route and its CSP exception.
+
+    These are the security-relevant parts: a daemon without a Soniox key must
+    be indistinguishable from one that never had the feature, and the
+    temporary-key route must stay behind the normal dispatch pipeline.
+    """
+
+    #: The policy before dictation existed.  Hard-coded on purpose: comparing
+    #: with the module's own constant would not notice a change to it.
+    _PRE_SONIOX_CSP = (
+        "default-src 'none'; "
+        "script-src 'self'; "
+        "style-src 'self'; "
+        "img-src 'self'; "
+        "font-src 'self'; "
+        "connect-src 'self'; "
+        "base-uri 'none'; "
+        "form-action 'self'; "
+        "frame-ancestors 'none'"
+    )
+
+    def test_csp_is_unchanged_without_a_key(self, tmp_path: Path) -> None:
+        with _running_server(tmp_path) as (port, _tracker, _state):
+            status, headers, _body = _request(port, "GET", "/")
+
+        assert status == 200
+        assert headers["Content-Security-Policy"] == self._PRE_SONIOX_CSP
+
+    def test_csp_allows_the_soniox_websocket_with_a_key(self, tmp_path: Path) -> None:
+        with _running_server(tmp_path, soniox_api_key="long-lived-soniox-key") as (
+            port,
+            _tracker,
+            _state,
+        ):
+            _status, headers, _body = _request(port, "GET", "/")
+
+        policy = headers["Content-Security-Policy"]
+        assert "connect-src 'self' wss://stt-rt.soniox.com;" in policy
+        # The rest of the policy, and the default one in particular, is
+        # untouched.
+        assert policy != _CSP
+        assert "script-src 'self';" in policy
+        assert "frame-ancestors 'none'" in policy
+
+    def test_temporary_key_route_is_absent_without_a_key(self, tmp_path: Path) -> None:
+        with _running_server(tmp_path) as (port, _tracker, _state):
+            status, _headers, _body = _request(
+                port,
+                "POST",
+                "/api/soniox-key",
+                headers={"Origin": _origin(port)},
+                body=b"{}",
+            )
+
+        assert status == 404
+
+    def test_temporary_key_path_is_not_a_known_get(self, tmp_path: Path) -> None:
+        with _running_server(tmp_path) as (port, _tracker, _state):
+            status, _headers, _body = _request(port, "GET", "/api/soniox-key")
+
+        # 404, not the 405 a route registered but limited to POST would give.
+        assert status == 404
+
+    def test_editor_offers_the_button_only_with_a_key(self, tmp_path: Path) -> None:
+        with _running_server(tmp_path) as (port, _tracker, _state):
+            _status, _headers, without_key = _request(port, "GET", "/new")
+        with _running_server(tmp_path, soniox_api_key="long-lived-soniox-key") as (
+            port,
+            _tracker,
+            _state,
+        ):
+            _status, _headers, with_key = _request(port, "GET", "/new")
+
+        assert b"data-dictation" not in without_key
+        assert b"dictation.js" not in without_key
+        assert b'data-dictation="description"' in with_key
+        assert b"dictation.js" in with_key
+
+    def test_temporary_key_route_is_same_origin_guarded(self, tmp_path: Path) -> None:
+        with _running_server(tmp_path, soniox_api_key="long-lived-soniox-key") as (
+            port,
+            _tracker,
+            _state,
+        ):
+            status, _headers, _body = _request(
+                port, "POST", "/api/soniox-key", body=b"{}"
+            )
+
+        assert status == 403
+
+    def test_temporary_key_route_mints_a_single_use_key(self, tmp_path: Path) -> None:
+        minted = httpx.Response(201, json={"api_key": "snx_temp_test"})
+        with patch("symphony_linear.webui.api.httpx.post", return_value=minted) as post:
+            with _running_server(tmp_path, soniox_api_key="long-lived-soniox-key") as (
+                port,
+                _tracker,
+                _state,
+            ):
+                status, _headers, body = _request(
+                    port,
+                    "POST",
+                    "/api/soniox-key",
+                    headers={"Origin": _origin(port)},
+                    body=b"{}",
+                )
+
+        assert status == 200
+        assert json.loads(body) == {"api_key": "snx_temp_test"}
+        # The long-lived key must only ever travel in the outbound header.
+        assert b"long-lived-soniox-key" not in body
+        assert post.call_args.args[0] == (
+            "https://api.soniox.com/v1/auth/temporary-api-key"
+        )
+        assert post.call_args.kwargs["headers"] == {
+            "Authorization": "Bearer long-lived-soniox-key"
+        }
+        assert post.call_args.kwargs["json"] == {
+            "usage_type": "transcribe_websocket",
+            "expires_in_seconds": 60,
+            "single_use": True,
+        }
+
+    def test_soniox_error_message_reaches_the_page(self, tmp_path: Path) -> None:
+        refused = httpx.Response(401, json={"message": "Incorrect API key provided."})
+        with patch("symphony_linear.webui.api.httpx.post", return_value=refused):
+            with _running_server(tmp_path, soniox_api_key="long-lived-soniox-key") as (
+                port,
+                _tracker,
+                _state,
+            ):
+                status, _headers, body = _request(
+                    port,
+                    "POST",
+                    "/api/soniox-key",
+                    headers={"Origin": _origin(port)},
+                    body=b"{}",
+                )
+
+        # A gateway status, not a mirrored 401: the browser must not read that
+        # as "your Basic password is wrong" and prompt again.
+        assert status == 502
+        assert json.loads(body) == {"error": "Incorrect API key provided."}
+
+    def test_soniox_error_message_redacts_the_long_lived_key(
+        self, tmp_path: Path
+    ) -> None:
+        refused = httpx.Response(
+            401,
+            json={"message": "Key long-lived-soniox-key is not valid."},
+        )
+        with patch("symphony_linear.webui.api.httpx.post", return_value=refused):
+            with _running_server(tmp_path, soniox_api_key="long-lived-soniox-key") as (
+                port,
+                _tracker,
+                _state,
+            ):
+                status, _headers, body = _request(
+                    port,
+                    "POST",
+                    "/api/soniox-key",
+                    headers={"Origin": _origin(port)},
+                    body=b"{}",
+                )
+
+        assert status == 502
+        assert json.loads(body) == {"error": "Key [redacted] is not valid."}
+        assert b"long-lived-soniox-key" not in body
 
 
 class TestStaticFiles:

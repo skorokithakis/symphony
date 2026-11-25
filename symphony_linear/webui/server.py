@@ -54,7 +54,7 @@ from symphony_linear.presence import TicketPresence
 from symphony_linear.state import StateManager
 from symphony_linear.webui.agent_api import error_response, is_agent_api_path
 from symphony_linear.webui.http_types import Request, Response, Route, WebUIApp
-from symphony_linear.webui.routes import ROUTES
+from symphony_linear.webui.routes import routes_for
 
 logger = logging.getLogger(__name__)
 
@@ -76,17 +76,30 @@ _SERVE_POLL_INTERVAL = 0.1  # seconds — keeps stop() responsive in tests
 
 #: Only same-origin scripts and styles; the time formatter is an external
 #: file because inline script is deliberately not allowed.
-_CSP = (
-    "default-src 'none'; "
-    "script-src 'self'; "
-    "style-src 'self'; "
-    "img-src 'self'; "
-    "font-src 'self'; "
-    "connect-src 'self'; "
-    "base-uri 'none'; "
-    "form-action 'self'; "
-    "frame-ancestors 'none'"
-)
+#: ``connect-src`` gains the Soniox WebSocket origin only when dictation is
+#: configured, because the browser then streams audio to it directly.  Every
+#: other page keeps the original policy, byte for byte.
+_SONIOX_WEBSOCKET = "wss://stt-rt.soniox.com"
+
+
+def _build_csp(*, dictation: bool) -> str:
+    connect_src = "connect-src 'self'"
+    if dictation:
+        connect_src = f"{connect_src} {_SONIOX_WEBSOCKET}"
+    return (
+        "default-src 'none'; "
+        "script-src 'self'; "
+        "style-src 'self'; "
+        "img-src 'self'; "
+        "font-src 'self'; "
+        f"{connect_src}; "
+        "base-uri 'none'; "
+        "form-action 'self'; "
+        "frame-ancestors 'none'"
+    )
+
+
+_CSP = _build_csp(dictation=False)
 
 _STATIC_ROOT = Path(__file__).resolve().parent / "static"
 
@@ -308,6 +321,12 @@ class _WebUIHandler(BaseHTTPRequestHandler):
         server = self.server
         assert isinstance(server, _WebUIServer)
         return server.routes
+
+    @property
+    def _csp(self) -> str:
+        server = self.server
+        assert isinstance(server, _WebUIServer)
+        return server.csp
 
     def _authenticated(self) -> bool:
         username, password = self._credentials
@@ -572,7 +591,7 @@ class _WebUIHandler(BaseHTTPRequestHandler):
 
     def end_headers(self) -> None:
         """Add the headers every response must carry, success or error."""
-        self.send_header("Content-Security-Policy", _CSP)
+        self.send_header("Content-Security-Policy", self._csp)
         self.send_header("X-Content-Type-Options", "nosniff")
         self.send_header("X-Frame-Options", "DENY")
         super().end_headers()
@@ -602,14 +621,14 @@ class _WebUIHandler(BaseHTTPRequestHandler):
 _RequestSocket = socket.socket | tuple[bytes, socket.socket]
 
 
-def _write_overloaded_response(request: socket.socket) -> None:
+def _write_overloaded_response(request: socket.socket, csp: str) -> None:
     """Answer a connection we refuse to admit with a framed 503 and close it."""
     body = b"Service Unavailable\n"
     head = (
         "HTTP/1.0 503 Service Unavailable\r\n"
         "Content-Type: text/plain; charset=utf-8\r\n"
         f"Content-Length: {len(body)}\r\n"
-        f"Content-Security-Policy: {_CSP}\r\n"
+        f"Content-Security-Policy: {csp}\r\n"
         "X-Content-Type-Options: nosniff\r\n"
         "X-Frame-Options: DENY\r\n"
         "Connection: close\r\n"
@@ -631,6 +650,7 @@ class _WebUIServer(ThreadingHTTPServer):
     credentials: tuple[str, str]
     api_token: str | None
     routes: Sequence[Route]
+    csp: str
 
     def __init__(
         self,
@@ -657,7 +677,7 @@ class _WebUIServer(ThreadingHTTPServer):
             return
         if not self._slots.acquire(blocking=False):
             try:
-                _write_overloaded_response(request)
+                _write_overloaded_response(request, self.csp)
             finally:
                 try:
                     request.close()
@@ -740,7 +760,8 @@ class WebUIServer:
         self._port = webui.port if port is None else port
         self._credentials = (webui.username, webui.password)
         self._api_token = webui.api_token
-        self._routes = tuple(ROUTES if routes is None else routes)
+        self._csp = _build_csp(dictation=webui.soniox_api_key is not None)
+        self._routes = tuple(routes if routes is not None else routes_for(config))
         self._max_concurrent = max_concurrent
         self._app = WebUIApp(
             store=store,
@@ -785,6 +806,7 @@ class WebUIServer:
             server.credentials = self._credentials
             server.api_token = self._api_token
             server.routes = self._routes
+            server.csp = self._csp
             # The server object is handed to the thread directly: stop() clears
             # self._server, and a thread reading that field would see None and
             # never enter the loop.

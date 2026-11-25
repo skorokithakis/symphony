@@ -3,7 +3,7 @@
 
 {% block title %}{% if page.ticket_id %}{{ page.ticket_id }} · {% endif %}{{ page.heading }} · symphony{% endblock %}
 
-{% block scripts %}<script src="{{ static_url('lists.js') }}" defer></script><script src="{{ static_url('upload.js') }}" defer></script><script src="{{ static_url('editor.js') }}" defer></script>{% endblock %}
+{% block scripts %}<script src="{{ static_url('lists.js') }}" defer></script><script src="{{ static_url('upload.js') }}" defer></script><script src="{{ static_url('editor.js') }}" defer></script>{% if dictation_enabled %}<script src="{{ static_url('dictation.js') }}" defer></script>{% endif %}{% endblock %}
 
 {% block content %}
 <header class="bar">
@@ -53,7 +53,15 @@
         <ul class="files" id="editor-files" data-target="description"{% if not page.files %} hidden{% endif %}>{{ pending_files(page.files, "description") }}</ul>
         <div class="field-tools">
           <input class="sr" id="description-file" type="file" multiple tabindex="-1" aria-label="Attach files">
-          <button class="btn btn--quiet" type="button" id="description-attach"><svg class="ic" viewBox="0 0 20 20" aria-hidden="true"><path d="M15 9.5l-5.6 5.6a2.6 2.6 0 01-3.7-3.7l6.2-6.2a1.8 1.8 0 012.5 2.5l-6 6"></path></svg>Attach files</button>
+          <div class="field-actions">
+            {% if dictation_enabled %}
+            <button class="btn btn--quiet dictation-btn" type="button" data-dictation="description" aria-label="Start dictation" aria-pressed="false" hidden>
+              <svg class="ic" viewBox="0 0 20 20" aria-hidden="true"><path d="M10 3.5a2 2 0 00-2 2v4a2 2 0 004 0v-4a2 2 0 00-2-2zM5.5 9a4.5 4.5 0 009 0M10 13.5V17M7.5 17h5"></path></svg>
+              <span class="dictation-label">Dictate</span>
+            </button>
+            {% endif %}
+            <button class="btn btn--quiet" type="button" id="description-attach"><svg class="ic" viewBox="0 0 20 20" aria-hidden="true"><path d="M15 9.5l-5.6 5.6a2.6 2.6 0 01-3.7-3.7l6.2-6.2a1.8 1.8 0 012.5 2.5l-6 6"></path></svg>Attach files</button>
+          </div>
           <span class="field-note">Paste and drop also work. 50 MB maximum for each file; the agent reads at most 50 MB per message. Attaching needs JavaScript.</span>
         </div>
       </div>

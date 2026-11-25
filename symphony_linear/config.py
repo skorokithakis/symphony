@@ -357,6 +357,14 @@ class _WebUIConfig(BaseModel):
             "an Anthropic-compatible gateway. Defaults to https://api.anthropic.com"
         ),
     )
+    soniox_api_key: str | None = Field(
+        None,
+        description=(
+            "Optional Soniox API key enabling microphone dictation in the web "
+            "UI.  Its presence is the on/off switch; the browser only ever "
+            "receives short-lived temporary keys."
+        ),
+    )
     api_token: str | None = Field(
         None,
         description=(
@@ -382,13 +390,14 @@ class _WebUIConfig(BaseModel):
             raise ValueError("must be a non-empty string")
         return v
 
-    @field_validator("api_token")
+    @field_validator("api_token", "soniox_api_key")
     @classmethod
-    def _validate_api_token(cls, v: str | None) -> str | None:
+    def _validate_optional_secret(cls, v: str | None) -> str | None:
         # An empty value is almost always an unset ${VAR} that expanded to "".
-        # Reject it at load time rather than leave the API enabled with a
-        # token no client can send, which would turn every /api/v1 request
-        # into a puzzling 401.
+        # Reject it at load time rather than leave the feature enabled with a
+        # credential no client can use: an empty api_token would make every
+        # /api/v1 request a puzzling 401, and an empty Soniox key would turn
+        # dictation on and then fail at the first recording.
         if v is not None and not v.strip():
             raise ValueError("must be a non-empty string when set")
         return v

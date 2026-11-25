@@ -117,6 +117,16 @@ linear:
 #   # switch; this alone does nothing.
 #   # anthropic_base_url: https://anthropic-gateway.example.com
 #
+#   # Optional. Soniox API key for browser dictation.  When set, the ticket
+#   # reply box and the editor's ticket text box get a microphone button that
+#   # streams audio directly to Soniox and inserts the words at the cursor.
+#   # The key stays in config.yaml; the browser receives only a short-lived,
+#   # single-use temporary key for each recording.  The route that mints it,
+#   # and the Soniox WebSocket origin in the Content-Security-Policy, exist
+#   # only when this key is set.  The key needs the "Temporary API keys"
+#   # permission and the real-time speech-to-text permission.
+#   # soniox_api_key: ${SONIOX_API_KEY}
+#
 #   # Optional. Bearer token for the read/write JSON API at /api/v1, used by
 #   # an external agent rather than a browser.  Leave it unset to disable the
 #   # API: /api/v1 then answers 404.  The token lives in config.yaml, which

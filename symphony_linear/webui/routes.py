@@ -6,6 +6,11 @@ which authenticates the request, enforces same-origin on non-GET/HEAD methods
 and adds the security headers to the response.  Adding an entry here cannot
 skip any of that.
 
+A feature that has an on/off switch in the config registers its route
+conditionally through :func:`routes_for` rather than adding it to ``ROUTES``:
+a daemon without the feature must answer 404 for the path rather than expose
+an endpoint that cannot work.
+
 A view is ``Callable[[Request], Response]``.  Use a named group in the pattern
 to read a path parameter, e.g. ``r"^/tickets/(?P<ticket_id>[^/]+)$"`` and
 ``request.match.group("ticket_id")``.
@@ -26,6 +31,7 @@ from __future__ import annotations
 
 import re
 
+from symphony_linear.config import AppConfig
 from symphony_linear.webui.agent_api import (
     api_models,
     api_repo_add,
@@ -54,6 +60,7 @@ from symphony_linear.webui.api import (
     api_reply,
     api_save_draft,
     api_seen,
+    api_soniox_key,
     api_start_draft,
     api_start_new,
     api_state,
@@ -182,3 +189,23 @@ ROUTES: tuple[Route, ...] = (
     Route("POST", _API_TICKET_STATE, api_state),
     Route("GET", re.compile(r"^/static/(?P<path>.+)$"), serve_static),
 )
+
+#: Optional routes are kept out of ``ROUTES`` so a daemon without the feature
+#: answers 404 for their paths instead of exposing an endpoint that cannot
+#: work.  ``routes_for`` is the whole table for a given config.
+SONIOX_KEY_ROUTE: Route = Route(
+    "POST", re.compile(r"^/api/soniox-key$"), api_soniox_key
+)
+
+
+def routes_for(config: AppConfig) -> tuple[Route, ...]:
+    """Return the routes enabled by *config*.
+
+    Only dictation is conditional today: without ``webui.soniox_api_key`` the
+    temporary-key route is absent, so ``/api/soniox-key`` is an unknown route
+    and the page never renders the microphone button.
+    """
+    webui = config.webui
+    if webui is not None and webui.soniox_api_key is not None:
+        return (*ROUTES, SONIOX_KEY_ROUTE)
+    return ROUTES

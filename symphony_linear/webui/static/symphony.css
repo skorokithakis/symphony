@@ -851,6 +851,10 @@ textarea.input--big { flex: 1 0 auto; min-height: 13rem; padding: var(--s3) var(
 .field-err { display: flex; align-items: center; gap: 6px; font-size: var(--t-sm); font-weight: 600; color: var(--danger); }
 .field-tools { display: flex; flex-wrap: wrap; align-items: center; justify-content: space-between; gap: 0 var(--s2); }
 .field-tools .btn { margin-left: -8px; }
+/* The mic and Attach buttons stay together on the left, with the note on the
+   right; without the wrapper, space-between would centre Attach. */
+.field-actions { display: flex; align-items: center; gap: var(--s1); margin-left: -8px; }
+.field-actions .btn { margin-left: 0; }
 /* Local, not in the design file: repos page and the editor's inline new-repo fields. Keep on re-sync. */
 .repo-new { display: flex; flex-direction: column; gap: 6px; }
 .repo-list { display: flex; flex-direction: column; }
@@ -983,6 +987,13 @@ dialog.confirm:not([open]) { display: none; }
    so restore it for them. */
 
 .conn[hidden], .saved[hidden], .jump[hidden], .alert[hidden], #repo-new-fields[hidden] { display: none; }
+
+/* Dictation reuses .icon-btn / .btn; it is hidden until the script confirms a
+   secure context and a microphone API, and its accent fill is the recording
+   state (the .icon-btn pressed rule only darkens the sunken surface). */
+.dictation-btn[hidden] { display: none; }
+.dictation-btn[aria-pressed="true"] { background: var(--accent); color: var(--on-accent); }
+.dictation-btn[aria-pressed="true"] .ic { animation: sym-pulse 1.4s ease-in-out infinite; }
 
 /* The saved indicator is quiet until it has something to say.  Its two icons
    are toggled rather than swapped in the script. */
