@@ -16,6 +16,7 @@ from typing import BinaryIO
 
 from symphony_linear.config import AppConfig
 from symphony_linear.local_tracker import LocalTicketStore
+from symphony_linear.presence import TicketPresence
 from symphony_linear.state import StateManager
 
 #: Default request-body limit.  A route may raise it explicitly; the file
@@ -32,6 +33,10 @@ class WebUIApp:
     config: AppConfig
     on_wake: Callable[[], None]
     static_root: Path
+    #: Shared with the tracker, which suppresses the Needs Input push while
+    #: this ticket's page is being watched.  ``None`` means no presence
+    #: tracking (tests and other construction paths).
+    presence: TicketPresence | None = None
 
 
 @dataclass(frozen=True)

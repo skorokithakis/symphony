@@ -12,6 +12,7 @@ import pytest
 from symphony_linear.cli import _create_tracker, _reexec, main
 from symphony_linear.config import load_config
 from symphony_linear.local_tracker import STATE_IN_PROGRESS, LocalTracker
+from symphony_linear.presence import TicketPresence
 from symphony_linear.tracker import TransitionTarget
 
 
@@ -524,6 +525,28 @@ class TestCreateTracker:
         # must hand webui.public_url to the tracker alongside the ntfy block.
         assert calls == [(ticket.id, "https://symphony.example.com")]
 
+    def test_webui_backend_receives_the_presence_object(
+        self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        """A ticket whose page is watched must not publish its push."""
+        _write_config(tmp_path, _CONFIG_WITH_WEBUI_NTFY)
+        config = load_config(tmp_path)
+        presence = TicketPresence()
+        tracker = _create_tracker(config, tmp_path, presence=presence)
+        assert isinstance(tracker, LocalTracker)
+        ticket = tracker.store.create_draft(title="t", description="x")
+        tracker.store.set_state(ticket.id, STATE_IN_PROGRESS)
+        presence.mark_active(ticket.id)
+        calls: list[str] = []
+        monkeypatch.setattr(
+            "symphony_linear.local_tracker.publish_needs_input",
+            lambda _config, notified, **_kwargs: calls.append(notified.id),
+        )
+
+        tracker.transition_to(ticket.id, TransitionTarget.needs_input)
+
+        assert calls == []
+
     def test_main_passes_workspace_to_tracker_factory(self, tmp_path: Path) -> None:
         _write_config(tmp_path, _CONFIG_WITH_WEBUI)
 
@@ -542,3 +565,26 @@ class TestCreateTracker:
         mock_webui_class.assert_called_once()
         args, _ = mock_create_tracker.call_args
         assert args[1] == tmp_path
+
+    def test_main_shares_one_presence_between_tracker_and_web_ui(
+        self, tmp_path: Path
+    ) -> None:
+        """Both sides must see the same record, or the gate never matches."""
+        _write_config(tmp_path, _CONFIG_WITH_WEBUI)
+
+        with (
+            mock.patch("symphony_linear.cli.load_state") as mock_load_state,
+            mock.patch("symphony_linear.cli._create_tracker") as mock_create_tracker,
+            mock.patch("symphony_linear.cli.Orchestrator") as mock_orch_class,
+            mock.patch("symphony_linear.cli.WebUIServer") as mock_webui_class,
+        ):
+            mock_load_state.return_value = mock.MagicMock()
+            mock_create_tracker.return_value = LocalTracker(tmp_path)
+            mock_orch_class.return_value = mock.MagicMock()
+
+            main(["--workspace", str(tmp_path)])
+
+        tracker_presence = mock_create_tracker.call_args.kwargs["presence"]
+        server_presence = mock_webui_class.call_args.kwargs["presence"]
+        assert isinstance(tracker_presence, TicketPresence)
+        assert tracker_presence is server_presence

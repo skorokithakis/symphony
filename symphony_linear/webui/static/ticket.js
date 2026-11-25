@@ -17,6 +17,11 @@
 
   var POLL_INTERVAL = 3000;
   var DRAFT_INTERVAL = 800;
+  /* A page counts as watched for this long after the last interaction, as
+   * long as the tab is visible and the window has focus.  The poll then sends
+   * active=1, and the server suppresses the Needs Input push for a ticket
+   * whose page is already on screen. */
+  var ACTIVE_INTERVAL = 10 * 60 * 1000;
 
   var thread = document.getElementById("thread");
   var titleEl = document.getElementById("ticket-title");
@@ -56,6 +61,9 @@
   var timer = null;
   var polling = false;
   var pollQueued = false;
+  /* Opening the page counts as the first interaction; it then decays with
+   * everything else. */
+  var lastActivity = Date.now();
   var sending = false;
   var sendInFlight = null;
   /* The first text sent with the current token.  A send whose response was
@@ -366,6 +374,18 @@
 
   /* ---------- poll ---------- */
 
+  function noteActivity() {
+    lastActivity = Date.now();
+  }
+
+  function pageActive() {
+    return (
+      !document.hidden &&
+      document.hasFocus() &&
+      Date.now() - lastActivity < ACTIVE_INTERVAL
+    );
+  }
+
   function appendEntries(html) {
     var wasAtBottom = nearBottom();
     var working = document.getElementById("working");
@@ -468,6 +488,9 @@
     }
     polling = true;
     var url = pollUrl + "?after=" + encodeURIComponent(lastCommentId);
+    if (pageActive()) {
+      url += "&active=1";
+    }
     Sym.getJSON(url)
       .then(function (data) {
         Sym.showConn(false);
@@ -577,6 +600,15 @@
       }
     });
   }
+
+  /* What makes the page "watched" is interaction.  Only user-driven events
+   * count: scroll is deliberately absent because programmatic scrolling
+   * (initial positioning, appending entries) would keep renewing the timer on
+   * an unattended page, and wheel/touchstart already cover real scrolling. */
+  document.addEventListener("keydown", noteActivity);
+  document.addEventListener("pointerdown", noteActivity);
+  document.addEventListener("touchstart", noteActivity, { passive: true });
+  document.addEventListener("wheel", noteActivity, { passive: true });
 
   window.addEventListener("online", function () {
     retryDraft();

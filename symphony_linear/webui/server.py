@@ -43,6 +43,7 @@ from urllib.parse import parse_qs, urlsplit
 
 from symphony_linear.config import AppConfig
 from symphony_linear.local_tracker import LocalTicketStore
+from symphony_linear.presence import TicketPresence
 from symphony_linear.state import StateManager
 from symphony_linear.webui.http_types import Request, Response, Route, WebUIApp
 from symphony_linear.webui.routes import ROUTES
@@ -546,6 +547,10 @@ class WebUIServer:
         Override for the route table (tests only).
     max_concurrent:
         Admission limit override (tests only).  Production uses 32.
+    presence:
+        The in-memory viewer presence shared with the local tracker, which
+        uses it to suppress the Needs Input push while a ticket's page is
+        being watched.  ``None`` disables presence tracking (tests).
     """
 
     def __init__(
@@ -559,6 +564,7 @@ class WebUIServer:
         port: int | None = None,
         routes: Sequence[Route] | None = None,
         max_concurrent: int = _MAX_CONCURRENT_REQUESTS,
+        presence: TicketPresence | None = None,
     ) -> None:
         webui = config.webui
         if webui is None:
@@ -577,6 +583,7 @@ class WebUIServer:
             config=config,
             on_wake=on_wake,
             static_root=static_root or _STATIC_ROOT,
+            presence=presence,
         )
         self._thread: threading.Thread | None = None
         self._server: _WebUIServer | None = None

@@ -32,6 +32,7 @@ from pydantic import BaseModel, ConfigDict, Field, field_validator
 
 from symphony_linear.config import _NtfyConfig
 from symphony_linear.linear import Comment, Issue
+from symphony_linear.presence import TicketPresence
 from symphony_linear.state import StateManager
 from symphony_linear.tracker import (
     AttachmentDownloadError,
@@ -1495,6 +1496,7 @@ class LocalTracker:
         *,
         ntfy: _NtfyConfig | None = None,
         public_url: str | None = None,
+        presence: TicketPresence | None = None,
     ) -> None:
         self.store = LocalTicketStore(workspace / "tickets")
         # Notifications hang off the tracker because transition_to is the one
@@ -1504,6 +1506,10 @@ class LocalTracker:
         # The UI's base URL is a webui setting, not an ntfy one, but the only
         # thing that consumes it is the notification payload here.
         self._public_url = public_url
+        # Shared with the web UI, which records a human looking at the ticket.
+        # ``None`` is a tracker with no web UI attached (tests, or a path that
+        # constructs the tracker on its own), and then nothing suppresses.
+        self._presence = presence
 
     # ------------------------------------------------------------------
     # Tracker protocol methods
@@ -1564,6 +1570,10 @@ class LocalTracker:
         dirty-workspace refusal depends on it.  A refused transition is a
         logged no-op, never an exception: the next tick sees an untriggered
         ticket and runs its normal cleanup, which cancels the turn.
+
+        A successful ``needs_input`` transition publishes one ntfy
+        notification unless the web UI recorded the human viewing that ticket
+        seconds earlier (see :class:`~symphony_linear.presence.TicketPresence`).
         """
         state = _STATE_FOR_TARGET.get(target)
         if state is None:
@@ -1582,6 +1592,15 @@ class LocalTracker:
             return
         logger.info("Transitioned %s to '%s'", id, state)
         if target is TransitionTarget.needs_input and self._ntfy is not None:
+            # The reply is already on the reader's screen when the human has
+            # this ticket's page open, so a push would only repeat it on their
+            # phone.  A stale or absent signal publishes normally.
+            if self._presence is not None and self._presence.is_active(id):
+                logger.info(
+                    "Skipping ntfy notification for %s: its page is being viewed",
+                    id,
+                )
+                return
             ticket = self.store.get(id)
             if ticket is not None:
                 publish_needs_input(self._ntfy, ticket, public_url=self._public_url)

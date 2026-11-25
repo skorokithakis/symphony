@@ -61,6 +61,7 @@ symphony_linear/
   github.py         GitHub GraphQL client (httpx, sync); typed exceptions
   github_tracker.py GitHub Projects v2 backend adapter implementing the Tracker protocol
   local_tracker.py  Built-in tracker: on-disk ticket store under <workspace>/tickets/, fixed workflow states
+  presence.py       In-memory viewer presence shared by the web UI and the local tracker (Needs Input push gate)
   webui/            Web UI for the built-in tracker: server.py (the single dispatch choke point),
                     routes.py (route table), api.py (JSON endpoints), views.py / editor.py /
                     ticket.py (list, editor and ticket pages), files.py (uploaded-file serving),
@@ -538,6 +539,21 @@ shutting down, or the ticket is no longer triggered — see `_is_still_triggered
   `Send to QA` action is a pure transition and never posts the composer text: a
   fresh human comment would be seen as pending input, resume the agent, and
   pull the ticket out of QA before the serve starts.
+- **The Needs Input push is suppressed while the ticket's page is watched.**
+  The ticket page's 3-second poll adds `active=1` while the tab is visible,
+  the window has focus (`document.hasFocus()`) and the user interacted
+  (keydown, pointerdown, touchstart, wheel) within the last 10
+  minutes. `api_ticket` records that in a process-local `TicketPresence`
+  (`presence.py`: monotonic timestamps, thread-safe, never persisted), and
+  `cli.main` builds one instance shared by `LocalTracker` and `WebUIServer`.
+  `LocalTracker.transition_to` skips the Needs Input ntfy publish, with one
+  INFO line, when that ticket saw a signal in the last 15 seconds (five poll
+  intervals). Only the page of the ticket that changed counts; home
+  and other ticket pages do not. Recording presence is a GET with an
+  in-memory side effect only — no ticket store, `state.json` or seen marker
+  is touched, so it stays within the read-only GET rule. `TicketPresence` is
+  optional on both constructors, so a tracker or server built without one
+  behaves exactly as before (tests, or a tracker with no web UI attached).
 - **Every web UI request goes through one dispatch choke point.**
   `_WebUIHandler.handle_one_request` parses the request and `_dispatch` does,
   in order: HTTP Basic auth on every request, including static assets and

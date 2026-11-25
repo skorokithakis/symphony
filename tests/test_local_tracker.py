@@ -33,6 +33,7 @@ from symphony_linear.local_tracker import (
     publish_needs_input,
     stored_file_name,
 )
+from symphony_linear.presence import ACTIVE_WINDOW_SECONDS, TicketPresence
 from symphony_linear.tracker import (
     AttachmentDownloadError,
     Tracker,
@@ -1599,6 +1600,81 @@ class TestNtfyNotifications:
 
         assert calls == []
         assert tracker.store.get(ticket.id).state == STATE_NEEDS_INPUT  # type: ignore[union-attr]
+
+    def test_a_watched_ticket_skips_the_notification(
+        self,
+        tmp_path: Path,
+        monkeypatch: pytest.MonkeyPatch,
+        caplog: pytest.LogCaptureFixture,
+    ) -> None:
+        presence = TicketPresence()
+        tracker = LocalTracker(
+            tmp_path, ntfy=_NtfyConfig(url="https://ntfy.sh/t"), presence=presence
+        )
+        ticket = tracker.store.create_draft(title="t", description="x")
+        tracker.store.set_state(ticket.id, STATE_IN_PROGRESS)
+        presence.mark_active(ticket.id)
+        calls: list[str] = []
+        monkeypatch.setattr(
+            "symphony_linear.local_tracker.publish_needs_input",
+            lambda _config, notified, **_kwargs: calls.append(notified.id),
+        )
+
+        with caplog.at_level(logging.INFO, logger="symphony_linear.local_tracker"):
+            tracker.transition_to(ticket.id, TransitionTarget.needs_input)
+
+        assert calls == []
+        assert "Skipping ntfy notification" in caplog.text
+        # The suppression is only about the push: the transition itself stands.
+        stored = tracker.store.get(ticket.id)
+        assert stored is not None
+        assert stored.state == STATE_NEEDS_INPUT
+
+    def test_presence_for_another_ticket_does_not_skip(
+        self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        """Only the page of the ticket that changed suppresses its own push."""
+        presence = TicketPresence()
+        tracker = LocalTracker(
+            tmp_path, ntfy=_NtfyConfig(url="https://ntfy.sh/t"), presence=presence
+        )
+        ticket = tracker.store.create_draft(title="t", description="x")
+        tracker.store.set_state(ticket.id, STATE_IN_PROGRESS)
+        presence.mark_active("SYM-999")
+        calls: list[str] = []
+        monkeypatch.setattr(
+            "symphony_linear.local_tracker.publish_needs_input",
+            lambda _config, notified, **_kwargs: calls.append(notified.id),
+        )
+
+        tracker.transition_to(ticket.id, TransitionTarget.needs_input)
+
+        assert calls == [ticket.id]
+
+    def test_a_stale_presence_signal_does_not_skip(
+        self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        clock = {"now": 1000.0}
+        monkeypatch.setattr(
+            "symphony_linear.presence.time.monotonic", lambda: clock["now"]
+        )
+        presence = TicketPresence()
+        tracker = LocalTracker(
+            tmp_path, ntfy=_NtfyConfig(url="https://ntfy.sh/t"), presence=presence
+        )
+        ticket = tracker.store.create_draft(title="t", description="x")
+        tracker.store.set_state(ticket.id, STATE_IN_PROGRESS)
+        presence.mark_active(ticket.id)
+        clock["now"] += ACTIVE_WINDOW_SECONDS + 1
+        calls: list[str] = []
+        monkeypatch.setattr(
+            "symphony_linear.local_tracker.publish_needs_input",
+            lambda _config, notified, **_kwargs: calls.append(notified.id),
+        )
+
+        tracker.transition_to(ticket.id, TransitionTarget.needs_input)
+
+        assert calls == [ticket.id]
 
 
 # ---------------------------------------------------------------------------

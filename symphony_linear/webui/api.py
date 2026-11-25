@@ -2,8 +2,10 @@
 
 Every endpoint here sits behind the same Basic auth and same-origin checks as
 the pages: routes are ordinary entries in ``routes.py`` and go through the
-server's one dispatch choke point.  The two GET endpoints are read-only, like
-every GET view; the "seen" marker and both kinds of autosave are POSTs.
+server's one dispatch choke point.  The GET endpoints never write persisted
+state, like every GET view; the ticket poll's ``active=1`` records viewer
+presence in memory only.  The "seen" marker and both kinds of autosave are
+POSTs.
 
 HTML is never assembled in JavaScript.  The fragments are rendered from the
 same ``_macros.html`` macros as the full pages, and the JSON adds only the
@@ -142,6 +144,13 @@ def api_ticket(request: Request) -> Response:
     ticket = _ticket(request)
     if ticket is None:
         return _error("Ticket not found.", status=404)
+    # The page adds active=1 while it is visible, focused and recently
+    # interacted with.  This is deliberately a GET: it records only an
+    # in-memory presence timestamp shared with the tracker, never the ticket
+    # store, state.json or the seen marker, so it does not break the read-only
+    # GET rule.
+    if request.query.get("active", [""])[0] == "1" and request.app.presence is not None:
+        request.app.presence.mark_active(ticket.id)
     after = request.query.get("after", [""])[0]
     return _json(snapshot(request, ticket, after))
 

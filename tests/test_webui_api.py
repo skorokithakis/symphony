@@ -22,6 +22,7 @@ from symphony_linear.local_tracker import (
     STATE_NEEDS_INPUT,
     LocalTracker,
 )
+from symphony_linear.presence import TicketPresence
 from tests.test_webui_server import _origin, _request, _state_entry
 from tests.test_webui_ticket import _server, _ticket
 
@@ -346,6 +347,27 @@ class TestTicketPoll:
 
         assert before is None
         assert after is None
+
+    def test_an_active_poll_registers_only_that_ticket(self, tmp_path: Path) -> None:
+        presence = TicketPresence()
+        with _server(tmp_path, presence=presence) as (port, tracker, _state, _wake):
+            watched = _ticket(tracker.store, title="Watched")
+            other = _ticket(tracker.store, title="Other")
+
+            _get_json(port, f"/api/tickets/{watched.id}?after=&active=1")
+            _get_json(port, f"/api/tickets/{other.id}?after=")
+
+        assert presence.is_active(watched.id)
+        assert not presence.is_active(other.id)
+
+    def test_a_poll_without_active_does_not_register(self, tmp_path: Path) -> None:
+        presence = TicketPresence()
+        with _server(tmp_path, presence=presence) as (port, tracker, _state, _wake):
+            ticket = _ticket(tracker.store)
+
+            _get_json(port, f"/api/tickets/{ticket.id}?after=")
+
+        assert not presence.is_active(ticket.id)
 
 
 class TestStateActionsApi:

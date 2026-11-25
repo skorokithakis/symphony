@@ -17,6 +17,7 @@ from symphony_linear.linear_tracker import LinearTracker
 from symphony_linear.local_tracker import LocalTracker
 from symphony_linear.logging import get_logger, setup_logging
 from symphony_linear.orchestrator import Orchestrator
+from symphony_linear.presence import TicketPresence
 from symphony_linear.sandbox_path import resolve_sandbox_path
 from symphony_linear.state import load_state
 from symphony_linear.tracker import Tracker, model_label_name
@@ -95,9 +96,13 @@ def main(argv: list[str] | None = None) -> None:
         logger.info("  poll_interval   = %s s", config.poll_interval_seconds)
         return
 
-    # Load state and create the appropriate tracker backend.
+    # Load state and create the appropriate tracker backend.  The presence
+    # record is one instance per process: the web UI writes to it, the local
+    # tracker reads it to decide whether a human is already looking at the
+    # ticket, so both must share the same object.
     state = load_state(workspace)
-    tracker = _create_tracker(config, workspace)
+    presence = TicketPresence()
+    tracker = _create_tracker(config, workspace, presence=presence)
 
     # Auto-provision the trigger field/label and model alias labels on startup.
     model_labels = [model_label_name(alias) for alias in config.models]
@@ -123,6 +128,7 @@ def main(argv: list[str] | None = None) -> None:
             state=state,
             config=config,
             on_wake=orchestrator.wake,
+            presence=presence,
         )
     try:
         # Start inside the try so a failed bind/thread start still runs
@@ -155,8 +161,15 @@ def _reexec() -> None:
     os.execv(sys.executable, argv)
 
 
-def _create_tracker(config: AppConfig, workspace: Path) -> Tracker:
-    """Instantiate the correct tracker backend based on config."""
+def _create_tracker(
+    config: AppConfig, workspace: Path, *, presence: TicketPresence | None = None
+) -> Tracker:
+    """Instantiate the correct tracker backend based on config.
+
+    *presence* is the web UI's viewer-presence record; only the local backend
+    uses it, to suppress the Needs Input push while the ticket's page is
+    being watched.  The other backends ignore it.
+    """
     if config.linear is not None:
         linear_client = LinearClient(api_key=config.linear.api_key)
         return LinearTracker(linear=linear_client, config=config.linear)
@@ -178,6 +191,7 @@ def _create_tracker(config: AppConfig, workspace: Path) -> Tracker:
             workspace,
             ntfy=config.webui.ntfy,
             public_url=config.webui.public_url,
+            presence=presence,
         )
     # The model_validator guarantees this is unreachable, but be defensive.
     raise RuntimeError("No tracker backend configured")

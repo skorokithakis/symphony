@@ -25,6 +25,7 @@ from symphony_linear.local_tracker import (
     LocalTicketStore,
     LocalTracker,
 )
+from symphony_linear.presence import TicketPresence
 from symphony_linear.state import StateManager, load_state
 from symphony_linear.tracker import TransitionTarget
 from symphony_linear.webui.server import WebUIServer
@@ -44,9 +45,9 @@ from tests.test_webui_server import (
 
 @contextmanager
 def _server(
-    tmp_path: Path,
+    tmp_path: Path, presence: TicketPresence | None = None
 ) -> Iterator[tuple[int, LocalTracker, StateManager, Mock]]:
-    tracker = LocalTracker(tmp_path)
+    tracker = LocalTracker(tmp_path, presence=presence)
     state = load_state(tmp_path)
     wake = Mock()
     server = WebUIServer(
@@ -55,6 +56,7 @@ def _server(
         config=_config(),
         on_wake=wake,
         port=0,
+        presence=presence,
     )
     server.start()
     try:
