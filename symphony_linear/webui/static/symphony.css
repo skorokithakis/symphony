@@ -720,7 +720,12 @@ a.file:hover { border-color: var(--ink-3); background: var(--sunken); }
   width: auto; max-width: 12rem; min-height: 32px; padding: 0 var(--s2);
   font-size: var(--t-xs);
 }
-.composer-actions { flex: 1 1 100%; display: flex; flex-wrap: wrap; align-items: center; gap: var(--s2); }
+/* The actions always sit at the right edge, so Send keeps one place.  On a
+   wide page they share a row with the tools; when that row is too full they
+   wrap onto their own line, and without margin-left: auto the parent's
+   space-between would put a lone item at the left.  justify-content keeps
+   any internal wrap on the right too. */
+.composer-actions { flex: 1 1 100%; display: flex; flex-wrap: wrap; align-items: center; justify-content: flex-end; gap: var(--s2); margin-left: auto; }
 .composer-actions .btn { padding: 0 var(--s3); }
 .composer-actions .btn--primary { margin-left: auto; padding: 0 var(--s4); }
 .reason { flex: 1 1 8rem; font-size: var(--t-xs); line-height: 1.35; color: var(--ink-2); text-align: right; }
