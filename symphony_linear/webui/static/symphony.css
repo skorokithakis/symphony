@@ -240,8 +240,8 @@ body.sym { min-height: 100dvh; }
     overflow-y: auto; overscroll-behavior: contain; scrollbar-gutter: stable;
   }
   .app > .bar, .app--ticket > .bar, .app--editor > .bar {
-    grid-area: bar; display: flex; flex-direction: column; align-items: flex-start; justify-content: flex-start;
-    gap: var(--s1); padding: var(--s5) var(--s5) var(--s4);
+    grid-area: bar; display: flex; flex-flow: row wrap; align-items: center; justify-content: space-between;
+    gap: var(--s1) var(--s3); padding: var(--s5) var(--s5) var(--s4);
     background: var(--rail);
   }
   .app > .dock, .app--ticket > .dock, .app--editor > .dock {
@@ -1025,6 +1025,15 @@ dialog.confirm:not([open]) { display: none; }
 
 /* The header's right-hand controls: the connection notice and the bell. */
 .bar-actions { display: flex; align-items: center; gap: var(--s2); }
+
+/* In the narrow desktop rail the bell sits on the wordmark's row.  The
+   connection notice is too long to share that row, so the wrapper dissolves
+   and the notice wraps onto its own line below; otherwise the whole wrapper
+   would wrap and take the bell with it. */
+@container sym (min-width: 800px) {
+  .bar-actions { display: contents; }
+  .bar .conn { order: 1; flex-basis: 100%; }
+}
 
 /* The saved indicator is quiet until it has something to say.  Its two icons
    are toggled rather than swapped in the script. */
