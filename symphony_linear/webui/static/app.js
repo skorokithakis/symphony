@@ -366,8 +366,8 @@
     return Boolean(editable && editable.isContentEditable);
   }
 
-  /* ``visible`` is false for the dock's New ticket link on the ticket and
-     editor pages, whose layout hides the dock: "c" must still work there.  The
+  /* ``visible`` is false for the dock's links on the ticket and editor pages,
+     whose layout hides the dock: "g" sequences must still work there.  The
      state buttons are checked because a hidden button is how the server
      declines an action. */
   function activate(name, mustBeVisible) {
@@ -455,7 +455,7 @@
      case-insensitively, as it always was. */
   var PREFIX_SHORTCUTS = {
     s: { n: "sn", q: "sq", d: "sd" },
-    g: { t: "gt", a: "ga", r: "gr" },
+    g: { t: "gt", a: "ga", r: "gr", n: "gn" },
   };
   var PREFIX_SEQUENCE_MS = 1500;
   var pendingReplyText = "";
@@ -495,14 +495,6 @@
     window.clearTimeout(prefixExpiryTimer);
     prefixExpiryTimer = 0;
     setArmedPrefix("");
-  }
-
-  /* The ticket page has the composer ("c" must type there), and the Done
-     ticket page has the same wrapper but no reply box.  ``#ticket`` is the
-     page's own marker (ticket.js keys off it), so neither is mistaken for a
-     list page. */
-  function isTicketPage() {
-    return document.getElementById("ticket") !== null;
   }
 
   function prefixShortcut(prefix, key) {
@@ -635,11 +627,6 @@
     if (key === "?") {
       pendingReplyText = "";
       if (openHelp()) {
-        event.preventDefault();
-      }
-    } else if (key === "c" && !isTicketPage()) {
-      pendingReplyText = "";
-      if (activate("new", false)) {
         event.preventDefault();
       }
     } else if ((key === "j" || key === "k") && document.querySelector("a.row")) {

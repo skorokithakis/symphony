@@ -785,7 +785,7 @@ class TestTemplates:
         assert "<kbd>Ctrl+K</kbd>" in text
         assert "Pick repository (editor)" in text
         assert "<kbd>Ctrl+/</kbd>" in text
-        assert "New ticket (not on the ticket page)" in text
+        assert "<kbd>g</kbd> then <kbd>n</kbd></span><span>New ticket</span>" in text
 
 
 class TestDock:
@@ -867,8 +867,9 @@ class TestDock:
             _status, _headers, body = _request(port, "GET", "/")
 
         link = body.decode().split('href="/new"', 1)[1].split(">", 1)[0]
-        assert 'data-shortcut="new"' in link
-        assert 'title="New ticket (c)"' in link
+        assert 'data-shortcut="gn"' in link
+        assert 'data-shortcut-key="n"' in link
+        assert 'title="New ticket (g n)"' in link
 
     def test_the_dock_links_carry_their_navigation_shortcuts(
         self, tmp_path: Path

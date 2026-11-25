@@ -191,7 +191,7 @@
    New ticket button is the current one. #}
 {% macro dock(current, needs_input_count) -%}
 <nav class="dock" aria-label="Main">
-  <a class="btn btn--primary" href="/new"{% if current == "new" %} aria-current="page"{% endif %} data-shortcut="new" title="New ticket (c)"><svg class="ic" viewBox="0 0 20 20" aria-hidden="true"><path d="M10 4v12M4 10h12"></path></svg>New ticket</a>
+  <a class="btn btn--primary" href="/new"{% if current == "new" %} aria-current="page"{% endif %} data-shortcut="gn" data-shortcut-key="n" title="New ticket (g n)"><svg class="ic" viewBox="0 0 20 20" aria-hidden="true"><path d="M10 4v12M4 10h12"></path></svg>New ticket</a>
   <div class="dock-links">
     <a class="dock-link" data-shortcut="gt" data-shortcut-key="t" title="Tickets (g t)" href="/"{% if current == "tickets" %} aria-current="page"{% endif %}>Tickets{{ needs_input_dot(needs_input_count) }}</a>
     <a class="dock-link" data-shortcut="ga" data-shortcut-key="a" title="Archive (g a)" href="/archive"{% if current == "archive" %} aria-current="page"{% endif %}>Archive</a>
