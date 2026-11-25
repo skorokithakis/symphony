@@ -120,6 +120,8 @@ class TestCleanTitle:
 
         assert len(cleaned) <= title._MAX_TITLE_CHARS
         assert cleaned.startswith("word word")
+        # Cut at a word boundary, with an ellipsis showing the text goes on.
+        assert cleaned.endswith("word\u2026")
 
     def test_nothing_usable_is_empty(self) -> None:
         assert title.clean_title("") == ""

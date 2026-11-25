@@ -116,14 +116,21 @@ def clean_line(raw: str, *, max_chars: int) -> str:
 
     Only the first non-empty line is kept, surrounding quotes are removed,
     runs of whitespace collapse to single spaces, and the result is capped.
-    Returns an empty string when nothing usable is left; the caller then
-    treats the reply as a failure.
+    A capped line is cut at the last word boundary that fits and ends in an
+    ellipsis, so the reader can see the text goes on instead of meeting a
+    sentence that stops mid-word.  Returns an empty string when nothing usable
+    is left; the caller then treats the reply as a failure.
     """
     line = next((line.strip() for line in raw.splitlines() if line.strip()), "")
     line = line.strip(_QUOTE_CHARS).strip()
     line = " ".join(line.split())
     if len(line) > max_chars:
-        line = line[:max_chars].rstrip()
+        cut = line[: max_chars - 1]
+        # A single word longer than the cap has no boundary; cut it mid-word
+        # rather than return an empty line.
+        if " " in cut:
+            cut = cut[: cut.rindex(" ")]
+        line = cut.rstrip() + "\u2026"
     return line
 
 

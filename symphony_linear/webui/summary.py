@@ -55,8 +55,11 @@ _PROMPT = (
 #: runaway reply.
 _MAX_TOKENS = 128
 
-#: Longest summary kept, in characters, after the reply is cleaned.
-_MAX_SUMMARY_CHARS = 120
+#: Longest summary kept, in characters, after the reply is cleaned.  It is
+#: deliberately above the "about 120" the prompt asks for: the model treats
+#: that as approximate, and a cap at 120 cut ordinary summaries mid-sentence.
+#: This only stops a runaway reply; about five wrapped lines on a phone.
+_MAX_SUMMARY_CHARS = 200
 
 #: The reply is sent whole unless it is enormous.  Agent replies can include
 #: attachment references and long tool output; a summary prompt that large
