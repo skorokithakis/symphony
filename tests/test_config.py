@@ -73,7 +73,6 @@ def _write_yaml(path: Path, data: object) -> None:
 def _webui_block(**overrides: object) -> dict[str, object]:
     block: dict[str, object] = {
         "port": 8080,
-        "username": "admin",
         "password": "secret",
     }
     block.update(overrides)
@@ -827,7 +826,6 @@ class TestWebUIConfig:
         assert config.webui is not None
         assert config.webui.port == 8080
         assert config.webui.host == "127.0.0.1"
-        assert config.webui.username == "admin"
         assert config.webui.password == "secret"
         assert config.webui.anthropic_api_key is None
         assert config.webui.api_token is None
@@ -858,17 +856,15 @@ class TestWebUIConfig:
         assert config.webui.host == "0.0.0.0"
         assert config.webui.anthropic_api_key == "sk-ant-test"
 
-    def test_env_vars_expand_in_credentials(
+    def test_password_is_expanded_from_the_environment(
         self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
     ) -> None:
-        monkeypatch.setenv("WEBUI_USER", "expanded-user")
         monkeypatch.setenv("WEBUI_PASS", "expanded-pass")
-        cfg = {"webui": _webui_block(username="$WEBUI_USER", password="${WEBUI_PASS}")}
+        cfg = {"webui": _webui_block(password="${WEBUI_PASS}")}
         _write_yaml(tmp_path / "config.yaml", cfg)
 
         config = load_config(tmp_path)
         assert config.webui is not None
-        assert config.webui.username == "expanded-user"
         assert config.webui.password == "expanded-pass"
 
     def test_port_missing_raises(self, tmp_path: Path) -> None:
@@ -877,14 +873,6 @@ class TestWebUIConfig:
         _write_yaml(tmp_path / "config.yaml", {"webui": block})
 
         with pytest.raises(ValueError, match="Config validation failed"):
-            load_config(tmp_path)
-
-    def test_username_missing_raises(self, tmp_path: Path) -> None:
-        block = _webui_block()
-        del block["username"]
-        _write_yaml(tmp_path / "config.yaml", {"webui": block})
-
-        with pytest.raises(ValueError, match="username"):
             load_config(tmp_path)
 
     def test_password_missing_raises(self, tmp_path: Path) -> None:
@@ -901,10 +889,13 @@ class TestWebUIConfig:
         with pytest.raises(ValueError, match="non-empty"):
             load_config(tmp_path)
 
-    def test_whitespace_username_raises(self, tmp_path: Path) -> None:
-        _write_yaml(tmp_path / "config.yaml", {"webui": _webui_block(username="   ")})
+    def test_username_field_raises(self, tmp_path: Path) -> None:
+        # The username is no longer a credential, and dropping it without a
+        # deprecation shim is deliberate: a config that still sets it must be
+        # fixed rather than silently ignored.
+        _write_yaml(tmp_path / "config.yaml", {"webui": _webui_block(username="admin")})
 
-        with pytest.raises(ValueError, match="non-empty"):
+        with pytest.raises(ValueError, match="username"):
             load_config(tmp_path)
 
     def test_webui_only_does_not_require_tracker_env(

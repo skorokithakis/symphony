@@ -26,7 +26,7 @@ from symphony_linear.local_tracker import (
 )
 from symphony_linear.webui import title
 from tests.test_webui_editor import _post, _server
-from tests.test_webui_server import _PASSWORD, _USERNAME, _origin, _request
+from tests.test_webui_server import _PASSWORD, _origin, _request
 
 # ---------------------------------------------------------------------------
 # Helpers
@@ -41,7 +41,6 @@ def tracker(tmp_path: Path) -> LocalTracker:
 def _config(api_key: str | None, base_url: str | None = None) -> AppConfig:
     webui: dict[str, object] = {
         "port": 8080,
-        "username": _USERNAME,
         "password": _PASSWORD,
     }
     if api_key is not None:

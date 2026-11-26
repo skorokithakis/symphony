@@ -9,8 +9,10 @@ request funnels through after :meth:`_WebUIHandler.handle_one_request` has
 parsed it -- including verbs with no ``do_*`` method and malformed/legacy
 request lines:
 
-* HTTP Basic auth on every request, including static assets (constant-time
-  ``hmac.compare_digest`` comparison);
+* HTTP Basic auth on every request, including static assets.  The password
+  is compared in constant time with ``hmac.compare_digest``; the username is
+  ignored, because there is one user and its only job is to give browsers a
+  place to store the password;
 * the ``/api/v1`` agent API's bearer token instead of Basic auth, from
   ``webui.api_token``.  Basic credentials are not accepted there, and the
   bearer token is not accepted anywhere else.  With no token configured the
@@ -325,10 +327,10 @@ class _WebUIHandler(BaseHTTPRequestHandler):
         return server.app
 
     @property
-    def _credentials(self) -> tuple[str, str]:
+    def _password(self) -> str:
         server = self.server
         assert isinstance(server, _WebUIServer)
-        return server.credentials
+        return server.password
 
     @property
     def _routes(self) -> Sequence[Route]:
@@ -343,8 +345,7 @@ class _WebUIHandler(BaseHTTPRequestHandler):
         return server.csp
 
     def _authenticated(self) -> bool:
-        username, password = self._credentials
-        expected = f"{username}:{password}".encode("utf-8")
+        password = self._password.encode("utf-8")
 
         header = self.headers.get("Authorization")
         if not header:
@@ -356,9 +357,15 @@ class _WebUIHandler(BaseHTTPRequestHandler):
             supplied = base64.b64decode(value.strip(), validate=True)
         except (binascii.Error, ValueError):
             return False
-        # Compare the whole "user:password" pair in constant time.  A
-        # per-field comparison would leak which half was wrong.
-        return hmac.compare_digest(supplied, expected)
+        # RFC 7617 forbids a colon in the user-id, so the first colon always
+        # separates it from the password.  Only the password is compared, in
+        # constant time; any username (including an empty one) is accepted
+        # because this UI has a single user and the username has no meaning
+        # beyond giving the browser a credential slot to store.
+        _username, separator, supplied_password = supplied.partition(b":")
+        if not separator:
+            return False
+        return hmac.compare_digest(supplied_password, password)
 
     def _agent_api_refusal(self) -> Response | None:
         """Return the refusal for an ``/api/v1`` request, or None to proceed.
@@ -666,7 +673,7 @@ class _WebUIServer(ThreadingHTTPServer):
     allow_reuse_address = True
 
     app: WebUIApp
-    credentials: tuple[str, str]
+    password: str
     api_token: str | None
     routes: Sequence[Route]
     csp: str
@@ -737,7 +744,7 @@ class WebUIServer:
         The daemon's StateManager.  The web layer only reads from it.
     config:
         The full application config; the ``webui`` block supplies the bind
-        address and Basic-auth credentials.
+        address and the Basic-auth password.
     on_wake:
         The orchestrator's ``wake`` callback, stored for later routes that
         need to start a poll tick.
@@ -789,7 +796,7 @@ class WebUIServer:
         # ``port`` is a test convenience (pass 0 for an ephemeral port); the
         # daemon always uses the configured port.
         self._port = webui.port if port is None else port
-        self._credentials = (webui.username, webui.password)
+        self._password = webui.password
         self._api_token = webui.api_token
         self._csp = _build_csp(dictation=webui.soniox_api_key is not None)
         self._routes = tuple(routes if routes is not None else routes_for(config))
@@ -842,7 +849,7 @@ class WebUIServer:
         self._server = server
         try:
             server.app = self._app
-            server.credentials = self._credentials
+            server.password = self._password
             server.api_token = self._api_token
             server.routes = self._routes
             server.csp = self._csp

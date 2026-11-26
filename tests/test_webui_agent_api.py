@@ -35,7 +35,6 @@ from symphony_linear.webui.server import WebUIServer
 from tests.test_webui_server import _request, _state_entry, _write_ticket
 
 _TOKEN = "agent-token-123"
-_USERNAME = "admin"
 _PASSWORD = "secret"
 
 _GUIDE_PATH = Path(agent_api.__file__).resolve().parent / "agent_api.md"
@@ -57,7 +56,6 @@ def _config(
 ) -> AppConfig:
     block: dict[str, object] = {
         "port": 8080,
-        "username": _USERNAME,
         "password": _PASSWORD,
     }
     if api_token is not None:

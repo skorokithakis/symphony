@@ -640,9 +640,11 @@ shutting down, or the ticket is no longer triggered — see `_is_still_triggered
 - **Every web UI request goes through one dispatch choke point.**
   `_WebUIHandler.handle_one_request` parses the request and `_dispatch` does,
   in order: authentication (Basic for the browser routes, including static
-  assets and error responses, with one constant-time `hmac.compare_digest`
-  over the whole `user:password` pair; bearer for `/api/v1` — see the next
-  bullet); same-origin enforcement on every non-GET/HEAD method; route
+  assets and error responses; only the password is compared, with one
+  constant-time `hmac.compare_digest`, because the username is ignored: any
+  username including an empty one is accepted, while a decoded value with no
+  colon is rejected; bearer for `/api/v1` — see the next bullet);
+  same-origin enforcement on every non-GET/HEAD method; route
   resolution; the per-route body cap (1 MiB by default) and body read.
   `end_headers` adds the CSP, `X-Content-Type-Options: nosniff` and
   `X-Frame-Options: DENY` to every response, error responses included. The

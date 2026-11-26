@@ -62,7 +62,6 @@ def _config(
 ) -> AppConfig:
     block: dict[str, object] = {
         "port": 8080,
-        "username": _USERNAME,
         "password": _PASSWORD,
     }
     if api_token is not None:
@@ -76,8 +75,11 @@ def _config(
 
 
 def _basic(username: str = _USERNAME, password: str = _PASSWORD) -> str:
-    raw = f"{username}:{password}".encode()
-    return "Basic " + base64.b64encode(raw).decode("ascii")
+    return _raw_basic(f"{username}:{password}".encode())
+
+
+def _raw_basic(decoded: bytes) -> str:
+    return "Basic " + base64.b64encode(decoded).decode("ascii")
 
 
 def _bearer(token: str = _AGENT_TOKEN) -> str:
@@ -920,10 +922,12 @@ class TestAuthentication:
         with _running_server(tmp_path) as (port, _tracker, _state):
             for authorization in (
                 _basic(password="wrong"),
-                _basic(username="wrong"),
                 "Bearer token",
                 "Basic",
                 "Basic !!!!",
+                # No colon at all: there is no password to compare, so a value
+                # that happens to be the password alone must not be accepted.
+                _raw_basic(_PASSWORD.encode()),
             ):
                 status, _headers, _body = _request(
                     port,
@@ -932,6 +936,32 @@ class TestAuthentication:
                     headers={"Authorization": authorization},
                 )
                 assert status == 401
+
+    @pytest.mark.parametrize("username", ["admin", "someone-else", "", " spaced "])
+    def test_any_username_is_accepted(self, username: str, tmp_path: Path) -> None:
+        with _running_server(tmp_path) as (port, _tracker, _state):
+            status, _headers, _body = _request(
+                port,
+                "GET",
+                "/",
+                headers={"Authorization": _basic(username=username)},
+            )
+
+        assert status == 200
+
+    @pytest.mark.parametrize("username", ["admin", "", "someone-else"])
+    def test_wrong_password_is_rejected_for_any_username(
+        self, username: str, tmp_path: Path
+    ) -> None:
+        with _running_server(tmp_path) as (port, _tracker, _state):
+            status, _headers, _body = _request(
+                port,
+                "GET",
+                "/",
+                headers={"Authorization": _basic(username=username, password="nope")},
+            )
+
+        assert status == 401
 
     def test_correct_credentials_render_the_page(self, tmp_path: Path) -> None:
         with _running_server(tmp_path) as (port, _tracker, _state):

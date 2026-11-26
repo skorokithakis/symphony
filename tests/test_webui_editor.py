@@ -32,7 +32,6 @@ from symphony_linear.webui import title
 from symphony_linear.webui.server import WebUIServer
 from tests.test_webui_server import (
     _PASSWORD,
-    _USERNAME,
     _origin,
     _request,
     _write_ticket,
@@ -50,7 +49,6 @@ def _config(
 ) -> AppConfig:
     webui: dict[str, object] = {
         "port": 8080,
-        "username": _USERNAME,
         "password": _PASSWORD,
     }
     if api_key is not None:

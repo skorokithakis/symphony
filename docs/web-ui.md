@@ -14,7 +14,6 @@ daemon with its own workspace directory and its own port.
 webui:
   port: 8080
   host: 127.0.0.1          # default
-  username: admin
   password: change-me
   # Optional. Enables automatic titles and reply summaries (see Titles and
   # summaries below).
@@ -33,9 +32,12 @@ webui:
   # public_url: https://symphony.example.com
 ```
 
-Open `http://127.0.0.1:8080/`. The browser asks for the username and password
-once, using HTTP Basic auth; there is no login page. Served over HTTPS, the UI
-can be installed as an app and then opens standalone.
+Open `http://127.0.0.1:8080/`. The browser asks for a username and the
+password once, using HTTP Basic auth; there is no login page. The username is
+ignored (any value works, including an empty one), so only the password
+matters. There is no `username` setting: older configs that still have
+`webui.username` fail to load until you delete that line. Served over HTTPS, the UI can be installed as an app and then opens
+standalone.
 
 With HTTPS (or on localhost), the header shows a bell that subscribes this
 browser to Web Push notifications for tickets that reach Needs Input; it hides

@@ -495,7 +495,6 @@ def _config() -> AppConfig:
             "webui": {
                 "port": 8765,
                 "host": "127.0.0.1",
-                "username": _USERNAME,
                 "password": _PASSWORD,
                 "soniox_api_key": "demo-soniox-key",
                 "anthropic_api_key": "demo-anthropic-key",

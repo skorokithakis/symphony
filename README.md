@@ -77,15 +77,14 @@ mkdir ~/symphony && cd ~/symphony
 cat > config.yaml <<'YAML'
 webui:
   port: 8080
-  username: admin
   password: change-me   # Choose your own.
 YAML
 
 uvx symphony-linear
 ```
 
-Open <http://127.0.0.1:8080/> and log in with the username and password from
-the config. Then:
+Open <http://127.0.0.1:8080/> and log in with the password from the config
+(the browser's username field is ignored, so any username works). Then:
 
 1. Press **New ticket**.
 2. In **Repository**, choose **Add a repository…** and type `owner/name` or a

@@ -46,7 +46,6 @@ poll_interval_seconds: 10
 _CONFIG_WITH_WEBUI = """\
 webui:
   port: 8080
-  username: admin
   password: secret
 poll_interval_seconds: 10
 """
@@ -54,7 +53,6 @@ poll_interval_seconds: 10
 _CONFIG_WITH_WEBUI_PUBLIC_URL = """\
 webui:
   port: 8080
-  username: admin
   password: secret
   public_url: https://symphony.example.com
 poll_interval_seconds: 10

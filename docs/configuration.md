@@ -29,7 +29,6 @@ For the built-in web UI:
 ```yaml
 webui:
   port: 8080
-  username: admin
   password: change-me
 ```
 
@@ -98,8 +97,8 @@ linear:
 #   port: 8080
 #   # Bind address (default: 127.0.0.1).
 #   host: 127.0.0.1
-#   # REQUIRED. HTTP Basic auth credentials. There is no login page.
-#   username: admin
+#   # REQUIRED. HTTP Basic auth password. The username is ignored, so any
+#   # username (including an empty one) is accepted. There is no login page.
 #   password: change-me
 #   # Optional. Anthropic API key for automatic ticket titles and reply summaries.
 #   # anthropic_api_key: ${ANTHROPIC_API_KEY}

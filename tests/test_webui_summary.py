@@ -30,7 +30,6 @@ from symphony_linear.state import TicketStatus
 from symphony_linear.webui import summary
 from tests.test_webui_server import (
     _PASSWORD,
-    _USERNAME,
     _request,
     _running_server,
     _state_entry,
@@ -44,7 +43,6 @@ from tests.test_webui_server import (
 def _config(api_key: str | None, base_url: str | None = None) -> AppConfig:
     webui: dict[str, object] = {
         "port": 8080,
-        "username": _USERNAME,
         "password": _PASSWORD,
     }
     if api_key is not None:

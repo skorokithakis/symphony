@@ -274,7 +274,6 @@ class _WebUIConfig(BaseModel):
 
     port: int = Field(..., gt=0, le=65535, description="Port for the web UI server")
     host: str = Field("127.0.0.1", description="Address the web UI server binds to")
-    username: str = Field(..., description="HTTP Basic auth username")
     password: str = Field(..., description="HTTP Basic auth password")
     anthropic_api_key: str | None = Field(
         None,
@@ -310,7 +309,7 @@ class _WebUIConfig(BaseModel):
         ),
     )
 
-    @field_validator("username", "password")
+    @field_validator("password")
     @classmethod
     def _validate_non_empty(cls, v: str) -> str:
         if not v.strip():
