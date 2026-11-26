@@ -95,8 +95,8 @@
     <time datetime="{{ entry.created_at }}" data-format="time">{{ entry.clock }}</time>
     {% for item in entry.meta %}<span>{{ item }}</span>{% endfor %}
     <span class="entry-tools">
-      <button class="link-btn" type="button" id="{{ entry.anchor }}-open" data-open-secs="{{ entry.anchor }}">Open all</button>
-      <button class="link-btn" type="button" id="{{ entry.anchor }}-close" data-close-secs="{{ entry.anchor }}">Close all</button>
+      <button class="link-btn" type="button" id="{{ entry.anchor }}-open" data-open-secs="{{ entry.anchor }}" aria-label="Open all sections" title="Open all sections">[+]</button>
+      <button class="link-btn" type="button" id="{{ entry.anchor }}-close" data-close-secs="{{ entry.anchor }}" aria-label="Close all sections" title="Close all sections">[-]</button>
       {{ copy_markdown(entry) }}
     </span>
   </header>
