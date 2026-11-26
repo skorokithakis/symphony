@@ -632,6 +632,38 @@ body.sym { min-height: 100dvh; }
   margin: 0; padding: var(--s1) 0 var(--s1) var(--s4);
   border-left: 3px solid var(--rule-2); color: var(--ink-2);
 }
+/* A question callout is a card, not a quote: it asks the human something and
+   lists the answers, so it needs a surface and a louder edge than the grey
+   quote bar.  The accent is used as a fill only.  Nothing is clickable in this
+   version, so no row gets a hover or pressed state; the round and square
+   markers only say "choose one" and "choose many" and reserve the shapes the
+   controls will take.  The tint is mixed with the theme's surface rather than
+   hard-coded, so light and dark both stay readable. */
+.md .qcard {
+  display: flex; flex-direction: column; gap: var(--s3); min-width: 0;
+  padding: var(--s3) var(--s4) var(--s4);
+  border: 1px solid var(--rule); border-left: 3px solid var(--accent);
+  border-radius: var(--r2); box-shadow: var(--shadow-1);
+  background: color-mix(in srgb, var(--accent) 7%, var(--surface));
+}
+.md .qcard-q { font-weight: 600; line-height: 1.45; }
+.md .qcard-prose { display: flex; flex-direction: column; gap: var(--s2); color: var(--ink-2); }
+.md .qcard-opts { display: flex; flex-direction: column; gap: var(--s2); padding-left: 0; list-style: none; }
+.md .qcard-opts .qcard-opt {
+  display: flex; align-items: flex-start; gap: var(--s3);
+  padding: var(--s2) var(--s3);
+  border: 1px solid var(--rule); border-radius: var(--r1); background: var(--surface);
+}
+/* .md li + li adds a top margin; the flex gap already spaces the rows. */
+.md .qcard-opts .qcard-opt + .qcard-opt { margin-top: 0; }
+.md .qcard-opts .qcard-opt::before {
+  content: ""; flex: none; width: 16px; height: 16px; margin-top: 0.2em;
+  border: 1.5px solid var(--rule-2); border-radius: 50%; background: var(--surface);
+}
+.md .qcard[data-kind="choose-many"] .qcard-opt::before { border-radius: 4px; }
+.md .qcard-t { min-width: 0; }
+.md .qcard-l { font-weight: 600; }
+.md .qcard-d { color: var(--ink-2); }
 /* Markdown images stay inside the reading column.  Their own dimensions
    decide the rest, so an image smaller than the column is not upscaled; the
    lightbox in app.js opens the full-size source. */

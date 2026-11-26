@@ -729,7 +729,19 @@ shutting down, or the ticket is no longer triggered — see `_is_still_triggered
   text. `render_markdown` / `render_markdown_sections` are the only producers
   of `|safe` HTML the templates use; everything else is escaped by Jinja
   (`autoescape=True`, `StrictUndefined`). Do not add a second renderer or mark
-  user data safe.
+  user data safe. In the agent-reply path only, a top-level
+  `> [!QUESTION] ...` callout renders as a static card instead of a quote:
+  `<div class="qcard" data-kind="choose-one|choose-many|free-text"
+  data-question-index="N">` holding `<p class="qcard-q" data-text="...">`, an
+  optional `<div class="qcard-prose">` and an optional `<ul class="qcard-opts">`
+  of `<li class="qcard-opt" data-text="...">`. The `data-text` forms are
+  single-line plain text with `*` replaced by U+2217; they are also escaped so
+  they stay literal Markdown at the start of a line (no link definitions,
+  headings, fences, block markers or lists), because a later stage copies them
+  into a human comment and `*Symphony · ` is the bot footer marker.
+  A section holding a card renders open. A malformed callout, a callout nested
+  in a list or quote, and every callout in a human message or notice stay a
+  quote.
 - **The web UI server is wired in `cli.py`, not the orchestrator.**
   `cli.main` builds `WebUIServer` from the `LocalTracker`'s store and the
   shared `StateManager`, starts it just before `orchestrator.run()`, and stops
@@ -753,7 +765,10 @@ shutting down, or the ticket is no longer triggered — see `_is_still_triggered
   OMP and pi do, and the three agents must receive identical instructions. The
   note is never stored in a comment, shown in the UI, or returned by
   `/api/v1`. No config option controls the text, and it must stay about one
-  sentence long: it costs context on every turn.
+  sentence long: it costs context on every turn. Its wording is the contract
+  the renderer's question cards key on: the marker must stay exactly
+  `[!QUESTION]`, and the two option forms (`> - a` and `> - [ ] a`) are what
+  select choose-one and choose-many.
 
 ## Running and testing
 

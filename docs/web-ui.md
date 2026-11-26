@@ -145,6 +145,12 @@ A plain list means one answer is expected, and the agent puts the option it
 recommends first. A list of `- [ ]` items means several answers may be chosen.
 A callout with no list is an open question.
 
+The ticket page shows each callout as a card: the question, then one row per
+option, with round markers when one answer is expected and square markers when
+several may be chosen. A section of the reply that holds a card starts open. A
+callout that does not have this exact shape (for example a numbered list of
+options) stays an ordinary quote, with all of its text.
+
 The request is one fixed sentence at the end of every message the daemon sends
 to the agent. It is not configurable, and it is sent only by the web UI
 backend. An agent can still ignore it; the reply is then ordinary prose, as
