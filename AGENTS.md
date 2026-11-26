@@ -667,7 +667,14 @@ shutting down, or the ticket is no longer triggered — see `_is_still_triggered
   `_dispatch` checks this before Basic auth: with no token configured,
   `/api/v1` answers 404 (an unknown route, not a 401 that confirms the API
   exists); a missing or wrong `Authorization: Bearer` gets a JSON 401 of the
-  shape `{"error": str, "hint": str}`. A matching token skips both the Basic
+  shape `{"error": str, "hint": str}`. The single anonymous request is a GET
+  or HEAD of the exact path `/api/v1`, which is the Markdown guide: an agent
+  can learn the API's shape before anyone hands it the key, and the guide
+  carries no ticket data. That exemption sits in `_agent_api_refusal`, after
+  the no-token 404 and before the bearer comparison, matches the raw path
+  exactly (so `/api/v1/`, `/api/v1/tickets` and percent-encoded aliases are
+  not exempt), and is restricted to GET/HEAD. It also decides the 401 hint,
+  which points at the anonymous guide. A matching token skips both the Basic
   check and the same-origin check, because browsers never attach a bearer
   token by themselves, so a cross-site request has no ambient credential to
   ride. Basic credentials are deliberately not accepted on `/api/v1`, and

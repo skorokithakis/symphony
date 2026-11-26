@@ -16,6 +16,13 @@ token by themselves, so a cross-site request has nothing to ride and the
 check would only break non-browser clients.  Basic credentials are not
 accepted on ``/api/v1``, and the bearer token is not accepted anywhere else.
 
+One request in the namespace needs no credential at all: a GET or HEAD of the
+exact path ``/api/v1``, which is the guide (``agent_api.md``).  An agent can
+read it before anyone gives it the token, and it carries no ticket data.  The
+exemption lives in the server's dispatch choke point, matches the raw path
+exactly, and is skipped when ``webui.api_token`` is unset so an unconfigured
+daemon still answers ``404`` for the whole namespace.
+
 Everything else still applies to these routes: the per-route body cap, the
 socket read timeout and the security headers the server emits for every
 response.  Errors are JSON in one shape, ``{"error": ..., "hint": ...}``, and

@@ -153,6 +153,8 @@ ROUTES: tuple[Route, ...] = (
     # security headers still apply; the server authenticates /api/v1 with a
     # bearer token instead of Basic auth, and turns its routing and body
     # errors into the JSON error shape.  The guide lists every one of them.
+    # GET/HEAD of the bare /api/v1 is the one route served without the token,
+    # so a caller can read the guide before it has the key.
     Route("GET", re.compile(r"^/api/v1$"), guide),
     Route("GET", _API_V1_TICKETS, api_tickets),
     Route("POST", _API_V1_TICKETS, api_ticket_create),

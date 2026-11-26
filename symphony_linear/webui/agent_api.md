@@ -20,10 +20,14 @@ send it on every request:
 Authorization: Bearer $SYMPHONY_TOKEN
 ```
 
+The one exception is this guide: `GET /api/v1` (and `HEAD`) needs no token, so
+you can read the API's shape before anyone gives you the key. Every other path
+under `/api/v1` needs the bearer token.
+
 HTTP Basic credentials are not accepted on `/api/v1`, and the bearer token is
 not accepted anywhere else in the web UI. If `webui.api_token` is unset the
-whole namespace answers `404`. A missing or wrong token answers `401` with the
-usual error object.
+whole namespace answers `404`, this guide included. A missing or wrong token on
+any other `/api/v1` path answers `401` with the usual error object.
 
 POST and PATCH always need a `Content-Length`-framed body, even when there is
 nothing to pass: use `-d '{}'`. Chunked transfer encoding is not supported.

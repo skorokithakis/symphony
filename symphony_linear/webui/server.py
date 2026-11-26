@@ -16,8 +16,14 @@ request lines:
 * the ``/api/v1`` agent API's bearer token instead of Basic auth, from
   ``webui.api_token``.  Basic credentials are not accepted there, and the
   bearer token is not accepted anywhere else.  With no token configured the
-  namespace answers 404 rather than advertising itself with a 401.  Routing,
-  body and view errors in the namespace all use the API's JSON error shape;
+  namespace answers 404 rather than advertising itself with a 401.  The
+  one exception is a GET or HEAD of the exact path ``/api/v1``: that is the
+  Markdown guide, and it is served without a token so an agent can learn the
+  shape of the API before anyone hands it the key.  Every other path in the
+  namespace still needs the token, and the 404 for an unconfigured namespace
+  is checked first, so the guide is not public on a daemon with no API.
+  Routing, body and view errors in the namespace all use the API's JSON error
+  shape;
 * same-origin enforcement on every non-GET/HEAD request (browsers attach
   Basic credentials to cross-site requests, so auth alone is not CSRF
   protection).  A bearer-authenticated ``/api/v1`` request is exempt because
@@ -56,7 +62,11 @@ from symphony_linear.presence import TicketPresence
 from symphony_linear.state import StateManager
 from symphony_linear.turn_activity import TurnActivity
 from symphony_linear.webpush import WebPushStore
-from symphony_linear.webui.agent_api import error_response, is_agent_api_path
+from symphony_linear.webui.agent_api import (
+    API_PREFIX,
+    error_response,
+    is_agent_api_path,
+)
 from symphony_linear.webui.http_types import Request, Response, Route, WebUIApp
 from symphony_linear.webui.routes import routes_for
 
@@ -210,7 +220,8 @@ class _WebUIHandler(BaseHTTPRequestHandler):
             # agent_api.py explain why it is safe.  The 404 when no token is
             # configured is deliberate: an unconfigured daemon must not
             # advertise the namespace with a 401.
-            refusal = self._agent_api_refusal()
+            assert path is not None  # agent_api implies a parsed path
+            refusal = self._agent_api_refusal(path)
             if refusal is not None:
                 self._send(refusal)
                 return
@@ -367,18 +378,31 @@ class _WebUIHandler(BaseHTTPRequestHandler):
             return False
         return hmac.compare_digest(supplied_password, password)
 
-    def _agent_api_refusal(self) -> Response | None:
+    def _agent_api_refusal(self, path: str) -> Response | None:
         """Return the refusal for an ``/api/v1`` request, or None to proceed.
 
         Basic auth is not consulted here at all, and the bearer token is not
         consulted for any other path: the two credentials own disjoint parts
         of the URL space.
+
+        The guide at the exact path ``/api/v1`` is the one anonymous read.  It
+        is how an agent learns the shape of the API before it has been given
+        the key, and it contains no ticket data, so requiring the token would
+        only force whoever hands out the token to also hand out the guide.  The
+        exemption is checked after the no-token 404 so an unconfigured daemon
+        stays indistinguishable from a daemon without this feature.  It is
+        restricted to GET and HEAD because the guide is a GET route and the
+        namespace's only safe anonymous verb is a read; a POST to ``/api/v1``
+        is a mistake and must not be answered with the guide.
         """
         token = self._api_token
         if token is None:
             # Same answer as an unknown route, so a daemon without the API
             # configured never confirms that /api/v1 exists.
             return Response.text("Not Found\n", status=404)
+
+        if path == API_PREFIX and self.command in ("GET", "HEAD"):
+            return None
 
         supplied = self._bearer_token()
         if supplied is None or not hmac.compare_digest(
@@ -387,7 +411,8 @@ class _WebUIHandler(BaseHTTPRequestHandler):
             return error_response(
                 "Unauthorized",
                 "Send 'Authorization: Bearer <token>' using the token in "
-                "webui.api_token of config.yaml.",
+                "webui.api_token of config.yaml. GET /api/v1 returns the "
+                "guide, and needs no token.",
                 status=401,
             )
         return None

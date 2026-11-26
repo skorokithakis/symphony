@@ -159,6 +159,17 @@ class TestGuide:
         assert headers["Content-Type"] == "text/markdown; charset=utf-8"
         assert body == _GUIDE_PATH.read_bytes()
 
+    def test_the_guide_is_served_without_a_token(self, tmp_path: Path) -> None:
+        # The reason the exemption exists: an agent reads the guide before it
+        # has been given the key.  The guide must therefore not document
+        # itself as requiring one.
+        with _server(tmp_path) as (port, _tracker, _state, _wake):
+            status, _headers, body = _request(port, "GET", "/api/v1", auth=False)
+
+        assert status == 200
+        assert body == _GUIDE_PATH.read_bytes()
+        assert "needs no token" in body.decode()
+
 
 # ---------------------------------------------------------------------------
 # Errors
@@ -731,3 +742,12 @@ class TestAuthOnEveryRoute:
 
         assert status == 401
         assert set(payload) == {"error", "hint"}
+
+    def test_the_refusal_points_at_the_anonymous_guide(self, tmp_path: Path) -> None:
+        with _server(tmp_path) as (port, _t, _s, _wake):
+            status, payload, _headers = _call(
+                port, "GET", "/api/v1/tickets", token=None
+            )
+
+        assert status == 401
+        assert "GET /api/v1" in payload["hint"]

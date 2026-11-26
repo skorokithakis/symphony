@@ -38,6 +38,7 @@ from symphony_linear.local_tracker import (
 from symphony_linear.state import StateManager, TicketState, TicketStatus, load_state
 from symphony_linear.webpush import WebPushStore
 from symphony_linear.webui import templates
+from symphony_linear.webui.agent_api import _GUIDE_PATH
 from symphony_linear.webui.http_types import Request, Response, Route
 from symphony_linear.webui.push import PUBLIC_ICON_URL
 from symphony_linear.webui.routes import ROUTES
@@ -1237,7 +1238,7 @@ class TestAgentAPI:
 
         with _running_server(tmp_path, api_token=_AGENT_TOKEN) as (port, _t, _s):
             status, _headers, body = _request(
-                port, "GET", "/api/v1", auth=False, headers=headers
+                port, "GET", "/api/v1/tickets", auth=False, headers=headers
             )
 
         assert status == 401
@@ -1245,6 +1246,55 @@ class TestAgentAPI:
         assert set(payload) == {"error", "hint"}
         assert payload["error"]
         assert "webui.api_token" in payload["hint"]
+
+    def test_the_guide_needs_no_token(self, tmp_path: Path) -> None:
+        # An agent reads the guide before it is given the key.  A wrong token
+        # is ignored rather than refused: the request needs no credential at
+        # all, so there is nothing to compare.
+        with _running_server(tmp_path, api_token=_AGENT_TOKEN) as (port, _t, _s):
+            status, headers, body = _request(port, "GET", "/api/v1", auth=False)
+            wrong_token = _request(
+                port,
+                "GET",
+                "/api/v1",
+                auth=False,
+                headers={"Authorization": _bearer("wrong")},
+            )[0]
+
+        assert status == 200
+        assert headers["Content-Type"] == "text/markdown; charset=utf-8"
+        assert headers["Content-Security-Policy"] == _CSP
+        assert body == _GUIDE_PATH.read_bytes()
+        assert wrong_token == 200
+
+    def test_the_guide_needs_no_token_on_head_too(self, tmp_path: Path) -> None:
+        with _running_server(tmp_path, api_token=_AGENT_TOKEN) as (port, _t, _s):
+            status, headers, body = _request(port, "HEAD", "/api/v1", auth=False)
+
+        assert status == 200
+        assert headers["Content-Type"] == "text/markdown; charset=utf-8"
+        assert body == b""
+
+    @pytest.mark.parametrize(
+        ("method", "path"),
+        [
+            pytest.param("POST", "/api/v1", id="post"),
+            pytest.param("PUT", "/api/v1", id="put"),
+            pytest.param("DELETE", "/api/v1", id="delete"),
+            # The exemption is the exact raw path: a trailing slash is a
+            # different route, and a percent-encoded alias must not reach the
+            # anonymous read by another name.
+            pytest.param("GET", "/api/v1/", id="trailing-slash"),
+            pytest.param("GET", "/%61pi/v1", id="percent-encoded"),
+        ],
+    )
+    def test_only_a_get_or_head_of_the_exact_path_is_exempt(
+        self, tmp_path: Path, method: str, path: str
+    ) -> None:
+        with _running_server(tmp_path, api_token=_AGENT_TOKEN) as (port, _t, _s):
+            status, _headers, _body = _request(port, method, path, auth=False)
+
+        assert status == 401
 
     def test_subpaths_are_protected_and_neighbours_are_not(
         self, tmp_path: Path

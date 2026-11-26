@@ -275,12 +275,14 @@ curl -s "https://symphony.example.com/api/v1" \
 
 `GET /api/v1` returns the whole guide as Markdown: what the states mean, every
 endpoint with a `curl` example and a sample response, and the polling loop for
-creating a ticket, waiting for the agent's reply and answering it. The token
-lives in `config.yaml`, which the sandbox masks from coding agents; Basic
-credentials are not accepted on `/api/v1`, and the bearer token is not
-accepted anywhere else. Leaving `api_token` unset disables the API: the whole
-namespace answers `404`. Anyone with the token can start coding agents on any
-saved repository, so treat it like the Basic password.
+creating a ticket, waiting for the agent's reply and answering it. That one
+request needs no token, so an agent can read the guide before it has the key;
+every other `/api/v1` path requires it. The token lives in `config.yaml`,
+which the sandbox masks from coding agents; Basic credentials are not accepted
+on `/api/v1`, and the bearer token is not accepted anywhere else. Leaving
+`api_token` unset disables the API: the whole namespace answers `404`, the
+guide included. Anyone with the token can start coding agents on any saved
+repository, so treat it like the Basic password.
 
 What an agent can do:
 
