@@ -848,17 +848,18 @@ class TestDock:
         _write_ticket(tmp_path, "SYM-2", state=STATE_NEEDS_INPUT, title="Waiting")
 
         with _running_server(tmp_path) as (port, _tracker, _state):
-            texts = [
-                _request(port, "GET", path)[2].decode()
-                for path in ("/tickets/SYM-1", "/new")
-            ]
+            ticket_text = _request(port, "GET", "/tickets/SYM-1")[2].decode()
+            editor_text = _request(port, "GET", "/new")[2].decode()
 
-        for text in texts:
+        for text in (ticket_text, editor_text):
             assert (
                 '<span class="back-t">Tickets</span>'
                 '<span class="needs-input-dot" data-needs-input-dot>' in text
             )
-            assert text.count("data-needs-input-dot") == 2
+        # The dock's, the header's, and on the ticket page the compact bar's
+        # copy, which the poll must find to keep it in step with them.
+        assert ticket_text.count("data-needs-input-dot") == 3
+        assert editor_text.count("data-needs-input-dot") == 2
 
     def test_the_dock_marks_the_new_ticket_shortcut(self, tmp_path: Path) -> None:
         _write_ticket(tmp_path, "SYM-1", state=STATE_IN_PROGRESS, title="Running")

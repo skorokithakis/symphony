@@ -104,6 +104,17 @@
   </div>
   {% endif %}
 </main>
+{# A fixed copy of the header's top row for the phone layout, where the header
+   scrolls away with the page.  ticket.js reveals it on a small upward scroll.
+   It is a copy rather than a pinned real row so pinning cannot change the page
+   layout and move the reader's scroll position.  It starts inert and hidden:
+   script is what makes it reachable, and its state tag needs its own id
+   because the poll replaces the real one. #}
+<div class="thead-compact" id="thead-compact" data-shown="false" inert>
+  <a class="back" href="/" aria-label="Back to tickets"><svg class="ic" viewBox="0 0 20 20" aria-hidden="true"><path d="M12 4l-6 6 6 6"></path></svg><span class="back-t">Tickets</span>{{ needs_input_dot(needs_input_count) }}</a>
+  <span class="tid">{{ page.ticket.id }}</span>
+  <span class="state {{ page.state_class }}" id="compact-state-tag">{{ page.state_label }}</span>
+</div>
 {{ dock("tickets", needs_input_count) }}
 {% endblock %}
 

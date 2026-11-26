@@ -468,6 +468,30 @@ body.sym { min-height: 100dvh; }
 .back-t { display: none; }
 .tid { font: 600 var(--t-sm)/1 var(--font-mono); }
 .thead-top > .state, .thead-top > .saved { margin-left: auto; }
+
+/* The compact header bar: below 800px the window scrolls and the real header
+   leaves the screen, so a small upward scroll slides this copy of its top row
+   down from the top edge.  It is fixed, which is what keeps revealing it from
+   moving the page.  While hidden it is inert (script) and invisible, so it is
+   neither focusable nor clickable; the transform alone would leave both.  The
+   reduced-motion rule above drops the slide.  viewport-fit=cover lets the page
+   draw under a display cutout, so the bar pads itself clear of the top and
+   side insets instead of putting the back link under one. */
+.thead-compact {
+  position: fixed; top: 0; left: 0; right: 0; z-index: 3;
+  display: flex; align-items: center; gap: var(--s2);
+  min-height: calc(var(--tap) + env(safe-area-inset-top));
+  padding: env(safe-area-inset-top) max(var(--s4), env(safe-area-inset-right)) 0 max(var(--s4), env(safe-area-inset-left));
+  background: var(--paper); border-bottom: 1px solid var(--rule);
+  transform: translateY(-100%); visibility: hidden;
+  transition: transform var(--dur) var(--ease), visibility var(--dur) var(--ease);
+}
+.thead-compact[data-shown="true"] { transform: none; visibility: visible; }
+.thead-compact > .state { margin-left: auto; }
+@container sym (min-width: 800px) {
+  /* Above 800px the header is either always visible or pinned by the layout. */
+  .thead-compact { display: none; }
+}
 .ttitle { font-size: var(--t-lg); font-weight: 700; line-height: var(--lh-tight); letter-spacing: -0.01em; text-wrap: balance; }
 .trepo { font: 400 var(--t-sm)/1.4 var(--font-mono); color: var(--ink-2); }
 .preview { display: flex; flex-wrap: wrap; gap: 0 var(--s2); font-size: var(--t-sm); }

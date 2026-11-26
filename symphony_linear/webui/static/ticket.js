@@ -31,6 +31,8 @@
   var reply = document.getElementById("reply");
   var jump = document.getElementById("jump");
   var sizeButton = document.getElementById("composer-size");
+  var compactBar = document.getElementById("thead-compact");
+  var realHead = main.querySelector(".thead");
 
   var pollUrl = main.getAttribute("data-api-poll");
   var seenUrl = main.getAttribute("data-api-seen");
@@ -122,6 +124,74 @@
       target.scrollIntoView({ block: "start" });
     } else {
       scrollToBottom();
+    }
+  }
+
+  /* ---------- compact header bar ---------- */
+
+  /* Below 800px the window scrolls, which is also when this bar has anything
+   * to do: at 1240px the layout pins the header already, and between 800px and
+   * 1240px it stays in view.  Scrolling up by a gesture's worth reveals the
+   * bar; scrolling down hides it.  The reveal threshold accumulates, because
+   * a slow scroll reports a couple of pixels at a time.  Programmatic scrolls
+   * (the opening position, Jump to latest, appended entries) only move down,
+   * so they hide the bar instead of revealing it.
+   *
+   * A viewport resize is not a gesture either.  Closing the Android keyboard
+   * grows the viewport (the page opts into interactive-widget=resizes-content),
+   * the browser clamps scrollY upward at the bottom of the page, and the clamp
+   * looks exactly like a scroll up.  Its scroll event can arrive before the
+   * resize event, so each scroll event compares the viewport against the size
+   * recorded at the previous scroll event instead of trusting one reset on
+   * resize. */
+  var COMPACT_REVEAL_PX = 10;
+  var compactLastTop = 0;
+  var compactUp = 0;
+  var compactViewportWidth = window.innerWidth;
+  var compactViewportHeight = window.innerHeight;
+
+  function showCompactBar(show) {
+    if (!compactBar) {
+      return;
+    }
+    if (compactBar.getAttribute("data-shown") === (show ? "true" : "false")) {
+      return;
+    }
+    compactBar.setAttribute("data-shown", show ? "true" : "false");
+    // Inert is what makes the hidden bar unreachable: visibility alone would
+    // still let a script focus the link.
+    compactBar.toggleAttribute("inert", !show);
+  }
+
+  function onScroll() {
+    var top = window.scrollY || 0;
+    if (
+      window.innerWidth !== compactViewportWidth ||
+      window.innerHeight !== compactViewportHeight
+    ) {
+      // The page moved because the viewport did: adopt the new position and
+      // leave the bar as it was.
+      compactViewportWidth = window.innerWidth;
+      compactViewportHeight = window.innerHeight;
+      compactLastTop = top;
+      compactUp = 0;
+    } else {
+      var delta = top - compactLastTop;
+      compactLastTop = top;
+      if (delta > 0) {
+        compactUp = 0;
+        showCompactBar(false);
+      } else if (delta < 0) {
+        compactUp -= delta;
+        if (compactUp >= COMPACT_REVEAL_PX) {
+          showCompactBar(true);
+        }
+      }
+    }
+    // No bar while the real header is still on screen: it would cover it and
+    // say the same thing twice.
+    if (realHead && realHead.getBoundingClientRect().bottom > 0) {
+      showCompactBar(false);
     }
   }
 
@@ -540,6 +610,21 @@
     }
   }
 
+  /* The compact bar holds a copy of the state tag with its own id, so the poll
+   * cannot patch it with data.state_html: that fragment carries the real id,
+   * and two elements may not share one.  Copying the rendered class and label
+   * keeps the two in step without parsing the fragment.  The Needs Input dot
+   * is not copied: the poll updates every [data-needs-input-dot] itself. */
+  function syncCompactState() {
+    var source = document.getElementById("state-tag");
+    var copy = document.getElementById("compact-state-tag");
+    if (!source || !copy) {
+      return;
+    }
+    copy.className = source.className;
+    copy.textContent = source.textContent;
+  }
+
   function apply(data) {
     baseTitle = data.page_title || baseTitle;
     Sym.setTitle(baseTitle, data.needs_input_count || 0);
@@ -578,6 +663,7 @@
         tag.outerHTML = data.state_html;
       }
       stateHtml = data.state_html;
+      syncCompactState();
     }
 
     if (actionsEl && data.actions_html !== actionsHtml) {
@@ -791,6 +877,17 @@
     retryDraft();
     poll();
   });
+  /* Only a real user scroll reaches this listener: window scroll happens only
+   * in the phone layout, where <main> is not the scroll container. */
+  window.addEventListener("scroll", onScroll, { passive: true });
+  /* The baseline is also reset here so a resize that moves nothing still does
+   * not leave a stale position behind.  The viewport size is deliberately not
+   * recorded: the scroll event a clamped page fires may come next, and its
+   * size comparison is what turns that jump into a non-gesture. */
+  window.addEventListener("resize", function () {
+    compactLastTop = window.scrollY || 0;
+    compactUp = 0;
+  });
   document.addEventListener("visibilitychange", function () {
     if (!document.hidden) {
       markSeen(lastCommentId);
@@ -802,6 +899,9 @@
     history.scrollRestoration = "manual";
   }
   initialScroll();
+  // The opening scroll is downward or instant, never a gesture: start from
+  // where the page settled so it cannot pass for one.
+  compactLastTop = window.scrollY || 0;
   markSeen(lastCommentId);
   schedule(0);
 })();

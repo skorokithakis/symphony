@@ -150,6 +150,11 @@ class TestTicketPage:
         assert "0f3c9a1e" in text
         assert 'data-copy="/tmp/workspaces/sym-1"' in text
         assert 'data-copy="0f3c9a1e"' in text
+        # The compact bar's state tag is a copy with its own id: the poll
+        # addresses #state-tag by id, so a second one would be replaced in the
+        # wrong place (or not at all).
+        assert text.count('id="state-tag"') == 1
+        assert text.count('id="compact-state-tag"') == 1
 
     def test_missing_details_are_tolerated(self, tmp_path: Path) -> None:
         with _server(tmp_path) as (port, tracker, _state, _wake):
