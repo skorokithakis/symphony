@@ -2,7 +2,10 @@
 <html lang="en">
 <head>
 <meta charset="utf-8">
-<meta name="viewport" content="width=device-width, initial-scale=1">
+{# viewport-fit=cover lets the page draw behind the Android gesture bar, which
+   Chrome otherwise paints itself (light, from the manifest, even in dark mode).
+   The dock pads itself with env(safe-area-inset-bottom), which is 0 without it. #}
+<meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover">
 <title>{% if needs_input_count|default(0) %}({{ needs_input_count }}) {% endif %}{% block title %}symphony{% endblock %}</title>
 <link rel="icon" type="image/png" href="{{ icon_url() }}">
 {# Manifest fetches carry no credentials, even same-origin, so Basic auth or a
