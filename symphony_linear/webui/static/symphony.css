@@ -488,6 +488,9 @@ body.sym { min-height: 100dvh; }
 }
 .thead-compact[data-shown="true"] { transform: none; visibility: visible; }
 .thead-compact > .state { margin-left: auto; }
+/* min-width: 0 lets the flex item shrink below its text width, so a long title
+   ends in an ellipsis instead of pushing the state tag off the bar. */
+.compact-title { flex: 1 1 auto; min-width: 0; overflow: hidden; white-space: nowrap; text-overflow: ellipsis; font-weight: 600; }
 @container sym (min-width: 800px) {
   /* Above 800px the header is either always visible or pinned by the layout. */
   .thead-compact { display: none; }

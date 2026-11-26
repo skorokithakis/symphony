@@ -139,7 +139,7 @@ class TestTicketPage:
 
             text = _page(port, ticket.id)
 
-        assert 'class="tid">SYM-1</span>' in text
+        assert "<dt>Ticket</dt><dd>SYM-1</dd>" in text
         assert "A ticket" in text
         assert "stavros/symphony" in text
         assert "state--input" in text

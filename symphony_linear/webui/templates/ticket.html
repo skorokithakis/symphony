@@ -22,7 +22,6 @@
   <header class="thead">
     <div class="thead-top">
       <a class="back" href="/" aria-label="Back to tickets"><svg class="ic" viewBox="0 0 20 20" aria-hidden="true"><path d="M12 4l-6 6 6 6"></path></svg><span class="back-t">Tickets</span>{{ needs_input_dot(needs_input_count) }}</a>
-      <span class="tid">{{ page.ticket.id }}</span>
       {{ state_tag(page) }}
       <p class="conn" id="conn" role="status" hidden>Connection lost. Retrying…</p>
     </div>
@@ -31,6 +30,7 @@
     <details class="tmeta" open>
       <summary>Details</summary>
       <dl>
+        <div><dt>Ticket</dt><dd>{{ page.ticket.id }}</dd></div>
         <div><dt>Branch</dt><dd>{{ page.branch or "—" }}</dd></div>
         <div><dt>Model</dt><dd id="ticket-model">{{ page.model }}</dd></div>
         <div>
@@ -112,7 +112,7 @@
    because the poll replaces the real one. #}
 <div class="thead-compact" id="thead-compact" data-shown="false" inert>
   <a class="back" href="/" aria-label="Back to tickets"><svg class="ic" viewBox="0 0 20 20" aria-hidden="true"><path d="M12 4l-6 6 6 6"></path></svg><span class="back-t">Tickets</span>{{ needs_input_dot(needs_input_count) }}</a>
-  <span class="tid">{{ page.ticket.id }}</span>
+  <span class="compact-title" id="compact-title">{{ page.title }}</span>
   <span class="state {{ page.state_class }}" id="compact-state-tag">{{ page.state_label }}</span>
 </div>
 {{ dock("tickets", needs_input_count) }}

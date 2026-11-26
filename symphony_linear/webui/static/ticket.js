@@ -639,6 +639,10 @@
     if (data.title && titleEl && titleEl.textContent !== data.title) {
       titleEl.textContent = data.title;
     }
+    var compactTitle = document.getElementById("compact-title");
+    if (data.title && compactTitle && compactTitle.textContent !== data.title) {
+      compactTitle.textContent = data.title;
+    }
 
     // The Model row is the stored model; a Send that changed it should show
     // here without a reload.
