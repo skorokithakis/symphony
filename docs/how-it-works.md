@@ -79,10 +79,47 @@ Even then, the sandbox shares your network and runs as your user. Treat it
 as protection against an agent that blunders, not against one that is trying
 to get out.
 
+### Running without bubblewrap
+
+For a quick trial, Symphony runs without the sandbox when it cannot find
+`bwrap` on its own `PATH`. Both of these must be true:
+
+- The tracker is the built-in web UI.
+- You started Symphony from a terminal. The test is that its standard input
+  is a terminal, so a run with input redirected from a file or `/dev/null`
+  does not count.
+
+In every other case a missing `bwrap` stops the daemon at startup. That
+includes a Linear or GitHub config, and a service such as a systemd unit,
+which has no terminal. There is no setting that turns the sandbox off: when
+`bwrap` is installed, Symphony always uses it.
+
+Without the sandbox, nothing in the section above applies. The coding agent,
+`.symphony/setup` and `.symphony/serve` run as plain processes of your user:
+
+- They can read and write everything you can. That includes `config.yaml`
+  with the web UI password, every other ticket's checkout, the per-repo
+  secrets directory, and `~/.ssh`.
+- `sandbox.hide_paths` and `sandbox.extra_rw_paths` are ignored. A config
+  with `sandbox.dir_map` is refused, because a directory mapping needs the
+  sandbox.
+- `/tmp` is the host's shared `/tmp`. `TMPDIR` points at the ticket's own
+  `tmp/` directory, so tools that honour it still keep their scratch files
+  per-ticket.
+- The environment is still wiped down, as it is in the sandbox.
+- When Symphony stops a turn or a serve, it kills the command and the
+  programs that command started. A program that the agent leaves in the
+  background keeps running after a turn that ends by itself. So does a
+  running agent, if the daemon is killed without a clean shutdown.
+
+Symphony logs one warning at startup when it runs this way. Install
+bubblewrap and restart to get the sandbox back; nothing else needs to change.
+
 ## Limitations
 
 - **Linux only.** The sandbox is bubblewrap, which does not exist on macOS
-  or Windows.
+  or Windows. [Running without it](#running-without-bubblewrap) is a trial
+  mode on Linux, not a port to those systems.
 - **Nothing stops a `git push` by default.** Pushing is meant to be a
   deliberate human step, but that is a convention. The sandbox hides your SSH
   private keys, while the `gh` credentials and the SSH agent stay reachable.

@@ -49,7 +49,9 @@ uv sync
 These are not Python packages and won't be installed for you:
 
 - **bwrap** (bubblewrap): `apt install bubblewrap`, `dnf install bubblewrap`,
-  or `pacman -S bubblewrap`.
+  or `pacman -S bubblewrap`. Without it the daemon refuses to start, except
+  for a web UI trial started from a terminal, which runs with no sandbox;
+  see [Running without bubblewrap](how-it-works.md#running-without-bubblewrap).
 - **git**, configured well enough to clone the repos you want the agent to
   work on.
 - **OpenCode** (the default; V2 only, V1 is unsupported), **OMP** or **pi**,

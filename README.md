@@ -70,7 +70,10 @@ You need:
 
 Symphony checks for `bwrap` and the selected agent when it starts, and
 refuses to start if either is missing, so an incomplete install fails at once
-instead of on the first ticket.
+instead of on the first ticket. There is one exception, for a quick trial:
+the web UI started from a terminal runs without `bwrap`. It then has no
+sandbox, and it says so in a warning at startup. See
+[Running without bubblewrap](https://github.com/skorokithakis/symphony/blob/master/docs/how-it-works.md#running-without-bubblewrap).
 
 Run it with nothing else to set up — in a terminal, from a directory with no
 `config.yaml`:

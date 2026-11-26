@@ -28,6 +28,7 @@ from symphony_linear.project_config import (
     ProjectConfigError,
     load_project_config,
 )
+from symphony_linear.sandbox import is_sandboxed
 from symphony_linear.state import SessionRecord, StateManager, TicketState, TicketStatus
 from symphony_linear.tracker import (
     Tracker,
@@ -96,6 +97,10 @@ _IGNORED_COMMENT_BODY = (
 # stopped because the ticket is no longer triggered.
 _STOPPED_TURN_LINE = "\n\nI also stopped the running agent turn."
 
+# Where bwrap mounts the per-ticket attachments directory.  Prompts are
+# rewritten to name this path, so it is only valid while a sandbox is in play.
+_SANDBOX_ATTACHMENTS_MOUNT = "/tmp/symphony-attachments"
+
 # Delays between retries of a transient-prone pipeline tracker call.  Three
 # attempts total: the first immediately, then one after each delay.
 _TRANSIENT_RETRY_DELAYS: tuple[float, ...] = (2.0, 5.0)
@@ -110,6 +115,20 @@ _T = TypeVar("_T")
 
 def _iso_now() -> str:
     return datetime.now(timezone.utc).isoformat()
+
+
+def _attachment_mount(host_attachments_dir: str) -> str:
+    """Return the prefix attachment paths in a prompt must use.
+
+    Downloaded attachments are rewritten to these paths before the agent sees
+    them.  Inside bwrap the host directory is mounted at a fixed location, so
+    the rewritten paths have to name that location.  Without the sandbox there
+    is no mount and the host directory is the real path; the sandbox location
+    would name a directory that does not exist.
+    """
+    if is_sandboxed():
+        return _SANDBOX_ATTACHMENTS_MOUNT
+    return host_attachments_dir
 
 
 def _build_metadata_comment(workspace_path: str) -> str:
@@ -2264,6 +2283,7 @@ class Orchestrator:
                 description or "",
                 tracker=self._tracker,
                 host_attachments_dir=host_attachments_dir,
+                sandbox_mount=_attachment_mount(host_attachments_dir),
                 existing_count=ticket_state.attachment_count,
             )
         except Exception:
@@ -2620,6 +2640,7 @@ class Orchestrator:
                 message,
                 tracker=self._tracker,
                 host_attachments_dir=host_attachments_dir,
+                sandbox_mount=_attachment_mount(host_attachments_dir),
                 existing_count=ticket_state.attachment_count,
             )
         except Exception:

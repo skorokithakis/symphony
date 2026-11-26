@@ -20,6 +20,7 @@ from symphony_linear.local_tracker import LocalTracker
 from symphony_linear.logging import get_logger, setup_logging
 from symphony_linear.orchestrator import Orchestrator
 from symphony_linear.presence import TicketPresence
+from symphony_linear.sandbox import disable_sandbox
 from symphony_linear.sandbox_path import resolve_sandbox_path
 from symphony_linear.state import load_state
 from symphony_linear.tracker import Tracker, model_label_name
@@ -64,21 +65,6 @@ def main(argv: list[str] | None = None) -> None:
 
     setup_logging(debug=args.debug)
 
-    # bwrap runs on the host, not inside the sandbox, so it is resolved from the
-    # daemon's PATH rather than the sandbox PATH checked after the config loads.
-    # Checked before the workspace is resolved so that a first run on a host
-    # without bwrap exits with the install hints and creates nothing: the
-    # generated config and the printed URL would otherwise advertise a daemon
-    # that cannot start. Without it every turn fails the same way, so refuse to
-    # start instead of waiting for the first ticket.
-    if shutil.which("bwrap") is None:
-        logger.error(
-            "bwrap (bubblewrap) was not found on PATH. It is required to run the "
-            "agent in a sandbox. Install it with 'apt install bubblewrap', "
-            "'dnf install bubblewrap' or 'pacman -S bubblewrap'.",
-        )
-        sys.exit(1)
-
     try:
         workspace = _resolve_workspace(args)
     except FirstRunError as exc:
@@ -98,6 +84,11 @@ def main(argv: list[str] | None = None) -> None:
     except ValueError as exc:
         logger.error("Config error: %s", exc)
         sys.exit(1)
+
+    # Decided after the config loads because the fallback rule needs the
+    # tracker type, and before the --validate-config return so validation
+    # applies it too.
+    _configure_sandbox_for_missing_bwrap(config)
 
     sandbox_path = resolve_sandbox_path()
     if shutil.which(config.agent, path=sandbox_path) is None:
@@ -175,6 +166,48 @@ def main(argv: list[str] | None = None) -> None:
             webui_server.stop()
     if restart:
         _reexec()
+
+
+def _configure_sandbox_for_missing_bwrap(config: AppConfig) -> None:
+    """Fail on a missing bwrap, except for an interactive web UI trial run.
+
+    bwrap runs on the host, so it is resolved from the daemon's PATH rather
+    than the sandbox PATH checked after this function.  The trial exception
+    mirrors the first-run gate in :func:`_resolve_workspace`: a supervised
+    service must fail loudly, and Linear and GitHub configs hold live API
+    tokens that an unsandboxed agent could read, so only an attended web UI
+    run may drop the sandbox.  That run is what the first run generates, and
+    Stavros accepted its exposure (the web UI password in config.yaml) as the
+    price of a trial that needs nothing installed.
+    """
+    if shutil.which("bwrap") is not None:
+        return
+
+    if config.webui is None or not sys.stdin.isatty():
+        logger.error(
+            "bwrap (bubblewrap) was not found on PATH. It is required to run the "
+            "agent in a sandbox. Install it with 'apt install bubblewrap', "
+            "'dnf install bubblewrap' or 'pacman -S bubblewrap'.",
+        )
+        sys.exit(1)
+
+    if config.sandbox.dir_map:
+        logger.error(
+            "sandbox.dir_map is set, but bwrap (bubblewrap) was not found on "
+            "PATH. A directory mapping needs the sandbox. Install bubblewrap, "
+            "or remove sandbox.dir_map from config.yaml."
+        )
+        sys.exit(1)
+
+    disable_sandbox()
+    logger.warning(
+        "bwrap (bubblewrap) was not found on PATH, so this run has NO sandbox. "
+        "The coding agent runs as your user and can read everything you can "
+        "read, including config.yaml, other tickets and ~/.ssh. "
+        "sandbox.hide_paths and sandbox.extra_rw_paths are ignored. To get the "
+        "sandbox, install it with 'apt install bubblewrap', 'dnf install "
+        "bubblewrap' or 'pacman -S bubblewrap' and restart."
+    )
 
 
 def _resolve_workspace(args: argparse.Namespace) -> Path:

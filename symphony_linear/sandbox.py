@@ -12,6 +12,7 @@ from __future__ import annotations
 import logging
 import os
 import shutil
+import signal
 import subprocess
 from pathlib import Path
 from typing import Any
@@ -26,6 +27,61 @@ logger = logging.getLogger(__name__)
 # location, so the same path resolves inside the sandbox.
 SECRETS_ENV_VAR = "SYMPHONY_SECRETS_FILE"
 
+# Process-wide sandbox mode.  This is a switch rather than a parameter because
+# the mode is a process-wide fact decided once at startup: a parameter would
+# have to be threaded through every adapter, agent_runner, workspace and
+# orchestrator signature, which would buy nothing.  Both designs fail closed,
+# because the default is sandboxed, so a call site that never learns about the
+# switch tries to start bwrap and errors out instead of running unsandboxed by
+# accident.
+_SANDBOX_ENABLED = True
+
+
+def disable_sandbox() -> None:
+    """Turn the sandbox off for the rest of this process.
+
+    Called only by :func:`symphony_linear.cli.main`, and only for the
+    interactive web UI trial run where bwrap is missing.
+    """
+    global _SANDBOX_ENABLED
+    _SANDBOX_ENABLED = False
+
+
+def is_sandboxed() -> bool:
+    """Return whether commands still run inside bwrap."""
+    return _SANDBOX_ENABLED
+
+
+class _ProcessGroupPopen(subprocess.Popen[bytes]):
+    """A Popen whose :meth:`kill` signals the whole process group.
+
+    Used only without bwrap.  In sandboxed mode ``--unshare-pid`` removes
+    every descendant when bwrap dies, but nothing does that here: a surviving
+    QA dev server would keep its port and a surviving tool process could write
+    to the repo during the next turn.  ``kill`` is the daemon's only
+    cancellation primitive, so overriding it covers every call site without
+    changing any of them.
+    """
+
+    def kill(self) -> None:
+        # Mirror Popen.send_signal: reap before signalling, so a pid that has
+        # already been reaped and reused is never signalled, and neither is the
+        # reused pid's process group.  ProcessLookupError is suppressed for the
+        # same reason the standard library suppresses it (bpo-40550): a
+        # concurrent wait() can reap the leader between the check and the
+        # signal.  The remaining window is the one the standard library
+        # accepts, because closing it would mean holding Popen's private
+        # waitpid lock, and a blocking wait() holds that lock, so kill() would
+        # block behind it.  The error must not escape: agent_runner's timeout
+        # path and workspace.run_setup call kill() with nothing catching it.
+        self.poll()
+        if self.returncode is not None:
+            return
+        try:
+            os.killpg(self.pid, signal.SIGKILL)
+        except ProcessLookupError:
+            pass
+
 
 def _expand(path: str) -> str:
     """Expand ``~`` and resolve symlinks in *path*."""
@@ -33,6 +89,43 @@ def _expand(path: str) -> str:
     expanded = str(Path(path).expanduser())
     # Resolve symlinks (critical for e.g. /var/run → /run)
     return os.path.realpath(expanded)
+
+
+def _run_unsandboxed(
+    cmd: list[str],
+    workspace_path: str,
+    tmp_path: str,
+    env: dict[str, str],
+    stdin: Any,
+    stdout: int,
+    stderr: int,
+) -> subprocess.Popen[bytes]:
+    """Start *cmd* directly, with the environment the sandbox would have set.
+
+    The environment stays clean (nothing is inherited from ``os.environ``)
+    so a trial run behaves like a sandboxed one.  It holds the caller's *env*,
+    the PATH the sandbox would resolve, and TMPDIR, which always points at the
+    per-ticket tmp dir so a ``/tmp``-relative habit still lands somewhere the
+    daemon cleans up.
+
+    ``start_new_session`` makes the command a session and process-group
+    leader, which is what lets :meth:`_ProcessGroupPopen.kill` signal its
+    descendants.
+    """
+    env_to_set = dict(env)
+    if "PATH" not in env_to_set:
+        env_to_set["PATH"] = resolve_sandbox_path(env_to_set)
+    env_to_set["TMPDIR"] = _expand(tmp_path)
+
+    return _ProcessGroupPopen(
+        cmd,
+        cwd=_expand(workspace_path),
+        env=env_to_set,
+        stdin=stdin,
+        stdout=stdout,
+        stderr=stderr,
+        start_new_session=True,
+    )
 
 
 def run_in_sandbox(
@@ -48,14 +141,21 @@ def run_in_sandbox(
     attachments_path: str | None = None,
     dir_map: list[tuple[str, str]] | None = None,
 ) -> subprocess.Popen[bytes]:
-    """Run *cmd* inside a bwrap sandbox and return the :class:`~subprocess.Popen` handle.
+    """Run *cmd*, sandboxed when the sandbox is enabled, and return its handle.
 
     The caller is responsible for managing the process lifetime (wait, kill,
     timeout, etc.).
 
-    This function is side-effect-free: it never creates directories.  bwrap's
-    ``--bind`` is fatal when the source directory does not exist, so callers
-    must ensure *tmp_path* (and *workspace_path*) exist before calling.
+    When the process-wide sandbox was turned off (see :func:`disable_sandbox`),
+    *cmd* starts directly with a clean environment and the resolved workspace
+    as its cwd, and :meth:`_ProcessGroupPopen.kill` signals the whole process
+    group.  *hide_paths*, *extra_rw_paths*, *attachments_path* and *dir_map*
+    are ignored in that mode, because there is no sandbox to apply them to.
+
+    In sandboxed mode this function is side-effect-free: it never creates
+    directories.  bwrap's ``--bind`` is fatal when the source directory does
+    not exist, so callers must ensure *tmp_path* (and *workspace_path*) exist
+    before calling.
 
     Args:
         cmd: The command and arguments to execute inside the sandbox.
@@ -103,8 +203,20 @@ def run_in_sandbox(
         actual sandboxed command is a child of bwrap.
 
     Raises:
-        FileNotFoundError: If ``bwrap`` is not available on ``$PATH``.
+        FileNotFoundError: If ``bwrap`` is not available on ``$PATH`` in
+            sandboxed mode.
     """
+    if not is_sandboxed():
+        return _run_unsandboxed(
+            cmd=cmd,
+            workspace_path=workspace_path,
+            tmp_path=tmp_path,
+            env=env,
+            stdin=stdin,
+            stdout=stdout,
+            stderr=stderr,
+        )
+
     # ------------------------------------------------------------------
     # Pre-flight: ensure bwrap exists
     # ------------------------------------------------------------------

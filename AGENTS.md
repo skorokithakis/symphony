@@ -38,7 +38,8 @@ the built-in backend and the optional Linear webhook receiver.
   `markdown-it-py` (the last two only for the built-in backend's web UI).
 - Dev deps: `pytest`.
 - External binaries required at runtime: `bwrap`, `git`, and the selected
-  coding-agent CLI (`opencode`, `omp`, or `pi`).
+  coding-agent CLI (`opencode`, `omp`, or `pi`). `bwrap` is optional in one
+  case only, the unsandboxed trial described under the invariants below.
 - CLI entry point: `symphony` → `symphony_linear.cli:main`.
 - Backends: the orchestrator talks to a `Tracker` protocol (see `tracker.py`).
   Concrete implementations exist for Linear (`linear_tracker.py`), GitHub
@@ -74,7 +75,8 @@ symphony_linear/
                     titles), summary.py (optional one-line reply summaries),
                     agent_api.py + agent_api.md (the bearer-authenticated /api/v1
                     API and its guide), templates/ and static/
-  sandbox.py        Single function: run_in_sandbox() → builds the bwrap argv and returns a Popen
+  sandbox.py        run_in_sandbox() → builds the bwrap argv and returns a Popen; also the process-wide
+                    switch that makes it start the command directly when the trial run has no bwrap
   agent_runner.py   Shared sandbox process runner; drains pipes and enforces turn watchdogs
   opencode.py       OpenCode adapter: run_initial / run_resume; parses OpenCode NDJSON
   pi_protocol.py    Shared pi-family JSON parser for OMP and pi
@@ -205,6 +207,44 @@ shutting down, or the ticket is no longer triggered — see `_is_still_triggered
   `--clearenv` and the adapters set only `HOME` (plus `PATH`), so a sandboxed
   pi always resolves its state to `~/.pi`, which is why that exact path is the
   one bound read-write.
+- **Without bwrap the daemon runs unsandboxed, but only as a trial.**
+  `cli._configure_sandbox_for_missing_bwrap` runs after the config loads
+  (the rule needs the tracker type) and before the `--validate-config`
+  return. With `bwrap` on the daemon's `PATH` it does nothing. With `bwrap`
+  missing it allows the run only when the tracker is the built-in web UI
+  *and* `sys.stdin.isatty()`; anything else (a Linear or GitHub config, a
+  supervised service) exits with the install hints, exactly as before. The
+  two conditions are deliberate: the first run generates a web UI config, so
+  "a config exists" cannot tell a trial from a real install, while Linear and
+  GitHub configs hold live API tokens and a service must fail loudly instead
+  of adapting. A non-empty `sandbox.dir_map` is a startup error in that mode,
+  because a mapping cannot be honoured without a mount. There is no config
+  key or flag that turns the sandbox off, on purpose: with `bwrap` installed
+  the sandbox is always used. Do not add one. The mode is the module-level
+  switch in `sandbox.py` (`disable_sandbox()` / `is_sandboxed()`, default
+  sandboxed), set once by `cli.main` and never persisted; a re-exec decides
+  again from scratch. It is a switch rather than a parameter because the
+  parameter would pass through every adapter, `agent_runner`, `workspace`
+  and orchestrator signature; both fail closed, since a call site that
+  ignores the switch tries to start `bwrap`. When it is off,
+  `run_in_sandbox` starts the command directly: cwd is the ticket's repo,
+  the environment is the same clean one plus `TMPDIR=<ticket>/tmp`, and
+  `hide_paths`, `extra_rw_paths`, `attachments_path` and `dir_map` are
+  ignored. None of the masking invariants in this file hold in that mode:
+  the agent reads `config.yaml`, `state.json`, sibling tickets, the secrets
+  source dir, `webpush.json` and `tickets/` as plain files. The command is
+  started in its own session and returned as `_ProcessGroupPopen`, whose
+  `kill()` signals the whole process group, so none of the existing
+  `proc.kill()` call sites changed. That override exists only for this mode:
+  under bwrap `--unshare-pid` already removes every descendant, and without
+  it a surviving QA dev server keeps its port and a surviving tool process
+  can write to the repo during the next turn. Accepted gaps: there is no
+  `--die-with-parent` equivalent, a process that starts its own session
+  leaves the group, and descendants left behind by a leader that exited by
+  itself are not signalled (the guard that avoids signalling a recycled pid
+  forbids it). Attachment paths in prompts name the host attachments dir
+  instead of `/tmp/symphony-attachments` (`_attachment_mount` in
+  `orchestrator.py`), because that mount exists only inside bwrap.
 - **The daemon workspace root is masked from the sandbox**, except the current
   ticket's own dir. Because `run_in_sandbox` binds the whole host filesystem
   read-only at `/` and the agent's cwd is `<workspace_root>/<ticket>/repo`,

@@ -9,6 +9,7 @@ from unittest import mock
 
 import pytest
 
+from symphony_linear import sandbox
 from symphony_linear.cli import _create_tracker, _reexec, main
 from symphony_linear.config import load_config
 from symphony_linear.local_tracker import STATE_IN_PROGRESS, LocalTracker
@@ -431,20 +432,26 @@ linear:
 
 
 class TestBwrapValidation:
+    @pytest.fixture(autouse=True)
+    def _restore_sandbox_mode(self, monkeypatch: pytest.MonkeyPatch) -> None:
+        """The switch is a module global, so restore it after every test."""
+        monkeypatch.setattr("symphony_linear.sandbox._SANDBOX_ENABLED", True)
+
+    @staticmethod
+    def _bwrap_missing(binary: str, path: str | None = None) -> str | None:
+        return None if binary == "bwrap" else "/usr/bin/agent"
+
     @pytest.mark.parametrize("extra_args", [[], ["--validate-config"]])
-    def test_missing_bwrap_fails_with_install_commands(
+    def test_non_webui_config_without_bwrap_errors(
         self,
         tmp_path: Path,
         monkeypatch: pytest.MonkeyPatch,
         capsys: pytest.CaptureFixture[str],
         extra_args: list[str],
     ) -> None:
-        """bwrap runs on the host, so the check must fail before any turn starts."""
+        """A Linear config holds live tokens, so it may never run unsandboxed."""
         _write_config(tmp_path, _CONFIG_WITHOUT_WEBHOOK)
-        monkeypatch.setattr(
-            "symphony_linear.cli.shutil.which",
-            lambda binary, path=None: None if binary == "bwrap" else "/usr/bin/omp",
-        )
+        monkeypatch.setattr("symphony_linear.cli.shutil.which", self._bwrap_missing)
 
         with pytest.raises(SystemExit) as excinfo:
             main(["--workspace", str(tmp_path), *extra_args])
@@ -455,6 +462,92 @@ class TestBwrapValidation:
         assert "apt install bubblewrap" in stderr
         assert "dnf install bubblewrap" in stderr
         assert "pacman -S bubblewrap" in stderr
+        assert sandbox.is_sandboxed() is True
+
+    def test_webui_without_a_terminal_errors(
+        self,
+        tmp_path: Path,
+        monkeypatch: pytest.MonkeyPatch,
+        capsys: pytest.CaptureFixture[str],
+    ) -> None:
+        """A supervised daemon must fail loudly rather than drop the sandbox."""
+        _write_config(tmp_path, _CONFIG_WITH_WEBUI)
+        monkeypatch.setattr("symphony_linear.cli.shutil.which", self._bwrap_missing)
+        monkeypatch.setattr(
+            "symphony_linear.cli.sys.stdin", mock.Mock(isatty=lambda: False)
+        )
+
+        with pytest.raises(SystemExit) as excinfo:
+            main(["--workspace", str(tmp_path)])
+
+        assert excinfo.value.code == 1
+        stderr = capsys.readouterr().err
+        assert "bwrap" in stderr
+        assert sandbox.is_sandboxed() is True
+
+    def test_webui_with_a_terminal_and_dir_map_errors(
+        self,
+        tmp_path: Path,
+        monkeypatch: pytest.MonkeyPatch,
+        capsys: pytest.CaptureFixture[str],
+    ) -> None:
+        """A directory mapping only exists inside bwrap, so it cannot fall back."""
+        _write_config(
+            tmp_path,
+            """\
+webui:
+  port: 8080
+  password: secret
+poll_interval_seconds: 10
+sandbox:
+  dir_map:
+    /sandbox/repos: /host/repos
+""",
+        )
+        monkeypatch.setattr("symphony_linear.cli.shutil.which", self._bwrap_missing)
+        monkeypatch.setattr(
+            "symphony_linear.cli.sys.stdin", mock.Mock(isatty=lambda: True)
+        )
+
+        with pytest.raises(SystemExit) as excinfo:
+            main(["--workspace", str(tmp_path)])
+
+        assert excinfo.value.code == 1
+        stderr = capsys.readouterr().err
+        assert "sandbox.dir_map is set, but bwrap (bubblewrap) was not found" in stderr
+        assert "remove sandbox.dir_map from config.yaml" in stderr
+        assert sandbox.is_sandboxed() is True
+
+    def test_webui_with_a_terminal_runs_unsandboxed(
+        self,
+        tmp_path: Path,
+        monkeypatch: pytest.MonkeyPatch,
+        capsys: pytest.CaptureFixture[str],
+    ) -> None:
+        """The attended web UI trial is the one case that drops the sandbox."""
+        _write_config(tmp_path, _CONFIG_WITH_WEBUI)
+        monkeypatch.setattr("symphony_linear.cli.shutil.which", self._bwrap_missing)
+        monkeypatch.setattr(
+            "symphony_linear.cli.sys.stdin", mock.Mock(isatty=lambda: True)
+        )
+
+        with (
+            mock.patch("symphony_linear.cli.load_state") as mock_load_state,
+            mock.patch("symphony_linear.cli._create_tracker") as mock_create_tracker,
+            mock.patch("symphony_linear.cli.Orchestrator") as mock_orchestrator_class,
+            mock.patch("symphony_linear.cli.WebUIServer"),
+        ):
+            mock_load_state.return_value = mock.MagicMock()
+            mock_create_tracker.return_value = LocalTracker(tmp_path)
+            mock_orchestrator_class.return_value = mock.MagicMock()
+
+            main(["--workspace", str(tmp_path)])
+
+        assert sandbox.is_sandboxed() is False
+        stderr = capsys.readouterr().err
+        assert "so this run has NO sandbox" in stderr
+        assert "sandbox.hide_paths and sandbox.extra_rw_paths are ignored" in stderr
+        assert "pacman -S bubblewrap' and restart." in stderr
 
 
 # ---------------------------------------------------------------------------
@@ -481,6 +574,11 @@ class TestFirstRunWorkspace:
         monkeypatch.setenv("HOME", str(home))
         monkeypatch.chdir(current_directory)
         return home, current_directory
+
+    @pytest.fixture(autouse=True)
+    def _restore_sandbox_mode(self, monkeypatch: pytest.MonkeyPatch) -> None:
+        """The switch is a module global, so restore it after every test."""
+        monkeypatch.setattr("symphony_linear.sandbox._SANDBOX_ENABLED", True)
 
     @pytest.fixture
     def terminal(self, monkeypatch: pytest.MonkeyPatch) -> None:
@@ -577,6 +675,33 @@ class TestFirstRunWorkspace:
             f"Open http://127.0.0.1:27149/ and log in with password {password}"
         )
         assert "config.yaml" in line
+
+    def test_first_run_without_bwrap_creates_the_config_and_warns(
+        self,
+        isolated_home_and_cwd: tuple[Path, Path],
+        terminal: None,
+        monkeypatch: pytest.MonkeyPatch,
+        capsys: pytest.CaptureFixture[str],
+    ) -> None:
+        """The trial fallback applies after the workspace is resolved.
+
+        The old check ran before workspace resolution, so a host without bwrap
+        could not even get as far as writing its first config.
+        """
+        home, _ = isolated_home_and_cwd
+        monkeypatch.setattr(
+            "symphony_linear.cli.shutil.which",
+            lambda binary, path=None: (
+                None if binary == "bwrap" else f"/usr/bin/{binary}"
+            ),
+        )
+
+        self._run_with_mocks()
+
+        workspace = (home / "symphony").resolve()
+        assert (workspace / "config.yaml").is_file()
+        assert sandbox.is_sandboxed() is False
+        assert "so this run has NO sandbox" in capsys.readouterr().err
 
     def test_first_run_prefers_opencode_then_omp_then_pi(
         self,
