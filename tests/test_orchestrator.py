@@ -30,6 +30,7 @@ from symphony_linear.linear import (
 )
 from symphony_linear.linear_tracker import LinearTracker
 from symphony_linear.local_tracker import (
+    QUESTION_FORMAT_NOTE,
     STATE_DONE,
     STATE_NEEDS_INPUT,
     LocalTracker,
@@ -561,6 +562,32 @@ class TestNewTicketPipeline:
         _, kw = mock_finalize.call_args
         assert kw.get("on_subprocess") is not None
         assert kw.get("auto_branch") is True  # global default
+
+    def test_question_format_note_ends_the_initial_prompt(
+        self, orchestrator: Orchestrator, linear: FakeLinearClient
+    ) -> None:
+        """The web UI note is the prompt's last text, after pending comments."""
+        with (
+            mock.patch("symphony_linear.orchestrator.clone_workspace") as mock_clone,
+            mock.patch(
+                "symphony_linear.orchestrator.finalize_workspace"
+            ) as mock_finalize,
+            mock.patch(
+                "symphony_linear.orchestrator.load_project_config"
+            ) as mock_load_config,
+            mock.patch("symphony_linear.orchestrator.run_initial") as mock_run_initial,
+            mock.patch.object(
+                LinearTracker, "question_format_note", QUESTION_FORMAT_NOTE
+            ),
+        ):
+            issue = self._setup_mocks(
+                mock_clone, mock_finalize, mock_load_config, mock_run_initial, linear
+            )
+            orchestrator._new_ticket_pipeline(issue, extra_context="HUMAN CONTEXT")
+
+        prompt = mock_run_initial.call_args.kwargs["prompt"]
+        assert prompt.endswith(f"\n\n{QUESTION_FORMAT_NOTE}")
+        assert prompt.index("HUMAN CONTEXT") < prompt.index(QUESTION_FORMAT_NOTE)
 
     def test_turn_output_activity_is_recorded_and_cleared_with_the_task(
         self, orchestrator: Orchestrator, linear: FakeLinearClient
@@ -2871,6 +2898,30 @@ class TestResumePipeline:
             orchestrator._resume_pipeline(ts)
         updated = orchestrator._state.get("ticket-1")
         assert updated is not None and updated.status == TicketStatus.needs_input
+
+    def test_question_format_note_ends_the_resume_message(
+        self, orchestrator: Orchestrator, linear: FakeLinearClient
+    ) -> None:
+        """Every turn carries the note, including a restart-recovery replay."""
+        ts = self._make_ts()
+        orchestrator._state.upsert(ts)
+        linear.set_response("list_comments_since", [_make_comment("c1", "Fix please")])
+        with (
+            mock.patch(
+                "symphony_linear.orchestrator.load_project_config",
+                return_value=ProjectConfig(),
+            ),
+            mock.patch(
+                "symphony_linear.orchestrator.run_resume", return_value=("Done!", None)
+            ) as mock_run_resume,
+            mock.patch.object(
+                LinearTracker, "question_format_note", QUESTION_FORMAT_NOTE
+            ),
+        ):
+            orchestrator._resume_pipeline(ts)
+
+        message = mock_run_resume.call_args.kwargs["message"]
+        assert message.endswith(f"\n\n{QUESTION_FORMAT_NOTE}")
 
     def test_resume_turn_records_its_output_activity(
         self, orchestrator: Orchestrator, linear: FakeLinearClient

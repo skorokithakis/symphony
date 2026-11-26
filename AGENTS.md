@@ -722,6 +722,23 @@ shutting down, or the ticket is no longer triggered — see `_is_still_triggered
   cleanly and the port is free when the new process binds it). The orchestrator
   holds no reference to the server and stays tracker-agnostic; keep it that
   way so it can be tested without one.
+- **The web UI backend asks the agent to format questions, on every message.**
+  `LocalTracker.question_format_note` returns `QUESTION_FORMAT_NOTE`, a fixed
+  sentence telling the agent to put each question for the human in a
+  `> [!QUESTION] text` callout, with `> - a` (choose one) or `> - [ ] a`
+  (choose many) options and the recommended one first; the Linear and GitHub
+  adapters return `None`, so their prompts stay byte-identical.
+  `Orchestrator._with_question_format_note` appends it after a blank line as
+  the last text of both the initial prompt (after any `extra_context`) and the
+  resume message (after attachment rewriting, which also covers the
+  restart-recovery replay). It is re-sent on every turn on purpose: sessions
+  are long and compaction can drop a one-time instruction, and in-flight
+  tickets pick it up on their next turn. It rides in the user message rather
+  than a system prompt because `opencode run` has no system-prompt flag while
+  OMP and pi do, and the three agents must receive identical instructions. The
+  note is never stored in a comment, shown in the UI, or returned by
+  `/api/v1`. No config option controls the text, and it must stay about one
+  sentence long: it costs context on every turn.
 
 ## Running and testing
 

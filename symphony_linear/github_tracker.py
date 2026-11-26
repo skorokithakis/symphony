@@ -1201,6 +1201,12 @@ class GitHubTracker:
     def qa_enabled(self) -> bool:
         return self._config.qa_status is not None
 
+    @property
+    def question_format_note(self) -> str | None:
+        # GitHub renders the agent's reply as an ordinary comment, so there is
+        # no callout format to ask for.
+        return None
+
     def transition_name_for(self, target: TransitionTarget) -> str:
         return _target_to_status_name(
             target,

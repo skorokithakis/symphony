@@ -81,6 +81,17 @@ REPLY_STATES: frozenset[str] = frozenset({STATE_NEEDS_INPUT, STATE_QA})
 #: keeps working.  The middle dot is U+00B7.
 _BOT_FOOTER = "\n\n*Symphony · {kind}*"
 
+#: Appended by the orchestrator to every message it sends the agent, because
+#: on this backend the human reads the final reply on a ticket page and a
+#: question buried in prose is easy to miss.  It rides in the user message
+#: rather than a system prompt: ``opencode run`` has no system-prompt flag,
+#: and the three agents must receive identical instructions.
+QUESTION_FORMAT_NOTE = (
+    'Put each question for the human in a callout: "> [!QUESTION] text", with '
+    'options as "> - a" (choose one) or "> - [ ] a" (choose many), '
+    "recommended first."
+)
+
 #: ``user_id`` reported for human comments, so the resume prompt names an
 #: author instead of "unknown".
 _HUMAN_USER_ID = "user"
@@ -1844,6 +1855,10 @@ class LocalTracker:
     @property
     def qa_enabled(self) -> bool:
         return True
+
+    @property
+    def question_format_note(self) -> str | None:
+        return QUESTION_FORMAT_NOTE
 
     def transition_name_for(self, target: TransitionTarget) -> str:
         state = _STATE_FOR_TARGET.get(target)

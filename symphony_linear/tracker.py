@@ -323,6 +323,17 @@ class Tracker(Protocol):
         """Return ``True`` when a QA state is configured for this tracker."""
         ...
 
+    @property
+    def question_format_note(self) -> str | None:
+        """Return a note on how to write questions for the human, or ``None``.
+
+        The orchestrator appends the note as the last text of every message
+        it sends the agent, so a backend whose humans read replies in a
+        particular UI can ask for a format that UI understands.  Backends
+        without such a requirement return ``None``.
+        """
+        ...
+
     def transition_name_for(self, target: TransitionTarget) -> str:
         """Return the tracker-specific human-readable name for *target*.
 

@@ -2065,6 +2065,18 @@ class Orchestrator:
     # New-ticket pipeline
     # ==================================================================
 
+    def _with_question_format_note(self, text: str) -> str:
+        """Append the tracker's question-format note as the message's last text.
+
+        The note is re-sent on every turn on purpose: sessions are long and
+        compaction can drop a one-time instruction, and in-flight tickets
+        pick it up on their next turn.
+        """
+        note = self._tracker.question_format_note
+        if note is None:
+            return text
+        return f"{text}\n\n{note}"
+
     def _new_ticket_pipeline(
         self,
         issue: Issue,
@@ -2292,6 +2304,8 @@ class Orchestrator:
         # not downloaded or passed to run_initial here.  Accepted limitation.
         if extra_context:
             prompt += f"\n\n---\n\n{extra_context}"
+
+        prompt = self._with_question_format_note(prompt)
 
         if self._is_cancelled(tid):
             return
@@ -2637,6 +2651,8 @@ class Orchestrator:
             with self._state_lock:
                 self._state.upsert(ticket_state)
                 self._state.save()
+
+        rewritten_message = self._with_question_format_note(rewritten_message)
 
         # Load per-project config (re-read on every resume to pick up in-repo
         # changes).  The In Progress transition above runs first on purpose, so

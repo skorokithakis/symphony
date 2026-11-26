@@ -130,6 +130,26 @@ interrupt a turn that is already running, and like Send it is unavailable while
 the agent works. The Details panel shows the model currently stored on the
 ticket.
 
+## Questions
+
+The daemon asks the agent to write each question for you as a callout, so
+that a question stands apart from the rest of the reply:
+
+```markdown
+> [!QUESTION] Which database should the service use?
+> - **PostgreSQL**: already used by the other services.
+> - **SQLite**: no server to run.
+```
+
+A plain list means one answer is expected, and the agent puts the option it
+recommends first. A list of `- [ ]` items means several answers may be chosen.
+A callout with no list is an open question.
+
+The request is one fixed sentence at the end of every message the daemon sends
+to the agent. It is not configurable, and it is sent only by the web UI
+backend. An agent can still ignore it; the reply is then ordinary prose, as
+before.
+
 ## Repositories
 
 The editor's Repository field is a dropdown of the repositories you have
