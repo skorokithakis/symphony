@@ -547,8 +547,10 @@ body.sym { min-height: 100dvh; }
 .entry-tools { margin-left: auto; display: flex; gap: var(--s4); }
 /* The labels are the three-character "[+]" and "[-]", so the side padding
    (cancelled by the margin, and smaller than half the gap so the two never
-   overlap) keeps the tap target wider than the text. */
-.entry-tools .link-btn { padding: 12px 6px; margin: -12px -6px; }
+   overlap) keeps the tap target wider than the text.  The link underline is
+   dropped here only: under brackets and a hyphen it reads as a third stroke,
+   and the brackets already mark these as controls. */
+.entry-tools .link-btn { padding: 12px 6px; margin: -12px -6px; text-decoration: none; }
 /* The entry header is a caption line, so its icon control is sized like the
    Details one rather than the 44 px touch target, and the negative margin
    keeps it from growing the line. */
