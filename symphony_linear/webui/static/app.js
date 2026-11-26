@@ -87,14 +87,18 @@
 
   /* The tab title is "(2) Tickets · symphony" when two tickets wait on the
      user.  Polls hand in the page's own title, so a changed ticket title is
-     picked up too.  Every Needs Input dot follows the same count: the dock's
-     and, on the ticket page, the one on the back link, so the existing polls
-     keep them right without a second endpoint. */
+     picked up too.  Every Needs Input badge follows the same count: the
+     dock's and, on the ticket page, the one on the back link, so the existing
+     polls keep them right without a second endpoint. */
   Sym.setTitle = function (baseTitle, needsInputCount) {
     document.title =
       needsInputCount > 0 ? "(" + needsInputCount + ") " + baseTitle : baseTitle;
     document.querySelectorAll("[data-needs-input-dot]").forEach(function (dot) {
       dot.hidden = !(needsInputCount > 0);
+      var number = dot.querySelector("[data-needs-input-count]");
+      if (number) {
+        number.textContent = String(needsInputCount);
+      }
     });
   };
 

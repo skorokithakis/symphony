@@ -186,13 +186,15 @@
 {% endif %}
 {%- endmacro %}
 
-{# The Needs Input dot and its screen-reader label.  It sits beside the
-   Tickets link in the dock, and beside the ticket page's back link because
-   the phone layout hides the whole dock on that page.  The wrapper carries
-   hidden, which the server renders from the count and app.js's setTitle
-   keeps in step with every poll. #}
+{# The Needs Input count badge and its screen-reader label.  It sits beside
+   the Tickets link in the dock, and beside the ticket page's back link
+   because the phone layout hides the whole dock on that page.  The wrapper
+   carries hidden and the inner span the number; the server renders both
+   from the count and app.js's setTitle keeps them in step with every poll.
+   The label follows the number so a screen reader says "Tickets, 3 waiting
+   on you" without needing a plural form. #}
 {% macro needs_input_dot(needs_input_count) -%}
-<span class="needs-input-dot" data-needs-input-dot{% if not needs_input_count %} hidden{% endif %}><span class="mark mark--unread"></span><span class="sr">Tickets waiting on you</span></span>
+<span class="needs-input-dot" data-needs-input-dot{% if not needs_input_count %} hidden{% endif %}><span class="needs-input-count" data-needs-input-count>{{ needs_input_count }}</span><span class="sr"> waiting on you</span></span>
 {%- endmacro %}
 
 {# The bottom dock, on every page.  ``current`` names the one link marked

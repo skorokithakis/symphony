@@ -843,6 +843,7 @@ class TestDock:
         text = body.decode()
         assert '<span class="needs-input-dot" data-needs-input-dot>' in text
         assert '<span class="needs-input-dot" data-needs-input-dot hidden>' not in text
+        assert "data-needs-input-count>1</span>" in text
 
     def test_the_back_link_carries_the_dot_on_both_pages(self, tmp_path: Path) -> None:
         # The phone layout hides the dock on the ticket and editor pages, so
