@@ -20,6 +20,21 @@
   {% endif %}
 
   <section class="group">
+    <h2 class="group-h"><span class="page-sub">Add a repository</span></h2>
+    <form class="repo-form" method="post" action="/repos">
+      <div class="field">
+        <label for="repo-url">URL</label>
+        <input class="input mono" id="repo-url" name="url" type="text" placeholder="owner/name or a clone URL" value="{{ page.new_url }}">
+      </div>
+      <div class="field">
+        <label for="repo-name">Name <span class="field-note">optional</span></label>
+        <input class="input" id="repo-name" name="name" type="text" placeholder="owner/name" value="{{ page.new_name }}">
+      </div>
+      <div><button class="btn btn--primary" type="submit">Add</button></div>
+    </form>
+  </section>
+
+  <section class="group">
     <h2 class="group-h">
       <span class="page-sub">Saved repositories</span>
       <span class="group-n">{{ page.repos|length }}</span>
@@ -38,23 +53,8 @@
       {% endfor %}
     </ul>
     {% else %}
-    <p class="group-empty">No repositories yet. Add one below.</p>
+    <p class="group-empty">No repositories yet. Add one above.</p>
     {% endif %}
-  </section>
-
-  <section class="group">
-    <h2 class="group-h"><span class="page-sub">Add a repository</span></h2>
-    <form class="repo-form" method="post" action="/repos">
-      <div class="field">
-        <label for="repo-url">URL</label>
-        <input class="input mono" id="repo-url" name="url" type="text" placeholder="owner/name or a clone URL" value="{{ page.new_url }}">
-      </div>
-      <div class="field">
-        <label for="repo-name">Name <span class="field-note">optional</span></label>
-        <input class="input" id="repo-name" name="name" type="text" placeholder="owner/name" value="{{ page.new_name }}">
-      </div>
-      <div><button class="btn btn--primary" type="submit">Add</button></div>
-    </form>
   </section>
 </main>
 {{ dock("repos", needs_input_count) }}
