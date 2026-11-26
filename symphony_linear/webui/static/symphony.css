@@ -617,6 +617,16 @@ body.sym { min-height: 100dvh; }
 .md li + li { margin-top: var(--s1); }
 .md li::marker { color: var(--ink-3); }
 .md h3, .md h4 { font-size: var(--t-md); font-weight: 700; margin-top: var(--s2); }
+/* The base reset does not cover blockquote, so the browser's default margin
+   was its only styling and a quote read as indented body text.  A bar and
+   muted ink mark it as someone else's words; a fill was not used because the
+   sunken fill already means code.  The column layout repeats .md's own gap,
+   because the reset removes the margins between the quote's blocks. */
+.md blockquote {
+  display: flex; flex-direction: column; gap: var(--s3);
+  margin: 0; padding: var(--s1) 0 var(--s1) var(--s4);
+  border-left: 3px solid var(--rule-2); color: var(--ink-2);
+}
 /* Markdown images stay inside the reading column.  Their own dimensions
    decide the rest, so an image smaller than the column is not upscaled; the
    lightbox in app.js opens the full-size source. */
