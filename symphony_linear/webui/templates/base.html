@@ -4,8 +4,16 @@
 <meta charset="utf-8">
 {# viewport-fit=cover lets the page draw behind the Android gesture bar, which
    Chrome otherwise paints itself (light, from the manifest, even in dark mode).
-   The dock pads itself with env(safe-area-inset-bottom), which is 0 without it. #}
-<meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover">
+   The dock pads itself with env(safe-area-inset-bottom), which is 0 without it.
+   interactive-widget=resizes-content makes Chrome and Firefox on Android shrink
+   the page when the keyboard opens.  Their default since Chrome 108 only shrinks
+   the visual viewport, so the sticky reply composer stayed at the bottom of the
+   full-height page, behind the keyboard, and slid out of view while the user
+   scrolled the thread to read and reply at once.  It also makes the composer's
+   40dvh max-height mean 40% of the space above the keyboard.  iOS Safari ignores
+   the key; a visualViewport script was rejected because the main phone is
+   Android. #}
+<meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover, interactive-widget=resizes-content">
 <title>{% if needs_input_count|default(0) %}({{ needs_input_count }}) {% endif %}{% block title %}symphony{% endblock %}</title>
 <link rel="icon" type="image/png" href="{{ icon_url() }}">
 {# Manifest fetches carry no credentials, even same-origin, so Basic auth or a
