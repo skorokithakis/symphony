@@ -214,7 +214,7 @@ sandbox:
 
   # Optional. Directory of per-repo secrets files, one KEY=value file per
   # repo at <secrets_dir>/<host>/<owner>/<name>.env. Defaults to
-  # <workspace>/secrets. See "Secrets" below.
+  # <workspace>/secrets. See "Secrets" in docs/configuration.md.
   # secrets_dir: ~/symphony-secrets
 
 

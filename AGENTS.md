@@ -1,7 +1,8 @@
 # AGENTS.md
 
 Orientation for AI agents working on this repo. Pair this with `README.md`
-(end-user docs) and the source itself — the code is the source of truth.
+(the pitch and the web UI quick start), `docs/` (the end-user reference) and
+the source itself — the code is the source of truth.
 
 ## What this is
 
@@ -82,6 +83,8 @@ symphony_linear/
   orchestrator.py   The brain: poll loop, per-ticket pipelines, ThreadPoolExecutor, cancellation
   webhook.py        Optional webhook receiver; wakes poll loop on Linear updates. Absent config means polling only.
   logging.py        stderr logging setup
+docs/               End-user reference, one file per topic; docs/images/ holds the screenshots
+misc/screenshots.py Regenerates the four web UI screenshots in docs/images/ from fake tickets
 tests/              pytest, mostly unit with mocks; integration tests marked `integration` (shell out to `bwrap`/`git` — they never call the real `opencode`, `omp`, or `pi` binary or any LLM)
 ```
 
@@ -719,6 +722,15 @@ shutting down, or the ticket is no longer triggered — see `_is_still_triggered
 .venv/bin/pytest tests/test_orchestrator.py   # one file
 .venv/bin/python -m symphony_linear --validate-config --workspace <dir>
 ```
+
+`README.md` is also the PyPI project page, and PyPI does not resolve relative
+paths. Every image and link in it must be an absolute
+`raw.githubusercontent.com` or `github.com/.../blob/master/` URL; files under
+`docs/` link to each other with relative paths. After a visible web UI change,
+run `./misc/screenshots.py` to refresh the README screenshots (it needs Google
+Chrome installed; it drives the system browser and downloads none): it seeds a
+temporary workspace and starts only the web server, never the orchestrator, so
+the fake In Progress tickets cannot start a clone or an agent.
 
 A `pre-commit` config runs `ruff` (lint + format) and `mypy` on every commit,
 so there's no need to invoke them manually. There is no Makefile. If you add
