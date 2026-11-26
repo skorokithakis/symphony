@@ -68,23 +68,23 @@ You need:
 - One coding agent, installed and logged in: OpenCode V2 (the default), OMP
   or pi.
 
-Then make a directory for Symphony, put a four-line config in it with a
-password of your own, and start the daemon:
+Symphony checks for `bwrap` and the selected agent when it starts, and
+refuses to start if either is missing, so an incomplete install fails at once
+instead of on the first ticket.
+
+Run it with nothing else to set up — in a terminal, from a directory with no
+`config.yaml`:
 
 ```bash
-mkdir ~/symphony && cd ~/symphony
-
-cat > config.yaml <<'YAML'
-webui:
-  port: 8080
-  password: change-me   # Choose your own.
-YAML
-
 uvx symphony-linear
 ```
 
-Open <http://127.0.0.1:8080/> and log in with the password from the config
-(the browser's username field is ignored, so any username works). Then:
+The first run creates the workspace in `~/symphony`, picks the first coding
+agent it finds (OpenCode, then OMP, then pi), and writes a config with a
+random password. It prints the address and the password, which is also
+stored in `~/symphony/config.yaml`. Open <http://127.0.0.1:27149/> and log in
+with it (the browser's username field is ignored, so any username works).
+Then:
 
 1. Press **New ticket**.
 2. In **Repository**, choose **Add a repository…** and type `owner/name` or a
@@ -106,8 +106,12 @@ Some things to know:
 - The work stays in the ticket's checkout, `~/symphony/SYM-1/repo` for the
   first ticket, on the branch `symphony/sym-1`. Push it yourself after you review it, or
   ask the agent to commit and push.
-- To use OMP or pi, add `agent: omp` or `agent: pi` at the top of
-  `config.yaml`.
+- `~/symphony` is the workspace: one directory per ticket, plus `state.json`,
+  the ticket store and `config.yaml`, which holds the password. Keep that file
+  private.
+- To change the agent, edit `agent:` in `~/symphony/config.yaml`.
+- To use a workspace of your own, run Symphony from a directory that already
+  holds a `config.yaml`, or pass `--workspace`.
 - No `uv`? `pip install symphony-linear` installs the same `symphony-linear`
   command.
 

@@ -68,6 +68,48 @@ Symphony runs in the foreground and logs to stderr. For interactive use it
 is fine to start it in `tmux` or `screen`; for anything more permanent a
 `systemd --user` unit is the obvious home.
 
+### Where the workspace lives
+
+The workspace holds `config.yaml` and `state.json`, the ticket store for the
+built-in tracker, and one directory per ticket. Symphony picks it in this
+order:
+
+1. `--workspace <path>` if you pass it. It is never created for you.
+2. The current directory, if it holds a `config.yaml`.
+3. `~/symphony`, when standard input is a terminal. Symphony creates it and
+   writes a config there if it is missing.
+
+The third step needs a terminal, so a supervised daemon with a wrong
+`WorkingDirectory` fails with the missing-config error instead of quietly
+starting a workspace of its own in `~/symphony`. `--validate-config` never
+takes the fallback either, and never creates anything.
+
+### The first run
+
+With no arguments, no `config.yaml` in the current directory and a terminal,
+Symphony configures itself. It looks for a coding agent on the sandbox `PATH`
+(`SYMPHONY_SANDBOX_PATH` if set) in the order OpenCode, OMP, pi, and writes
+this to `~/symphony/config.yaml`, mode 0600:
+
+```yaml
+agent: opencode   # the first of the three found
+webui:
+  port: 27149
+  password: <random>
+```
+
+It prints the address and the password to stderr, then starts normally. The
+password is random and mandatory, because the sandbox shares the host network
+and could otherwise reach the UI; keep the file private. If none of the three
+agents is installed, nothing is created and the daemon exits with an error
+naming all of them.
+
+A later run in any terminal directory resolves `~/symphony` again, because
+its `config.yaml` now exists. Run from a directory with its own
+`config.yaml`, or pass `--workspace`, to use a different workspace.
+
+### systemd
+
 A starting point for `~/.config/systemd/user/symphony.service`:
 
 ```ini
@@ -148,8 +190,8 @@ ready yet at that point.
 | Flag                 | Effect                                                              |
 |----------------------|---------------------------------------------------------------------|
 | `--debug`            | Enable DEBUG-level logging.                                         |
-| `--workspace <path>` | Override workspace directory (default: current working directory).  |
-| `--validate-config`  | Load and validate the config, then exit.                            |
+| `--workspace <path>` | Workspace directory. Default: the current directory, or `~/symphony` in a terminal. |
+| `--validate-config`  | Load and validate the config, then exit. Never creates files.        |
 
 ### Startup behaviour
 

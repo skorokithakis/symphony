@@ -54,6 +54,7 @@ the built-in backend and the optional Linear webhook receiver.
 ```
 symphony_linear/
   cli.py            argparse + wiring; loads config, builds Orchestrator, runs it
+  first_run.py      the terminal-only ~/symphony fallback: agent detection and a generated config
   config.py         YAML + pydantic config; ~ and ${VAR} expansion; token fallback
   state.py          TicketState model + StateManager (atomic JSON writes, threading.Lock)
   tracker.py        Tracker-neutral protocol, errors, and enums (the seam for orchestrator)
@@ -370,6 +371,20 @@ shutting down, or the ticket is no longer triggered — see `_is_still_triggered
   running QA serve never blocks a restart; it is relaunched after. Uncommitted
   edits do not move `HEAD`, so they never trigger it, and `execv` lives in
   `cli.py` (not the orchestrator) to keep the latter testable.
+- **The `~/symphony` default workspace is created by an interactive run only.**
+  `cli._resolve_workspace` keeps an explicit `--workspace` and a current
+  directory holding `config.yaml` first (neither is ever created), and only
+  when `sys.stdin.isatty()` falls back to `~/symphony`, where
+  `first_run.ensure_default_workspace` writes `agent: <first of opencode, omp,
+  pi on the sandbox PATH>` plus a `webui` block on port 27149 with a random
+  password, mode 0600 because the file is the password's only home. No agent
+  found means nothing is created and the error names all three. `--validate-config`
+  never takes the fallback even from a terminal, because the checkout watcher
+  runs it unattended on every update; without a terminal a bad
+  `WorkingDirectory` still fails loudly instead of adopting `~/symphony`. A
+  restart re-resolves the same workspace: `_reexec` replays the original argv,
+  which still has no `--workspace`, and the config the first run wrote is now
+  present.
 - **Mid-turn comments are explicitly discarded, not queued.** A human
   comment posted while a turn is genuinely running (a task is in flight in
   `_active_tasks`) is never consumed by that turn, so tick step 4 posts one

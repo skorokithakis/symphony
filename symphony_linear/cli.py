@@ -9,7 +9,9 @@ import sys
 
 from pathlib import Path
 
+from symphony_linear import first_run
 from symphony_linear.config import AppConfig, load_config
+from symphony_linear.first_run import FirstRunError
 from symphony_linear.github import GitHubClient
 from symphony_linear.github_tracker import GitHubTracker, GitHubTrackerConfig
 from symphony_linear.linear import LinearClient
@@ -38,7 +40,8 @@ def _build_parser() -> argparse.ArgumentParser:
         "--workspace",
         type=str,
         default=None,
-        help="Path to workspace directory (default: current working directory). "
+        help="Path to workspace directory (default: the current directory if "
+        "it holds config.yaml, otherwise ~/symphony when run in a terminal). "
         "Expects config.yaml and state.json inside this directory.",
     )
     parser.add_argument(
@@ -61,11 +64,26 @@ def main(argv: list[str] | None = None) -> None:
 
     setup_logging(debug=args.debug)
 
-    workspace = (
-        Path(args.workspace).expanduser().resolve()
-        if args.workspace
-        else Path.cwd().resolve()
-    )
+    # bwrap runs on the host, not inside the sandbox, so it is resolved from the
+    # daemon's PATH rather than the sandbox PATH checked after the config loads.
+    # Checked before the workspace is resolved so that a first run on a host
+    # without bwrap exits with the install hints and creates nothing: the
+    # generated config and the printed URL would otherwise advertise a daemon
+    # that cannot start. Without it every turn fails the same way, so refuse to
+    # start instead of waiting for the first ticket.
+    if shutil.which("bwrap") is None:
+        logger.error(
+            "bwrap (bubblewrap) was not found on PATH. It is required to run the "
+            "agent in a sandbox. Install it with 'apt install bubblewrap', "
+            "'dnf install bubblewrap' or 'pacman -S bubblewrap'.",
+        )
+        sys.exit(1)
+
+    try:
+        workspace = _resolve_workspace(args)
+    except FirstRunError as exc:
+        logger.error("%s", exc)
+        sys.exit(1)
 
     try:
         config: AppConfig = load_config(workspace)
@@ -157,6 +175,26 @@ def main(argv: list[str] | None = None) -> None:
             webui_server.stop()
     if restart:
         _reexec()
+
+
+def _resolve_workspace(args: argparse.Namespace) -> Path:
+    """Pick the workspace directory, creating the default one on a first run.
+
+    An explicit ``--workspace`` and a current directory that already holds a
+    ``config.yaml`` both win, and neither is ever created for the user.  The
+    ``~/symphony`` fallback is gated on a terminal: ``--validate-config`` is
+    run unattended by the checkout watcher, and a supervised daemon's stdin is
+    not a terminal either, so both keep the previous behaviour of using the
+    current directory and reporting the missing config there.
+    """
+    if args.workspace:
+        return Path(args.workspace).expanduser().resolve()
+    current_directory = Path.cwd().resolve()
+    if (current_directory / "config.yaml").exists():
+        return current_directory
+    if args.validate_config or not sys.stdin.isatty():
+        return current_directory
+    return first_run.ensure_default_workspace()
 
 
 def _reexec() -> None:

@@ -65,6 +65,13 @@ def _write_config(tmp_path: Path, content: str) -> Path:
     return config_path
 
 
+def _which_with_bwrap(binary: str, path: str | None = None) -> str | None:
+    """Real PATH lookup with bwrap faked, so a test exercises the agent check."""
+    if binary == "bwrap":
+        return "/usr/bin/bwrap"
+    return shutil_which(binary, path=path)
+
+
 @pytest.fixture(autouse=True)
 def _agent_binary_is_available(monkeypatch: pytest.MonkeyPatch) -> None:
     """Keep CLI tests independent from agent binaries installed on the host."""
@@ -344,7 +351,8 @@ linear:
 
             main(["--workspace", str(tmp_path)])
 
-        mock_which.assert_called_once_with("omp", path=sandbox_path)
+        mock_which.assert_any_call("bwrap")
+        mock_which.assert_any_call("omp", path=sandbox_path)
 
     def test_validate_config_checks_selected_agent_binary(
         self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
@@ -366,7 +374,8 @@ linear:
         ) as mock_which:
             main(["--workspace", str(tmp_path), "--validate-config"])
 
-        mock_which.assert_called_once_with("omp", path=sandbox_path)
+        mock_which.assert_any_call("bwrap")
+        mock_which.assert_any_call("omp", path=sandbox_path)
 
     def test_agent_found_only_via_sandbox_path_passes_validation(
         self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
@@ -386,7 +395,7 @@ linear:
         agent_binary.chmod(0o755)
         monkeypatch.setenv("PATH", str(tmp_path / "daemon-bin"))
         monkeypatch.setenv("SYMPHONY_SANDBOX_PATH", str(sandbox_bin))
-        monkeypatch.setattr("symphony_linear.cli.shutil.which", shutil_which)
+        monkeypatch.setattr("symphony_linear.cli.shutil.which", _which_with_bwrap)
 
         main(["--workspace", str(tmp_path), "--validate-config"])
 
@@ -408,7 +417,7 @@ linear:
         sandbox_bin.mkdir()
         monkeypatch.setenv("PATH", str(tmp_path / "daemon-bin"))
         monkeypatch.setenv("SYMPHONY_SANDBOX_PATH", str(sandbox_bin))
-        monkeypatch.setattr("symphony_linear.cli.shutil.which", shutil_which)
+        monkeypatch.setattr("symphony_linear.cli.shutil.which", _which_with_bwrap)
 
         with pytest.raises(SystemExit) as excinfo:
             main(["--workspace", str(tmp_path), "--validate-config"])
@@ -419,6 +428,243 @@ linear:
         assert "PATH" in stderr
         assert str(sandbox_bin) in stderr
         assert "SYMPHONY_SANDBOX_PATH" in stderr
+
+
+class TestBwrapValidation:
+    @pytest.mark.parametrize("extra_args", [[], ["--validate-config"]])
+    def test_missing_bwrap_fails_with_install_commands(
+        self,
+        tmp_path: Path,
+        monkeypatch: pytest.MonkeyPatch,
+        capsys: pytest.CaptureFixture[str],
+        extra_args: list[str],
+    ) -> None:
+        """bwrap runs on the host, so the check must fail before any turn starts."""
+        _write_config(tmp_path, _CONFIG_WITHOUT_WEBHOOK)
+        monkeypatch.setattr(
+            "symphony_linear.cli.shutil.which",
+            lambda binary, path=None: None if binary == "bwrap" else "/usr/bin/omp",
+        )
+
+        with pytest.raises(SystemExit) as excinfo:
+            main(["--workspace", str(tmp_path), *extra_args])
+
+        assert excinfo.value.code == 1
+        stderr = capsys.readouterr().err
+        assert "bwrap" in stderr
+        assert "apt install bubblewrap" in stderr
+        assert "dnf install bubblewrap" in stderr
+        assert "pacman -S bubblewrap" in stderr
+
+
+# ---------------------------------------------------------------------------
+# First run: the ~/symphony default workspace
+# ---------------------------------------------------------------------------
+
+
+class TestFirstRunWorkspace:
+    """The default workspace is only ever created by an interactive run.
+
+    Every test here runs with a temporary ``HOME`` and working directory, so a
+    regression that creates the workspace would create it inside the temporary
+    directory rather than the developer's real home.
+    """
+
+    @pytest.fixture(autouse=True)
+    def isolated_home_and_cwd(
+        self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+    ) -> tuple[Path, Path]:
+        home = tmp_path / "home"
+        home.mkdir()
+        current_directory = tmp_path / "cwd"
+        current_directory.mkdir()
+        monkeypatch.setenv("HOME", str(home))
+        monkeypatch.chdir(current_directory)
+        return home, current_directory
+
+    @pytest.fixture
+    def terminal(self, monkeypatch: pytest.MonkeyPatch) -> None:
+        monkeypatch.setattr(
+            "symphony_linear.cli.sys.stdin", mock.Mock(isatty=lambda: True)
+        )
+
+    @pytest.fixture
+    def all_agents_available(self, monkeypatch: pytest.MonkeyPatch) -> None:
+        monkeypatch.setattr(
+            "symphony_linear.cli.shutil.which",
+            lambda binary, path=None: f"/usr/bin/{binary}",
+        )
+
+    def _run_with_mocks(self) -> mock.Mock:
+        """Run main() with the daemon parts mocked, and return the Orchestrator mock."""
+        with (
+            mock.patch("symphony_linear.cli.load_state"),
+            mock.patch("symphony_linear.cli._create_tracker") as mock_create_tracker,
+            mock.patch("symphony_linear.cli.Orchestrator") as mock_orchestrator_class,
+            mock.patch("symphony_linear.cli.WebUIServer"),
+        ):
+            mock_create_tracker.side_effect = lambda _config, workspace, **_kwargs: (
+                LocalTracker(workspace)
+            )
+            main([])
+        return mock_orchestrator_class
+
+    def test_validate_config_never_creates_the_default_workspace(
+        self,
+        isolated_home_and_cwd: tuple[Path, Path],
+        terminal: None,
+        all_agents_available: None,
+    ) -> None:
+        """The checkout watcher runs this unattended with an explicit workspace."""
+        home, _ = isolated_home_and_cwd
+
+        with pytest.raises(SystemExit) as excinfo:
+            main(["--validate-config"])
+
+        assert excinfo.value.code == 1
+        assert not (home / "symphony").exists()
+
+    def test_non_terminal_run_never_creates_the_default_workspace(
+        self,
+        isolated_home_and_cwd: tuple[Path, Path],
+        all_agents_available: None,
+        monkeypatch: pytest.MonkeyPatch,
+    ) -> None:
+        """A supervised daemon with a wrong cwd must fail, not adopt ~/symphony."""
+        home, _ = isolated_home_and_cwd
+        # Explicit rather than relying on pytest's own stdin, so the test still
+        # means what it says under `pytest -s` in a real terminal.
+        monkeypatch.setattr(
+            "symphony_linear.cli.sys.stdin", mock.Mock(isatty=lambda: False)
+        )
+
+        with pytest.raises(SystemExit) as excinfo:
+            main([])
+
+        assert excinfo.value.code == 1
+        assert not (home / "symphony").exists()
+
+    def test_terminal_first_run_creates_a_config_and_starts_the_web_ui(
+        self,
+        isolated_home_and_cwd: tuple[Path, Path],
+        terminal: None,
+        all_agents_available: None,
+        capsys: pytest.CaptureFixture[str],
+    ) -> None:
+        home, _ = isolated_home_and_cwd
+
+        orchestrator_class = self._run_with_mocks()
+
+        workspace = (home / "symphony").resolve()
+        config_path = workspace / "config.yaml"
+        assert orchestrator_class.call_args.kwargs["workspace"] == workspace
+        assert config_path.stat().st_mode & 0o777 == 0o600
+        config = load_config(workspace)
+        assert config.agent == "opencode"
+        assert config.webui is not None
+        assert config.webui.port == 27149
+
+        stderr = capsys.readouterr().err
+        password = config.webui.password
+        assert len(password) >= 24
+        assert password in config_path.read_text()
+        # One line, with the password outside any URL: it is not a credential
+        # in a query string, it is the Basic-auth password for the login form.
+        line = next(
+            line for line in stderr.splitlines() if line.startswith("Open http")
+        )
+        assert line.startswith(
+            f"Open http://127.0.0.1:27149/ and log in with password {password}"
+        )
+        assert "config.yaml" in line
+
+    def test_first_run_prefers_opencode_then_omp_then_pi(
+        self,
+        isolated_home_and_cwd: tuple[Path, Path],
+        terminal: None,
+        monkeypatch: pytest.MonkeyPatch,
+    ) -> None:
+        home, _ = isolated_home_and_cwd
+        monkeypatch.setenv("SYMPHONY_SANDBOX_PATH", "/sandbox/bin")
+        probed: list[tuple[str, str | None]] = []
+
+        def _which(binary: str, path: str | None = None) -> str | None:
+            if binary == "bwrap":
+                return "/usr/bin/bwrap"
+            probed.append((binary, path))
+            return f"/sandbox/bin/{binary}" if binary in ("omp", "pi") else None
+
+        monkeypatch.setattr(
+            "symphony_linear.cli.shutil.which",
+            lambda binary, path=None: _which(binary, path),
+        )
+
+        self._run_with_mocks()
+
+        config = load_config((home / "symphony").resolve())
+        assert config.agent == "omp"
+        # The lookup must be the sandbox PATH, the same one the startup agent
+        # check uses, and it must stop at the first hit rather than probe pi.
+        # The startup check itself probes the resolved agent again.
+        assert probed[:2] == [("opencode", "/sandbox/bin"), ("omp", "/sandbox/bin")]
+
+    def test_no_agent_creates_nothing_and_names_all_three(
+        self,
+        isolated_home_and_cwd: tuple[Path, Path],
+        terminal: None,
+        monkeypatch: pytest.MonkeyPatch,
+        capsys: pytest.CaptureFixture[str],
+    ) -> None:
+        home, _ = isolated_home_and_cwd
+        monkeypatch.setattr(
+            "symphony_linear.cli.shutil.which",
+            lambda binary, path=None: "/usr/bin/bwrap" if binary == "bwrap" else None,
+        )
+
+        with pytest.raises(SystemExit) as excinfo:
+            main([])
+
+        assert excinfo.value.code == 1
+        assert not (home / "symphony").exists()
+        stderr = capsys.readouterr().err
+        for agent in ("opencode", "omp", "pi"):
+            assert agent in stderr
+
+    def test_existing_default_config_is_reused_unchanged(
+        self,
+        isolated_home_and_cwd: tuple[Path, Path],
+        terminal: None,
+        all_agents_available: None,
+        capsys: pytest.CaptureFixture[str],
+    ) -> None:
+        home, _ = isolated_home_and_cwd
+        workspace = home / "symphony"
+        workspace.mkdir()
+        _write_config(workspace, _CONFIG_WITH_WEBUI)
+        before = (workspace / "config.yaml").read_text()
+
+        orchestrator_class = self._run_with_mocks()
+
+        assert (workspace / "config.yaml").read_text() == before
+        assert orchestrator_class.call_args.kwargs["workspace"] == workspace.resolve()
+        assert "Open http" not in capsys.readouterr().err
+
+    def test_current_directory_config_wins_over_the_default(
+        self,
+        isolated_home_and_cwd: tuple[Path, Path],
+        terminal: None,
+        all_agents_available: None,
+    ) -> None:
+        home, current_directory = isolated_home_and_cwd
+        _write_config(current_directory, _CONFIG_WITH_WEBUI)
+
+        orchestrator_class = self._run_with_mocks()
+
+        assert (
+            orchestrator_class.call_args.kwargs["workspace"]
+            == current_directory.resolve()
+        )
+        assert not (home / "symphony").exists()
 
 
 # ---------------------------------------------------------------------------
