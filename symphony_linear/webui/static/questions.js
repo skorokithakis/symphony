@@ -35,9 +35,10 @@
    * with a tab strip; a lone card stays where it is but is still a group, so
    * the number keys can address it. */
   var groups = [];
-  /* The group the user last clicked or typed in.  Until then the first group
-   * with an unanswered question is the target, which is also why it is not
-   * persisted: a reload starts from the unanswered question again. */
+  /* The group the user last clicked or typed in.  Until then the keys address
+   * the first visible group while the reply still shows the recommendation
+   * defaults, and the first group with an unanswered question afterwards.  The
+   * target is deliberately not persisted: a reload starts from that rule. */
   var targetGroup = null;
   /* Question index -> raw state: selected option indexes, edits by option
    * index and the free/Other text.  The answer is derived from this by
@@ -50,6 +51,11 @@
   /* Set only by a real card change on this page.  A text-only autosave sends
    * no answers key, so a stale page cannot overwrite another device's. */
   var answersChanged = false;
+  /* Set when the active reply had no saved snapshot and got the recommendation
+   * defaults.  Combined with answersChanged, this is the short window in which
+   * the panel opens on its first question and the keys target the first visible
+   * group, because every preselected answer must be seen in order. */
+  var defaultsApplied = false;
   /* A pointer press that began inside a card may still be waiting for its
    * release; a close that shrinks a row must wait for the click first. */
   var pointerDown = false;
@@ -670,6 +676,13 @@
     return 0;
   }
 
+  /* The active reply is still showing only the values applied in advance:
+   * there was no saved snapshot for it, and the human has not changed a card
+   * on this page.  This is page state, not a second answer derivation. */
+  function showingDefaults() {
+    return defaultsApplied && !answersChanged;
+  }
+
   /* A group is a run of live cards that are adjacent element siblings.  The
    * server renders one card per top-level callout, so two cards are adjacent
    * only when nothing but whitespace separates them.  Cards in different
@@ -694,7 +707,7 @@
         cards: run,
         panel: null,
         tabs: [],
-        active: unansweredIn(run),
+        active: showingDefaults() ? 0 : unansweredIn(run),
         id: "qgroup-" + activeCommentId + "-" + groups.length,
       };
       groups.push(group);
@@ -706,7 +719,8 @@
     });
   }
 
-  /* The tab a group opens on: its first unanswered question, or its first
+  /* The tab a group opens on: its first question while the reply still shows
+   * untouched defaults, else its first unanswered question, or its first
    * question when every one is answered.  A draft hydrates before this runs,
    * so a saved answer moves the opening tab with it. */
   function showTab(group, index) {
@@ -803,12 +817,22 @@
   }
 
   /* Until the user clicks or types in a group, the keys address the first
-   * group that still has an unanswered question.  When every question is
-   * answered the first visible group is the fallback, because the keys must
-   * still work for changing an answer.  Groups with no rendered card (a
-   * closed section) are never eligible. */
+   * visible group while the reply still shows untouched defaults, so the
+   * preselected answers are reached in order.  Once a card changes or a saved
+   * snapshot exists, the target is the first group with an unanswered
+   * question, falling back to the first visible group when every question is
+   * answered, because the keys must still work for changing an answer.
+   * Groups with no rendered card (a closed section) are never eligible. */
   function defaultTarget() {
     var index;
+    if (showingDefaults()) {
+      for (index = 0; index < groups.length; index += 1) {
+        if (isGroupVisible(groups[index])) {
+          return groups[index];
+        }
+      }
+      return null;
+    }
     for (index = 0; index < groups.length; index += 1) {
       if (
         isGroupVisible(groups[index]) &&
@@ -912,6 +936,7 @@
     targetGroup = null;
     state = {};
     answersChanged = false;
+    defaultsApplied = false;
     Array.prototype.forEach.call(
       entry.querySelectorAll(".qcard"),
       function (card) {
@@ -948,6 +973,7 @@
      * question the defaults have already answered. */
     if (!saved || saved.comment_id !== activeCommentId) {
       applyDefaults();
+      defaultsApplied = true;
     }
     buildGroups();
     cards.forEach(syncCard);
@@ -973,6 +999,7 @@
     groups = [];
     targetGroup = null;
     state = {};
+    defaultsApplied = false;
     activeEntry = null;
     activeCommentId = "";
   }

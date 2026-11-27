@@ -195,10 +195,9 @@ unanswered questions never block Send.
 
 Cards that sit one after another with nothing between them share a tabbed
 panel: a numbered strip above them, with one question shown at a time. Each tab
-carries a check mark once its question has an answer, and the panel opens at
-the first unanswered question. Because a marked option starts selected, a
-recommended question already counts as answered, so the panel may open at a
-later question. A single card has no strip.
+carries a check mark once its question has an answer. A panel opens on its
+first question while the answers are still the untouched recommendations, and
+otherwise on the first question without an answer. A single card has no strip.
 
 On a device with a mouse or trackpad each option's marker shows its number.
 With no field focused, the number keys choose options on the visible card of
@@ -207,8 +206,9 @@ that answers moves to the next tab; a pick that clears the answer stays. The
 last tab stays where it is. The number after the last option opens the
 **Other** field. ArrowLeft and ArrowRight change tabs. A digit on a free-text
 card, or one past the last option, starts a reply in the box as before. The keys
-act on the group you last clicked or typed in; before that, on the first group
-with an unanswered question.
+act on the group you last clicked or typed in; before that, on the first visible
+group while the answers are untouched, and otherwise on the first group with an
+unanswered question.
 
 Your answers are saved as you change them, beside the reply text, so a reload
 or another browser shows the same choices. The recommendations are only

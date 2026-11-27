@@ -831,9 +831,13 @@ shutting down, or the ticket is no longer triggered — see `_is_still_triggered
   until Send: `ticket.js` still compares the textarea's own text when deciding
   whether it may clear it, while the posted body is the assembled comment
   (quoted question, answers, then the text). Adjacent live cards with nothing
-  between them are one tabbed panel. Digits `1`-`0` and Left/Right act on the
-  target group (the last clicked or typed-in group, else the first visible one
-  with an unanswered question), and app.js arbitrates those keys through
+  between them are one tabbed panel; a panel opens on its first question while
+  the active reply still shows the untouched recommendation defaults, and
+  otherwise on the first question without an answer. Digits `1`-`0` and
+  Left/Right act on the target group (the last clicked or typed-in group, else
+  the first visible group while the defaults are untouched, and the first
+  visible one with an unanswered question once a card has changed or saved
+  answers exist), and app.js arbitrates those keys through
   `SymQuestions.handleKey` so the `s`/`g` prefix sequences and type-to-reply
   keep priority.
 - **The web UI server is wired in `cli.py`, not the orchestrator.**
