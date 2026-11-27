@@ -24,6 +24,11 @@ request lines:
   is checked first, so the guide is not public on a daemon with no API.
   Routing, body and view errors in the namespace all use the API's JSON error
   shape;
+* CORS for the agent namespace: with a token configured, every ``/api/v1``
+  response carries ``Access-Control-Allow-Origin: *``, and an unauthenticated
+  ``OPTIONS`` preflight to any path in it is answered with 204 before the
+  bearer check.  Safe because the namespace accepts a bearer token and nothing
+  else, so another origin has no ambient credential to borrow;
 * same-origin enforcement on every non-GET/HEAD request (browsers attach
   Basic credentials to cross-site requests, so auth alone is not CSRF
   protection).  A bearer-authenticated ``/api/v1`` request is exempt because
@@ -130,6 +135,20 @@ _UNAUTHORIZED = Response.text(
     headers=(("WWW-Authenticate", 'Basic realm="Symphony", charset="UTF-8"'),),
 )
 
+#: The CORS preflight answer for the agent namespace.  It is the same for every
+#: path there, because the browser only wants the headers and a real request to
+#: an unknown path must still get the JSON 404.  ``Access-Control-Allow-Origin``
+#: is not listed here: end_headers() adds it to every response in the namespace,
+#: this one included, and a second copy would be a duplicate header.
+_API_PREFLIGHT = Response(
+    status=204,
+    headers=(
+        ("Access-Control-Allow-Methods", "GET, POST, PATCH, DELETE"),
+        ("Access-Control-Allow-Headers", "Authorization, Content-Type"),
+        ("Access-Control-Max-Age", "600"),
+    ),
+)
+
 
 # ---------------------------------------------------------------------------
 # Handler
@@ -146,6 +165,15 @@ class _WebUIHandler(BaseHTTPRequestHandler):
     #: and cleared at the start of every request, because one handler instance
     #: can serve several requests on a kept-alive connection.
     _csp_override: str | None = None
+
+    #: Whether this response belongs to the configured ``/api/v1`` namespace
+    #: and should therefore carry CORS headers.  Reset at the start of every
+    #: request and set in :meth:`_dispatch` before any refusal, so no error
+    #: path -- the 401, the 404/405, a body-cap refusal or a raised view -- can
+    #: miss it.  It is a flag rather than something :meth:`_send` derives from
+    #: the path, because error responses built elsewhere (``send_error``,
+    #: ``_prepare_body``) do not carry a path.
+    _cors_headers: bool = False
 
     def version_string(self) -> str:
         """Do not advertise the Python version in the Server header."""
@@ -179,6 +207,7 @@ class _WebUIHandler(BaseHTTPRequestHandler):
         emitted.
         """
         self._csp_override = None
+        self._cors_headers = False
         try:
             self.raw_requestline = self.rfile.readline(65537)
             if len(self.raw_requestline) > 65536:
@@ -220,6 +249,14 @@ class _WebUIHandler(BaseHTTPRequestHandler):
             # agent_api.py explain why it is safe.  The 404 when no token is
             # configured is deliberate: an unconfigured daemon must not
             # advertise the namespace with a 401.
+            #
+            # CORS is advertised only when the namespace exists, because the
+            # header would otherwise announce a feature that answers 404.
+            # The wildcard origin is safe: /api/v1 accepts a bearer token and
+            # nothing else -- never Basic auth or a cookie -- so a hostile
+            # page has no ambient credential to borrow, and a browser never
+            # attaches a bearer token by itself.
+            self._cors_headers = self._api_token is not None
             assert path is not None  # agent_api implies a parsed path
             refusal = self._agent_api_refusal(path)
             if refusal is not None:
@@ -394,12 +431,21 @@ class _WebUIHandler(BaseHTTPRequestHandler):
         restricted to GET and HEAD because the guide is a GET route and the
         namespace's only safe anonymous verb is a read; a POST to ``/api/v1``
         is a mistake and must not be answered with the guide.
+
+        A CORS preflight (OPTIONS) is the second exception.  It is answered
+        after the no-token 404 and before the bearer comparison, because a
+        browser never sends ``Authorization`` on a preflight.  One answer
+        serves every path in the namespace without a route lookup, so the
+        informative JSON 404/405 still goes to the real request.
         """
         token = self._api_token
         if token is None:
             # Same answer as an unknown route, so a daemon without the API
             # configured never confirms that /api/v1 exists.
             return Response.text("Not Found\n", status=404)
+
+        if self.command == "OPTIONS":
+            return _API_PREFLIGHT
 
         if path == API_PREFIX and self.command in ("GET", "HEAD"):
             return None
@@ -641,6 +687,8 @@ class _WebUIHandler(BaseHTTPRequestHandler):
         self.send_header("Content-Security-Policy", csp)
         self.send_header("X-Content-Type-Options", "nosniff")
         self.send_header("X-Frame-Options", "DENY")
+        if self._cors_headers:
+            self.send_header("Access-Control-Allow-Origin", "*")
         super().end_headers()
 
     def _send(self, response: Response) -> None:
@@ -649,8 +697,11 @@ class _WebUIHandler(BaseHTTPRequestHandler):
         # responses, and this response may be the one route that overrides it.
         self._csp_override = response.csp
         self.send_response(response.status)
-        self.send_header("Content-Type", response.content_type)
-        self.send_header("Content-Length", str(len(response.body)))
+        # RFC 9110 forbids Content-Length on a 204, and a 204 carries no body
+        # for Content-Type to describe.  The preflight answer is the only 204.
+        if response.status != HTTPStatus.NO_CONTENT:
+            self.send_header("Content-Type", response.content_type)
+            self.send_header("Content-Length", str(len(response.body)))
         for name, value in response.headers:
             self.send_header(name, value)
         self.end_headers()

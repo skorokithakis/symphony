@@ -1223,6 +1223,73 @@ class TestAgentAPI:
         assert without_auth == 404
         assert with_bearer == 404
 
+    def test_no_configured_token_advertises_no_cors(self, tmp_path: Path) -> None:
+        # A preflight is answered like any other unknown route, so a daemon
+        # without the API never reveals the namespace through CORS.
+        with _running_server(tmp_path) as (port, _tracker, _state):
+            status, headers, _body = _request(port, "OPTIONS", "/api/v1", auth=False)
+
+        assert status == 404
+        assert "Access-Control-Allow-Origin" not in headers
+
+    def test_a_preflight_is_anonymous_and_the_same_for_every_path(
+        self, tmp_path: Path
+    ) -> None:
+        # A browser never sends Authorization on a preflight, so the namespace
+        # cannot require the token there.  One answer covers the whole
+        # namespace, including paths that do not exist, because the real
+        # request still gets the informative JSON 404.
+        with _running_server(tmp_path, api_token=_AGENT_TOKEN) as (port, _t, _s):
+            responses = [
+                _request(port, "OPTIONS", path, auth=False)
+                for path in ("/api/v1", "/api/v1/tickets", "/api/v1/nope")
+            ]
+
+        for status, headers, body in responses:
+            assert status == 204
+            assert body == b""
+            assert headers["Access-Control-Allow-Origin"] == "*"
+            assert headers["Access-Control-Allow-Methods"] == "GET, POST, PATCH, DELETE"
+            assert headers["Access-Control-Allow-Headers"] == (
+                "Authorization, Content-Type"
+            )
+            assert headers["Access-Control-Max-Age"] == "600"
+
+    def test_every_namespace_response_carries_the_cors_header(
+        self, tmp_path: Path
+    ) -> None:
+        # The guide, a 401, a 404 and a 405 are the paths that run before a
+        # view does, so the header has to come from the response writer rather
+        # than from each view.
+        bearer = {"Authorization": _bearer()}
+        with _running_server(tmp_path, api_token=_AGENT_TOKEN) as (port, _t, _s):
+            responses = [
+                _request(port, "GET", "/api/v1", auth=False),
+                _request(port, "GET", "/api/v1/tickets", auth=False),
+                _request(port, "GET", "/api/v1/nope", auth=False, headers=bearer),
+                _request(port, "PUT", "/api/v1", auth=False, headers=bearer),
+            ]
+
+        assert [status for status, _headers, _body in responses] == [
+            200,
+            401,
+            404,
+            405,
+        ]
+        for _status, headers, _body in responses:
+            assert headers["Access-Control-Allow-Origin"] == "*"
+
+    def test_a_browser_route_carries_no_cors_header(self, tmp_path: Path) -> None:
+        # OPTIONS on a browser route still goes through Basic auth and the
+        # same-origin check, then gets the plain 405 exactly as before.
+        with _running_server(tmp_path, api_token=_AGENT_TOKEN) as (port, _t, _s):
+            status, headers, _body = _request(
+                port, "OPTIONS", "/", headers={"Origin": _origin(port)}
+            )
+
+        assert status == 405
+        assert "Access-Control-Allow-Origin" not in headers
+
     @pytest.mark.parametrize(
         "authorization",
         [

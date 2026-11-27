@@ -9,7 +9,8 @@ browser UI's `/api/*` endpoints and it does not touch Linear or GitHub.
 
 All examples use `BASE` for the web UI's base URL (`http://127.0.0.1:8080` or
 your `public_url`) and `$SYMPHONY_TOKEN` for the token below. Every response is
-JSON except this guide, which is Markdown.
+JSON except this guide, which is Markdown, and the empty CORS preflight answer
+(see CORS below).
 
 ## Authentication
 
@@ -21,7 +22,8 @@ Authorization: Bearer $SYMPHONY_TOKEN
 ```
 
 The one exception is this guide: `GET /api/v1` (and `HEAD`) needs no token, so
-you can read the API's shape before anyone gives you the key. Every other path
+you can read the API's shape before anyone gives you the key. A browser's
+`OPTIONS` preflight also needs no token (see CORS below). Every other request
 under `/api/v1` needs the bearer token.
 
 HTTP Basic credentials are not accepted on `/api/v1`, and the bearer token is
@@ -31,6 +33,23 @@ any other `/api/v1` path answers `401` with the usual error object.
 
 POST and PATCH always need a `Content-Length`-framed body, even when there is
 nothing to pass: use `-d '{}'`. Chunked transfer encoding is not supported.
+
+## CORS
+
+When `webui.api_token` is set, every `/api/v1` response carries
+`Access-Control-Allow-Origin: *`, so a page on another origin can call the API
+from the browser. An `OPTIONS` preflight to any path under `/api/v1` gets a
+`204` with no body and needs no token. It sends `Access-Control-Allow-Methods`,
+`Access-Control-Allow-Headers` and `Access-Control-Max-Age: 600`. The answer is
+the same for every path, and the real request still gets the JSON `404` or
+`405`. The wildcard is safe because the namespace accepts only the bearer token.
+It never accepts Basic credentials or cookies, and a browser never attaches a
+bearer token by itself, so another origin has no credential to borrow.
+
+If a forward-auth proxy sits in front of the web UI, let unauthenticated
+`OPTIONS` requests under `/api/v1` through to Symphony. A preflight never
+carries `Authorization`, so otherwise the proxy answers it and the browser
+never sends the real request.
 
 ## Errors
 

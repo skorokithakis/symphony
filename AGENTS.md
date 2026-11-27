@@ -741,6 +741,19 @@ shutting down, or the ticket is no longer triggered — see `_is_still_triggered
   ticket endpoints reuse `editor.validation_errors` and
   `ticket.state_action_target` rather than restating the rules, and every
   ticket's `allowed_actions` is derived from those same functions.
+  With a token configured, the whole namespace is CORS-open to any origin:
+  `end_headers` adds `Access-Control-Allow-Origin: *` from a per-request flag
+  that `_dispatch` sets before any refusal, so no error path can miss it, and
+  `_agent_api_refusal` answers an unauthenticated `OPTIONS` preflight with one
+  route-agnostic 204 (same answer for every path, so the real request still
+  gets its JSON 404/405). The preflight exception sits after the no-token 404
+  and before the bearer check, because a browser never sends `Authorization`
+  on a preflight. The wildcard is safe for the same reason the same-origin
+  exemption is: the namespace accepts only a bearer token, never Basic
+  credentials or cookies, so a hostile page has no ambient credential to
+  borrow. A forward-auth proxy in front must let unauthenticated `OPTIONS`
+  under `/api/v1` through or the preflight never reaches the daemon. Without
+  a token the namespace still answers 404 with no CORS header.
 - **Only registered uploads are readable, and only four image types are
   inline.** `LocalTicketStore.read_file` serves a name only when it appears in
   the ticket's `files`, its `pending_files` or a comment's `files`;
