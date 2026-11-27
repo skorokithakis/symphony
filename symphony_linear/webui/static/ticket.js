@@ -5,7 +5,8 @@
  *  - a poll may append entries and replace the action bar, but it must never
  *    write into the reply textarea;
  *  - an entry that scrolls in while the reader is scrolled up is announced
- *    with the .jump control, not scrolled into view. */
+ *    with the .jump control, not scrolled into view.  A successful Send or
+ *    Retry is the exception: the user acted, so the page goes to the bottom. */
 (function () {
   "use strict";
 
@@ -544,6 +545,10 @@
         }
         sendAttempt = null;
         Sym.clearError();
+        // The sender wants to see what they sent, even from far up the
+        // thread.  The poll then appends it at the bottom and, finding the
+        // page there, keeps it in view.
+        scrollToBottom();
         poll();
       })
       .catch(function (error) {
@@ -596,6 +601,8 @@
           tokenField.value = data.retry_token;
         }
         Sym.clearError();
+        // Same as Send: the user should see the Retry comment they posted.
+        scrollToBottom();
         poll();
       })
       .catch(function (error) {
@@ -718,12 +725,18 @@
 
     if (data.working_html !== workingHtml) {
       workingHtml = data.working_html;
+      // The indicator follows the same rule as appended entries: it keeps a
+      // reader at the bottom there, and never moves one who scrolled up.
+      var workingWasAtBottom = nearBottom();
       var existing = document.getElementById("working");
       if (data.working_html) {
         if (existing) {
           existing.outerHTML = data.working_html;
         } else {
           thread.insertAdjacentHTML("beforeend", data.working_html);
+        }
+        if (workingWasAtBottom) {
+          scrollToBottom();
         }
       } else if (existing) {
         existing.remove();
