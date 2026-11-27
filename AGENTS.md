@@ -770,18 +770,38 @@ shutting down, or the ticket is no longer triggered — see `_is_still_triggered
   of `|safe` HTML the templates use; everything else is escaped by Jinja
   (`autoescape=True`, `StrictUndefined`). Do not add a second renderer or mark
   user data safe. In the agent-reply path only, a top-level
-  `> [!QUESTION] ...` callout renders as a static card instead of a quote:
+  `> [!QUESTION] ...` callout renders as a question card instead of a quote:
   `<div class="qcard" data-kind="choose-one|choose-many|free-text"
   data-question-index="N">` holding `<p class="qcard-q" data-text="...">`, an
   optional `<div class="qcard-prose">` and an optional `<ul class="qcard-opts">`
   of `<li class="qcard-opt" data-text="...">`. The `data-text` forms are
   single-line plain text with `*` replaced by U+2217; they are also escaped so
   they stay literal Markdown at the start of a line (no link definitions,
-  headings, fences, block markers or lists), because a later stage copies them
-  into a human comment and `*Symphony · ` is the bot footer marker.
+  headings, fences, emphasis, block markers or lists), because a later stage
+  copies them into a human comment and `*Symphony · ` is the bot footer marker.
   A section holding a card renders open. A malformed callout, a callout nested
   in a list or quote, and every callout in a human message or notice stay a
   quote.
+- **Question-card answers live beside the reply draft and are assembled in the
+  browser at Send.** `LocalTicket.reply_answers` is a `ReplyAnswers` model: the
+  agent comment id it belongs to and, per question, selected option indexes,
+  per-option edited text and the "Other" text. The draft endpoint writes it only
+  when the `answers` key is present, and the store keeps it only while its
+  comment is the newest agent reply with no human comment after it, so a late
+  save from a stale tab cannot restore consumed answers or overwrite the
+  answers saved for a newer reply; a consuming Send clears it with
+  `reply_draft`. The page receives it as escaped JSON in a data attribute.
+  `static/questions.js` adds controls to
+  the cards of the newest agent reply only while no human entry follows it
+  (never on Done, which has no composer), saves the snapshot through the same
+  debounced draft autosave, and exposes a small `window.SymQuestions` interface
+  to `ticket.js`. That interface retires only the answers of the reply a
+  committed body carried, so a duplicate response for an older send cannot
+  discard a newer reply's unsent answers, and it makes the cards inert while a
+  Send is in flight. The composer text and the answers stay separate until
+  Send: `ticket.js` still compares the textarea's own text when deciding whether
+  it may clear it, while the posted body is the assembled comment (quoted
+  question, answers, then the text).
 - **The web UI server is wired in `cli.py`, not the orchestrator.**
   `cli.main` builds `WebUIServer` from the `LocalTracker`'s store and the
   shared `StateManager`, starts it just before `orchestrator.run()`, and stops

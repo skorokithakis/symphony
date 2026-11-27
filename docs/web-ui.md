@@ -151,6 +151,23 @@ several may be chosen. A section of the reply that holds a card starts open. A
 callout that does not have this exact shape (for example a numbered list of
 options) stays an ordinary quote, with all of its text.
 
+When the newest reply has cards and no human message follows it, the cards are
+live. Tap an option to choose it; in a choose-many card a tap toggles it. The
+pencil beside an option selects it and replaces its label with a text field
+holding that label, so you can answer in your own words; clearing the field
+brings the agent's label back. The last row of a card with options is **Other**,
+for an answer that is not on the list, and a free-text card is just its text
+field. The count next to Send says how many questions you have answered;
+unanswered questions never block Send.
+
+Your answers are saved as you change them, beside the reply text, so a reload
+or another browser shows the same choices. They belong to that agent reply and
+are ignored once a newer reply arrives or a human message follows it. Send
+posts one comment: each answered question as a quote, then its answers, then
+whatever you wrote in the reply box. The box may be empty when at least one
+question is answered. Sending clears both the answers and the reply text, and
+the cards become static again until the agent replies.
+
 The request is one fixed sentence at the end of every message the daemon sends
 to the agent. It is not configurable, and it is sent only by the web UI
 backend. An agent can still ignore it; the reply is then ordinary prose, as

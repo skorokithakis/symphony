@@ -3,7 +3,7 @@
 
 {% block title %}{{ page.ticket.id }} · {{ page.title }} · symphony{% endblock %}
 
-{% block scripts %}<script src="{{ static_url('lists.js') }}" defer></script><script src="{{ static_url('upload.js') }}" defer></script><script src="{{ static_url('ticket.js') }}" defer></script>{% if dictation_enabled %}<script src="{{ static_url('dictation.js') }}" defer></script>{% endif %}{% endblock %}
+{% block scripts %}<script src="{{ static_url('lists.js') }}" defer></script><script src="{{ static_url('upload.js') }}" defer></script><script src="{{ static_url('questions.js') }}" defer></script><script src="{{ static_url('ticket.js') }}" defer></script>{% if dictation_enabled %}<script src="{{ static_url('dictation.js') }}" defer></script>{% endif %}{% endblock %}
 
 {% block content %}
 <header class="bar">
@@ -18,7 +18,8 @@
       data-api-reply="/api/tickets/{{ page.ticket.id }}/reply"
       data-api-retry="/api/tickets/{{ page.ticket.id }}/retry"
       data-api-draft="/api/tickets/{{ page.ticket.id }}/draft"
-      data-api-upload="/api/tickets/{{ page.ticket.id }}/files">
+      data-api-upload="/api/tickets/{{ page.ticket.id }}/files"
+      data-reply-answers="{{ page.reply_answers_json }}">
   <header class="thead">
     <div class="thead-top">
       <a class="back" href="/" aria-label="Back to tickets"><svg class="ic" viewBox="0 0 20 20" aria-hidden="true"><path d="M12 4l-6 6 6 6"></path></svg><span class="back-t">Tickets</span>{{ needs_input_dot(needs_input_count) }}</a>

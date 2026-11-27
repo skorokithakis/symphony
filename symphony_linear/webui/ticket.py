@@ -179,6 +179,10 @@ class TicketPage:
     state_actions: tuple[str, ...] = ()
     reply_draft: str = ""
     reply_draft_saved_at: str | None = None
+    #: The saved card answers as compact JSON, for the page script to restore.
+    #: It rides in a data attribute, escaped by Jinja, rather than in HTML the
+    #: view would have to build.  ``"null"`` means nothing is stored.
+    reply_answers_json: str = "null"
     pending_files: tuple[FileChip, ...] = ()
     last_comment_id: str = ""
     seen_comment_id: str | None = None
@@ -514,6 +518,9 @@ def page_for(
         state_actions=tuple(STATE_ACTIONS.get(ticket.state, {})),
         reply_draft=ticket.reply_draft,
         reply_draft_saved_at=ticket.reply_draft_saved_at,
+        reply_answers_json=(
+            ticket.reply_answers.model_dump_json() if ticket.reply_answers else "null"
+        ),
         pending_files=chips_for(ticket.id, ticket.pending_files),
         last_comment_id=last_comment_id,
         seen_comment_id=ticket.seen_comment_id,

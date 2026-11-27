@@ -168,6 +168,26 @@ _BLOCK_MARKERS = frozenset("#>-+=~")
 _ORDERED_MARKER_RE = re.compile(r"\d+[.)]")
 
 
+def _escape_underscores(text: str) -> str:
+    """Escape underscores that can open emphasis or a horizontal rule.
+
+    An underscore between two alphanumeric characters is intraword and inert
+    (``max_retries``), so leaving it alone keeps identifiers readable.  A
+    leading, trailing or repeated underscore (``_production_``, ``__init__``,
+    ``___``) can become emphasis or a rule once the plain form is copied into
+    the answer, so it is escaped.
+    """
+    escaped: list[str] = []
+    for index, character in enumerate(text):
+        if character == "_":
+            previous = text[index - 1] if index else ""
+            following = text[index + 1] if index + 1 < len(text) else ""
+            if not (previous.isalnum() and following.isalnum()):
+                escaped.append("\\")
+        escaped.append(character)
+    return "".join(escaped)
+
+
 def _question_plain_text(text: str) -> str:
     """Return *text* as one line that stays literal at the start of a line.
 
@@ -176,17 +196,19 @@ def _question_plain_text(text: str) -> str:
     paragraph.  That comment is rendered as Markdown, so the form must produce
     the same visible text and nothing else in all three positions.  Everything
     that can open a construct is escaped: a backslash first, then backticks,
-    ``[``, ``<`` and ``&`` anywhere, and a block marker or an ordered-list
-    delimiter only in the first column.  Ordinary punctuation is left alone so
-    the raw comment stays readable for the agent and in an edit field.  Every
-    ``*`` becomes U+2217, exactly as ``markdown_link_text`` does, because
-    ``*Symphony · `` is the bot footer marker ``is_bot_comment`` looks for and
-    a question must not make the human's answer look like a bot comment.  All
-    whitespace, including the Unicode line separators, collapses to one space.
+    ``[``, ``<`` and ``&`` anywhere, underscores that are not intraword, and a
+    block marker or an ordered-list delimiter only in the first column.
+    Ordinary punctuation is left alone so the raw comment stays readable for the
+    agent and in an edit field.  Every ``*`` becomes U+2217, exactly as
+    ``markdown_link_text`` does, because ``*Symphony · `` is the bot footer
+    marker ``is_bot_comment`` looks for and a question must not make the human's
+    answer look like a bot comment.  All whitespace, including the Unicode line
+    separators, collapses to one space.
     """
     plain = " ".join(text.split())
     for character in _INLINE_ESCAPES:
         plain = plain.replace(character, "\\" + character)
+    plain = _escape_underscores(plain)
     plain = plain.replace("*", "\u2217")
     if plain[:1] in _BLOCK_MARKERS:
         return "\\" + plain

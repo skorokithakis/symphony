@@ -664,6 +664,73 @@ body.sym { min-height: 100dvh; }
 .md .qcard-t { min-width: 0; }
 .md .qcard-l { font-weight: 600; }
 .md .qcard-d { color: var(--ink-2); }
+/* Live cards: only the newest agent reply's cards carry these controls, and
+   only while no human message follows it.  Every other card keeps the static
+   rules above, which is also what a page without the script shows.  The row is
+   the control, the pencil opens an edit field, and the marker moves from the
+   row's ::before to its own element so a selected row can fill it. */
+.md .qcard-opt.is-live { display: flex; align-items: flex-start; gap: var(--s2); padding: 0; }
+.md .qcard-opt.is-live::before { display: none; }
+.md .qcard-mark {
+  flex: none; width: 16px; height: 16px; margin: var(--s3) 0 0 var(--s3);
+  border: 1.5px solid var(--rule-2); border-radius: 50%; background: var(--surface);
+}
+.md .qcard[data-kind="choose-many"] .qcard-mark { border-radius: 4px; }
+.md .qcard-pick {
+  flex: 1 1 auto; display: flex; align-items: flex-start; gap: var(--s3);
+  min-height: var(--tap); min-width: 0; padding: var(--s2) var(--s3);
+  border: 0; border-radius: inherit; background: none; color: inherit;
+  font: inherit; text-align: left; cursor: pointer;
+}
+.md .qcard-edit {
+  flex: none; display: inline-flex; align-items: center; justify-content: center;
+  width: var(--tap); min-height: var(--tap); padding: 0;
+  border: 0; border-radius: var(--r1); background: none; color: var(--ink-3);
+  cursor: pointer;
+}
+.md .qcard-pick:hover, .md .qcard-edit:hover { background: var(--sunken); }
+.md .qcard-pick:focus-visible, .md .qcard-edit:focus-visible {
+  outline: 2px solid var(--focus); outline-offset: -2px;
+}
+/* The controls above set display, which beats the browser's [hidden] rule.
+   Editing hides the pick button while the field takes its place. */
+.md .qcard-pick[hidden], .md .qcard-edit[hidden], .md .qcard-field[hidden] { display: none; }
+/* Selected: the marker fills, and the row lifts off the card. */
+.md .qcard-opt.is-picked {
+  border-color: var(--accent);
+  background: color-mix(in srgb, var(--accent) 12%, var(--surface));
+}
+.md .qcard-opt.is-picked .qcard-mark {
+  border-color: var(--accent); background: var(--accent);
+  box-shadow: inset 0 0 0 3px var(--surface);
+}
+/* An edited label says it is no longer the agent's words. */
+.md .qcard-opt.is-edited .qcard-l {
+  text-decoration: underline dotted; text-decoration-color: var(--ink-3);
+  text-underline-offset: 0.25em;
+}
+.md .qcard-opt.is-editing { border-color: var(--focus); }
+.md .qcard-opt.is-editing .qcard-t {
+  display: flex; flex-wrap: wrap; align-items: center; gap: var(--s2);
+  flex: 1 1 auto; min-width: 0; padding: var(--s2) var(--s3) var(--s2) 0;
+}
+.md .qcard-edit-field, .md .qcard-other-field { width: auto; flex: 1 1 8rem; min-width: 0; }
+.md .qcard-answer { display: flex; flex-direction: column; }
+.md .qcard-answer textarea.qcard-field {
+  width: 100%; min-height: calc(var(--tap) + 1.4em); resize: vertical;
+}
+/* A Send in flight locks the cards it is about to post, like the uploader
+   locks attachments; the dimming says the controls will not take an edit. */
+.md .qcard.is-locked { opacity: 0.7; }
+/* The answered count shares the actions row with Send, so it is a quiet
+   monospace label that never pushes the button off the right edge. */
+.answers-count {
+  font: 400 var(--t-xs)/1.3 var(--font-mono); color: var(--ink-3); white-space: nowrap;
+}
+/* The count and Send wrap together, so the label always sits beside the
+   button rather than at the end of the previous row. */
+.answers-group { display: inline-flex; align-items: center; gap: var(--s2); margin-left: auto; }
+.answers-group .btn--primary { margin-left: 0; }
 /* Markdown images stay inside the reading column.  Their own dimensions
    decide the rest, so an image smaller than the column is not upscaled; the
    lightbox in app.js opens the full-size source. */

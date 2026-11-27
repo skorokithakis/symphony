@@ -224,6 +224,9 @@ def test_question_card_plain_text_is_inert_markdown() -> None:
         "2) second",
         "&amp; and <b>",
         "C:\\temp\\x",
+        "_production_",
+        "__init__",
+        "___",
     ]
     for text in hostile:
         rendered = render_markdown_sections(
@@ -244,6 +247,9 @@ def test_question_card_plain_text_is_inert_markdown() -> None:
         assert "<h" not in as_html
         assert "<pre" not in as_html
         assert "<ol" not in as_html
+        assert "<em>" not in as_html
+        assert "<strong>" not in as_html
+        assert "<hr" not in as_html
         assert as_html.count("<blockquote>") == 1
         assert as_html.count("<ul>") == 1
         assert as_html.count("<li>") == 1

@@ -23,6 +23,8 @@ from symphony_linear.local_tracker import (
     LocalTicket,
     LocalTicketStore,
     LocalTracker,
+    QuestionAnswer,
+    ReplyAnswers,
     image_content_type,
     markdown_link_text,
     stored_file_name,
@@ -909,6 +911,82 @@ class TestReplyDraftAndSeenMarker:
         assert stored is not None
         assert stored.reply_draft == ""
         assert stored.reply_draft_saved_at is None
+
+    def test_answers_are_saved_beside_the_draft_and_cleared_only_on_send(
+        self, store: LocalTicketStore
+    ) -> None:
+        ticket = store.create_draft(description="x")
+        store.set_state(ticket.id, STATE_NEEDS_INPUT)
+        agent = store.add_comment(ticket.id, "agent reply", kind="final")
+        answers = ReplyAnswers(
+            comment_id=agent.id,
+            questions=[
+                QuestionAnswer(
+                    question_index=0,
+                    selected=[1],
+                    edits={0: "Redis only"},
+                    other="",
+                )
+            ],
+        )
+        store.set_reply_draft(ticket.id, "a note", answers)
+
+        # A text-only save, and a reply that does not consume the composer
+        # (the agent API or Retry), leave the answers alone.
+        store.set_reply_draft(ticket.id, "a longer note")
+        store.add_human_comment_once(
+            ticket.id, "posted elsewhere", token="other", consume_composer=False
+        )
+        kept = store.get(ticket.id)
+        assert kept is not None
+        assert kept.reply_answers == answers
+
+        store.add_human_comment_once(ticket.id, "sent", token="send")
+        stored = store.get(ticket.id)
+        assert stored is not None
+        assert stored.reply_answers is None
+        assert stored.reply_draft == ""
+
+    def test_a_late_answers_save_does_not_restore_consumed_answers(
+        self, store: LocalTicketStore
+    ) -> None:
+        ticket = store.create_draft(description="x")
+        store.set_state(ticket.id, STATE_NEEDS_INPUT)
+        agent = store.add_comment(ticket.id, "agent reply", kind="final")
+        answers = ReplyAnswers(comment_id=agent.id)
+        store.set_reply_draft(ticket.id, "", answers)
+        store.add_human_comment_once(ticket.id, "sent", token="tok")
+
+        # A tab that never saw the response still holds reply A's cards.
+        store.set_reply_draft(ticket.id, "late", answers)
+
+        stored = store.get(ticket.id)
+        assert stored is not None
+        assert stored.reply_answers is None
+        assert stored.reply_draft == "late"
+
+    def test_a_save_for_an_older_reply_does_not_overwrite_a_newer_one(
+        self, store: LocalTicketStore
+    ) -> None:
+        ticket = store.create_draft(description="x")
+        store.set_state(ticket.id, STATE_NEEDS_INPUT)
+        older = store.add_comment(ticket.id, "first reply", kind="final")
+        older_answers = ReplyAnswers(comment_id=older.id)
+        store.set_reply_draft(ticket.id, "", older_answers)
+
+        newer = store.add_comment(ticket.id, "second reply", kind="final")
+        newer_answers = ReplyAnswers(
+            comment_id=newer.id,
+            questions=[QuestionAnswer(question_index=0, selected=[1])],
+        )
+        store.set_reply_draft(ticket.id, "", newer_answers)
+
+        store.set_reply_draft(ticket.id, "late", older_answers)
+
+        stored = store.get(ticket.id)
+        assert stored is not None
+        assert stored.reply_answers == newer_answers
+        assert stored.reply_draft == "late"
 
     def test_seen_marker_only_moves_forward(self, store: LocalTicketStore) -> None:
         ticket = store.create_draft(description="x")

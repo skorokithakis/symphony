@@ -33,6 +33,7 @@
   var sizeButton = document.getElementById("composer-size");
   var compactBar = document.getElementById("thead-compact");
   var realHead = main.querySelector(".thead");
+  var questionCards = window.SymQuestions;
 
   var pollUrl = main.getAttribute("data-api-poll");
   var seenUrl = main.getAttribute("data-api-seen");
@@ -237,9 +238,18 @@
       return Promise.resolve(true);
     }
     var text = reply.value;
+    var payload = { text: text };
+    /* The answers travel in the same request so the server never sees one
+     * without the other.  An absent key means the text-only autosave, which
+     * leaves stored answers alone; a card page always sends its snapshot, so
+     * clearing the last answer also reaches the server. */
+    var answers = questionCards.answers();
+    if (answers) {
+      payload.answers = answers;
+    }
     draftDirty = false;
     draftRunning = true;
-    draftInFlight = Sym.postJSON(draftUrl, { text: text })
+    draftInFlight = Sym.postJSON(draftUrl, payload)
       .then(function (data) {
         Sym.showSaved("saved", data.saved_at);
         if (reply.value !== text) {
@@ -449,7 +459,8 @@
       return;
     }
     var text = reply.value;
-    if (!text.trim()) {
+    var body = questionCards.comment(text);
+    if (!body.trim()) {
       Sym.showError("Write a reply first.");
       reply.focus();
       return;
@@ -464,6 +475,9 @@
       // No attachment may change while the reply that names them is in flight.
       uploader.setLocked(true);
     }
+    // The cards whose answers are in this body must not change mid-send: an
+    // edit made now would be discarded when the commit retires them.
+    questionCards.setLocked(true);
     applyBusyState();
     window.clearTimeout(draftTimer);
     draftDirty = false;
@@ -471,11 +485,17 @@
     var model = chosenModel();
     var tokenField = composer.querySelector('input[name="token"]');
     var token = tokenField ? tokenField.value : "";
-    // Keep the first text for this token across retries, so a duplicate
-    // response can tell us whether the textarea still holds what committed.
+    // Keep the first text and the reply it answered for this token across
+    // retries, so a duplicate response retires the reply that actually
+    // committed rather than whatever reply is on screen now.
+    var currentReply = questionCards.activeReplyId();
     var firstText =
       sendAttempt && sendAttempt.token === token ? sendAttempt.text : text;
-    sendAttempt = { token: token, text: firstText };
+    var attemptReply =
+      sendAttempt && sendAttempt.token === token
+        ? sendAttempt.replyId
+        : currentReply;
+    sendAttempt = { token: token, text: firstText, replyId: attemptReply };
 
     // Let an in-flight autosave finish first: the server clears the draft as
     // part of sending, and a late save must not put the sent text back.
@@ -483,7 +503,7 @@
     sendInFlight = wait
       .then(function () {
         var payload = {
-          body: text,
+          body: body,
           token: tokenField ? tokenField.value : "",
         };
         if (model !== null) {
@@ -501,6 +521,16 @@
           reply.value = "";
           Sym.hideSaved("saved");
         } else {
+          draftDirty = true;
+        }
+        // Retire only the answers that committed: a duplicate may name an
+        // earlier reply, and a newer reply's unsent answers must survive.
+        var committedReply = data && data.duplicate ? attemptReply : currentReply;
+        questionCards.sent(committedReply);
+        if (committedReply !== currentReply) {
+          // This Send cancelled the autosave but consumed an older reply's
+          // answers, so the visible reply's answers were never posted.  Save
+          // them from the finally for the next visit.
           draftDirty = true;
         }
         if (pendingList) {
@@ -526,6 +556,7 @@
         if (uploader) {
           uploader.setLocked(false);
         }
+        questionCards.setLocked(false);
         applyBusyState();
         if (draftDirty) {
           saveDraft();
@@ -710,6 +741,10 @@
     } else if (!lastCommentId && data.last_comment_id) {
       lastCommentId = data.last_comment_id;
     }
+    /* The poll can append an agent reply or a human entry, and it replaces the
+     * action bar the answer count sits in.  Re-evaluate the active cards after
+     * either change, without a reload. */
+    questionCards.refresh();
     markSeen(lastCommentId);
   }
 
@@ -836,6 +871,10 @@
   }
   captureServerSendState();
   applyBusyState();
+  /* A card change is a draft change: the same debounce, queue and "Saved"
+   * indicator cover the answers, which ride with the text in one request. */
+  questionCards.onChange = scheduleDraft;
+  questionCards.refresh();
   /* A recording blocks the state actions and Retry; dictation.js calls this
    * when one starts and when it ends, and re-deriving the gate from the live
    * buttons is what keeps a poll's fresh render blocked mid-recording. */

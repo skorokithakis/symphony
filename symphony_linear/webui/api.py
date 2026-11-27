@@ -24,6 +24,7 @@ from typing import Any
 from urllib.parse import unquote
 
 import httpx
+from pydantic import ValidationError
 
 from symphony_linear.local_tracker import (
     STATE_DRAFT,
@@ -32,6 +33,7 @@ from symphony_linear.local_tracker import (
     FileStoreError,
     LocalFile,
     LocalTicket,
+    ReplyAnswers,
     image_content_type,
 )
 from symphony_linear.tracker import TrackerError, TrackerNotFoundError
@@ -243,7 +245,14 @@ def api_ticket(request: Request) -> Response:
 
 
 def api_draft_text(request: Request) -> Response:
-    """Save the reply composer's text.  Last save wins; there is no merge."""
+    """Save the reply composer's text and card answers.
+
+    Last save wins; there is no merge.  An absent ``answers`` key leaves the
+    stored answers alone, so the text-only autosave keeps working; a present
+    key is the page's whole snapshot, including an empty one, which is how
+    clearing the last answer is stored.  The answers are validated only for
+    shape and size: the page owns their meaning.
+    """
     ticket = _ticket(request)
     if ticket is None:
         return _error("Ticket not found.", status=404)
@@ -255,7 +264,15 @@ def api_draft_text(request: Request) -> Response:
     text = _text(payload, "text")
     if len(text) > _MAX_DRAFT_CHARS:
         return _error("The draft is too long.", status=413)
-    updated = request.app.store.set_reply_draft(ticket.id, text)
+    answers: ReplyAnswers | None = None
+    if "answers" in payload:
+        try:
+            answers = ReplyAnswers.model_validate(payload["answers"])
+        except ValidationError:
+            return _error("Bad request.", status=400)
+        if len(answers.model_dump_json()) > _MAX_DRAFT_CHARS:
+            return _error("The draft is too long.", status=413)
+    updated = request.app.store.set_reply_draft(ticket.id, text, answers)
     return _json({"saved_at": updated.reply_draft_saved_at})
 
 

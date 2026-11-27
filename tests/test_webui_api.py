@@ -22,6 +22,7 @@ from symphony_linear.local_tracker import (
     STATE_NEEDS_INPUT,
     STATE_QA,
     LocalTracker,
+    ReplyAnswers,
 )
 from symphony_linear.presence import TicketPresence
 from symphony_linear.state import TicketStatus
@@ -476,6 +477,90 @@ class TestReplyDraftApi:
 
         assert stored is not None
         assert stored.reply_draft == "second"
+
+    def test_the_card_answers_are_saved_with_the_draft_and_kept_when_absent(
+        self, tmp_path: Path
+    ) -> None:
+        with _server(tmp_path) as (port, tracker, _state, _wake):
+            ticket = _ticket(tracker.store)
+            agent = tracker.store.add_comment(ticket.id, "agent reply", kind="final")
+            answers = {
+                "comment_id": agent.id,
+                "questions": [
+                    {
+                        "question_index": 0,
+                        "selected": [1],
+                        "edits": {"0": "Redis only"},
+                        "other": "",
+                    }
+                ],
+            }
+            path = f"/api/tickets/{ticket.id}/draft"
+
+            with_answers, _payload = _post_json(
+                port, path, {"text": "a note", "answers": answers}
+            )
+            saved = tracker.store.get(ticket.id)
+
+            without_answers, _payload = _post_json(
+                port, path, {"text": "a longer note"}
+            )
+            kept = tracker.store.get(ticket.id)
+
+        assert with_answers == 200
+        assert saved is not None
+        assert saved.reply_answers == ReplyAnswers.model_validate(answers)
+        # The text-only autosave must not wipe the snapshot beside it.
+        assert without_answers == 200
+        assert kept is not None
+        assert kept.reply_draft == "a longer note"
+        assert kept.reply_answers == saved.reply_answers
+
+    def test_malformed_card_answers_are_rejected(self, tmp_path: Path) -> None:
+        malformed = [
+            {
+                "comment_id": "c-agent",
+                "questions": [{"question_index": 0, "selected": "one"}],
+            },
+            {"comment_id": "c-agent", "questions": "none"},
+        ]
+        with _server(tmp_path) as (port, tracker, _state, _wake):
+            ticket = _ticket(tracker.store)
+            path = f"/api/tickets/{ticket.id}/draft"
+            for answers in malformed:
+                status, payload = _post_json(
+                    port, path, {"text": "note", "answers": answers}
+                )
+                assert status == 400
+                assert "error" in payload
+            stored = tracker.store.get(ticket.id)
+
+        assert stored is not None
+        assert stored.reply_answers is None
+
+    def test_oversized_card_answers_are_rejected(self, tmp_path: Path) -> None:
+        with _server(tmp_path) as (port, tracker, _state, _wake):
+            ticket = _ticket(tracker.store)
+            status, payload = _post_json(
+                port,
+                f"/api/tickets/{ticket.id}/draft",
+                {
+                    "text": "note",
+                    "answers": {
+                        "comment_id": "c-agent",
+                        "questions": [
+                            {"question_index": 0, "other": "x" * 200_001},
+                        ],
+                    },
+                },
+            )
+            stored = tracker.store.get(ticket.id)
+
+        assert status == 413
+        assert "error" in payload
+        assert stored is not None
+        assert stored.reply_answers is None
+        assert stored.reply_draft == ""
 
     def test_sending_clears_the_draft_and_rotates_the_token(
         self, tmp_path: Path

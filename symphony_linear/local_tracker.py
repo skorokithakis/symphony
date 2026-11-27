@@ -420,6 +420,40 @@ class LocalComment(BaseModel):
     files: list[LocalFile] = Field(default_factory=list)
 
 
+class QuestionAnswer(BaseModel):
+    """The saved answer to one question card.
+
+    ``selected`` holds the indexes of the chosen options in the order the card
+    renders them, ``edits`` maps an option index to the text the human typed in
+    its pencil field, and ``other`` is the free-text or "Other" answer.  The
+    server validates this shape and stores it verbatim; the page decides which
+    indexes still exist in the current reply and how the pieces are assembled
+    into the reply comment.
+
+    Unknown keys are ignored, not refused: these models are read from the
+    ticket files at startup, and a key written by a later version must not
+    stop an older daemon from loading the ticket.
+    """
+
+    question_index: int = Field(ge=0)
+    selected: list[int] = Field(default_factory=list)
+    edits: dict[int, str] = Field(default_factory=dict)
+    other: str = ""
+
+
+class ReplyAnswers(BaseModel):
+    """Answers to the question cards of one agent reply.
+
+    ``comment_id`` names the agent comment the answers belong to.  The page
+    applies them only while that comment is still the newest agent reply, so a
+    stale snapshot cannot answer a later question.  The whole object is cleared
+    with the reply draft when Send consumes the composer.
+    """
+
+    comment_id: str = ""
+    questions: list[QuestionAnswer] = Field(default_factory=list)
+
+
 class LocalTicket(BaseModel):
     """A ticket stored on disk.
 
@@ -453,6 +487,11 @@ class LocalTicket(BaseModel):
     reply_draft: str = ""
     #: When ``reply_draft`` was last written, for the "Saved 14:38" indicator.
     reply_draft_saved_at: str | None = None
+    #: Answers to the question cards of the agent reply named by
+    #: ``ReplyAnswers.comment_id``.  They are saved beside the reply draft by
+    #: the page, which ignores them once that reply is no longer the newest,
+    #: and are cleared with the draft when Send consumes the composer.
+    reply_answers: ReplyAnswers | None = None
     #: The newest comment the user has seen on the ticket page.  ``None`` means
     #: nothing has been seen yet.  Advanced by a POST from the page, never by a
     #: GET, and never moved backwards.
@@ -1205,10 +1244,10 @@ class LocalTicketStore:
 
         ``consume_composer`` is true for the browser's Send, which sends what
         is in the composer: the pending files move onto the new comment and
-        the saved draft text is cleared.  The agent API and the composer's
-        Retry reply from outside the composer text, so they pass ``False`` and
-        leave the browser's draft text and pending attachments exactly as they
-        were.
+        the saved draft text and card answers are cleared.  The agent API and
+        the composer's Retry reply from outside the composer text, so they pass
+        ``False`` and leave the browser's draft text, answers and pending
+        attachments exactly as they were.
 
         ``retry_only`` is true for Retry, which has a narrower window than a
         reply: it is only meaningful while the ticket waits for input with a
@@ -1271,6 +1310,9 @@ class LocalTicketStore:
                         # empty for the next visit from any device.
                         "reply_draft": "",
                         "reply_draft_saved_at": None,
+                        # The answers answered this reply and must not reappear
+                        # on the next one.
+                        "reply_answers": None,
                     }
                 )
             if set_model:
@@ -1343,21 +1385,49 @@ class LocalTicketStore:
                     return edited.model_copy(deep=True)
         raise TrackerNotFoundError(f"Comment not found: {comment_id}")
 
-    def set_reply_draft(self, ticket_id: str, text: str) -> LocalTicket:
+    def set_reply_draft(
+        self,
+        ticket_id: str,
+        text: str,
+        answers: ReplyAnswers | None = None,
+    ) -> LocalTicket:
         """Store the reply composer's text and return the updated copy.
 
+        ``answers`` is the page's whole snapshot of the card answers, saved
+        beside the text.  ``None`` means the caller did not send the field, so
+        the stored answers are left alone: the text-only autosave and any older
+        client must keep working.  A snapshot is stored only while it answers
+        the newest agent reply and no human comment follows that reply; a late
+        save from a tab still showing a consumed reply therefore cannot restore
+        consumed answers or overwrite the answers another device saved for a
+        newer reply.  The text is saved either way.
+
         This deliberately does not touch ``updated_at``: the Home list orders
-        by activity, and typing a note is not activity.  Callers must have
-        refused a Done or Draft ticket before calling.
+        by activity, and typing a note or tapping a card is not activity.
+        Callers must have refused a Done or Draft ticket before calling.
         """
         with self._lock:
             ticket = self._require(ticket_id)
-            updated = ticket.model_copy(
-                update={
-                    "reply_draft": text,
-                    "reply_draft_saved_at": _iso_now(),
-                }
-            )
+            update: dict[str, Any] = {
+                "reply_draft": text,
+                "reply_draft_saved_at": _iso_now(),
+            }
+            if answers is not None:
+                newest_reply = None
+                for index in range(len(ticket.comments) - 1, -1, -1):
+                    if is_agent_kind(ticket.comments[index].kind):
+                        newest_reply = index
+                        break
+                if (
+                    newest_reply is not None
+                    and ticket.comments[newest_reply].id == answers.comment_id
+                    and all(
+                        comment.kind is not None
+                        for comment in ticket.comments[newest_reply + 1 :]
+                    )
+                ):
+                    update["reply_answers"] = answers
+            updated = ticket.model_copy(update=update)
             self._persist(updated)
             self._tickets[ticket_id] = updated
             return updated.model_copy(deep=True)
