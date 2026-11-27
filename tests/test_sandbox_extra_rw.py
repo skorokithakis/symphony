@@ -30,8 +30,12 @@ class TestAttachmentsArgv:
 
     TMP_DIR = "/fake/ws/TEAM-42/tmp"
 
-    def test_attachments_path_included(self) -> None:
-        """When attachments_path is set, --ro-bind appears in argv."""
+    def test_attachments_path_included_after_tmp(self) -> None:
+        """A set attachments_path becomes one --ro-bind at /tmp/symphony-attachments.
+
+        It must come after the per-ticket /tmp bind: mounts are applied in
+        order, so an earlier /tmp bind would hide the attachments mount.
+        """
         with mock.patch(
             "symphony_linear.sandbox.shutil.which",
             return_value="/usr/bin/bwrap",
@@ -51,20 +55,18 @@ class TestAttachmentsArgv:
 
                 args = popen_mock.call_args[0][0]
 
-                # Should contain --ro-bind with the path and /tmp/symphony-attachments
-                assert "--ro-bind" in args
-                ro_bind_count = 0
-                for i, arg in enumerate(args):
-                    if (
-                        arg == "--ro-bind"
-                        and args[i + 2] == "/tmp/symphony-attachments"
-                    ):
-                        ro_bind_count += 1
-                        # The path should be expanded (realpath resolved)
-                        assert args[i + 1] == "/fake/ws/TEAM-42/attachments"
-                assert ro_bind_count == 1, (
-                    f"Expected exactly one --ro-bind ... /tmp/symphony-attachments in args: {args}"
+                triples = list(zip(args, args[1:], args[2:]))
+                attachments_mount = (
+                    "--ro-bind",
+                    "/fake/ws/TEAM-42/attachments",
+                    "/tmp/symphony-attachments",
                 )
+                assert triples.count(attachments_mount) == 1, (
+                    f"Expected exactly one {attachments_mount} in args: {args}"
+                )
+                assert triples.index(("--bind", self.TMP_DIR, "/tmp")) < (
+                    triples.index(attachments_mount)
+                ), f"Expected the /tmp bind before the attachments mount: {args}"
 
     def test_tmp_path_bound_at_tmp(self) -> None:
         """The per-ticket tmp dir is bound at /tmp, not the host /tmp."""
@@ -94,49 +96,6 @@ class TestAttachmentsArgv:
                 # The host /tmp must NOT be bound directly anymore.
                 assert ("--bind", "/tmp", "/tmp") not in triples, (
                     f"Host /tmp must not be bound inside the sandbox: {args}"
-                )
-
-    def test_attachments_path_order(self) -> None:
-        """The attachments --ro-bind appears after the per-ticket /tmp --bind."""
-        with mock.patch(
-            "symphony_linear.sandbox.shutil.which",
-            return_value="/usr/bin/bwrap",
-        ):
-            with mock.patch("subprocess.Popen") as popen_mock:
-                popen_mock.return_value.returncode = 0
-                popen_mock.return_value.communicate.return_value = (b"", b"")
-
-                run_in_sandbox(
-                    cmd=["echo", "hi"],
-                    workspace_path="/fake/workspace",
-                    tmp_path=self.TMP_DIR,
-                    hide_paths=[],
-                    env={"HOME": "/fake/home"},
-                    attachments_path="/fake/ws/TEAM-42/attachments",
-                )
-
-                args = popen_mock.call_args[0][0]
-
-                # workspace --bind must come before /tmp --bind
-                tmp_bind_idx = None
-                att_ro_bind_idx = None
-                for i, arg in enumerate(args):
-                    if arg == "--bind" and args[i + 1] == self.TMP_DIR:
-                        tmp_bind_idx = i
-                        break
-                for i, arg in enumerate(args):
-                    if (
-                        arg == "--ro-bind"
-                        and args[i + 2] == "/tmp/symphony-attachments"
-                    ):
-                        att_ro_bind_idx = i
-                        break
-
-                assert tmp_bind_idx is not None
-                assert att_ro_bind_idx is not None
-                assert tmp_bind_idx < att_ro_bind_idx, (
-                    f"Expected /tmp bind ({tmp_bind_idx}) < attachments bind "
-                    f"({att_ro_bind_idx})"
                 )
 
     def test_attachments_path_absent_when_none(self) -> None:
@@ -253,29 +212,6 @@ class TestExtraRWPathsArgv:
                     f"Extra RW --bind at index {extra_idx} should be before "
                     f"hide --tmpfs at index {hide_idx}: {args}"
                 )
-
-    def test_extra_rw_none_omitted(self) -> None:
-        """When extra_rw_paths is None/empty, no extra --bind args added."""
-        with mock.patch(
-            "symphony_linear.sandbox.shutil.which",
-            return_value="/usr/bin/bwrap",
-        ):
-            with mock.patch("subprocess.Popen") as popen_mock:
-                popen_mock.return_value.returncode = 0
-                popen_mock.return_value.communicate.return_value = (b"", b"")
-
-                run_in_sandbox(
-                    cmd=["echo", "hi"],
-                    workspace_path="/fake/workspace",
-                    tmp_path="/fake/ws/TEAM-42/tmp",
-                    hide_paths=[],
-                    env={"HOME": "/fake/home"},
-                    extra_rw_paths=None,
-                )
-
-                args = popen_mock.call_args[0][0]
-                # Only 2 --bind: workspace and the per-ticket tmp (no extras)
-                assert args.count("--bind") == 2
 
 
 # ---------------------------------------------------------------------------

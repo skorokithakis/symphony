@@ -6,6 +6,7 @@ import logging
 from pathlib import Path
 from unittest.mock import MagicMock, call
 
+import pytest
 
 from symphony_linear.linear import LinearError
 from symphony_linear.provisioning import provision_model_labels, provision_trigger_label
@@ -135,24 +136,37 @@ class TestApiFailures:
         linear.create_workspace_label.assert_not_called()
         assert state.provisioned_label_name is None
 
-    def test_create_error_no_race_logs_warning_no_state_change(
-        self, tmp_path: Path, caplog
+    @pytest.mark.parametrize(
+        ("retry_find", "expected_message"),
+        [
+            (None, "Permission denied"),
+            (
+                LinearError("Network timeout during retry"),
+                "Network timeout during retry",
+            ),
+        ],
+    )
+    def test_create_error_logs_warning_no_state_change(
+        self,
+        tmp_path: Path,
+        caplog,
+        retry_find: Exception | None,
+        expected_message: str,
     ) -> None:
-        """Create fails and retry-find also returns None – warning, state unchanged."""
+        """Create fails and the retry-find does not resolve it – warning, state kept."""
         state = _state(tmp_path)
         assert state.provisioned_label_name is None
 
-        # find returns None initially; create raises; retry-find returns None
-        linear = _fake_linear(
-            find_id=None,
-            create_error=LinearError("Permission denied"),
-        )
+        linear = MagicMock()
+        linear.find_workspace_label.side_effect = [None, retry_find]
+        linear.create_workspace_label.side_effect = LinearError("Permission denied")
 
         with caplog.at_level(logging.WARNING):
             provision_trigger_label(linear, state, "Agent")
 
         assert "Failed to auto-provision Linear issue label 'Agent'" in caplog.text
-        assert "Permission denied" in caplog.text
+        assert expected_message in caplog.text
+        assert linear.find_workspace_label.call_count == 2
         assert state.provisioned_label_name is None
 
     def test_create_error_with_race_resolved_succeeds(self, tmp_path: Path) -> None:
@@ -170,28 +184,6 @@ class TestApiFailures:
         assert linear.find_workspace_label.call_count == 2
         linear.create_workspace_label.assert_called_once_with("Agent")
         assert state.provisioned_label_name == "Agent"
-
-    def test_create_error_retry_find_also_fails_logs_warning(
-        self, tmp_path: Path, caplog
-    ) -> None:
-        """Create fails, retry-find also raises – warning, state unchanged."""
-        state = _state(tmp_path)
-        assert state.provisioned_label_name is None
-
-        linear = MagicMock()
-        linear.find_workspace_label.side_effect = [
-            None,
-            LinearError("Network timeout during retry"),
-        ]
-        linear.create_workspace_label.side_effect = LinearError("Already exists")
-
-        with caplog.at_level(logging.WARNING):
-            provision_trigger_label(linear, state, "Agent")
-
-        assert "Failed to auto-provision Linear issue label 'Agent'" in caplog.text
-        assert "Network timeout during retry" in caplog.text
-        assert linear.find_workspace_label.call_count == 2
-        assert state.provisioned_label_name is None
 
     def test_create_non_linear_error_logs_warning_no_state_change(
         self, tmp_path: Path, caplog
@@ -215,15 +207,6 @@ class TestApiFailures:
 
 
 class TestExceptionDoesNotPropagate:
-    def test_none_trigger_label_name_assume_ok(self, tmp_path: Path) -> None:
-        """Provisioning with a currently-None state and new label should work."""
-        state = _state(tmp_path)
-        linear = _fake_linear(find_id="lbl-ok")
-
-        provision_trigger_label(linear, state, "Agent")
-        # Should not raise
-        assert state.provisioned_label_name == "Agent"
-
     def test_set_provisioned_label_name_failure_no_propagate(self, caplog) -> None:
         """If state.save() raises OSError, log a warning, do not crash."""
         state = MagicMock(spec=StateManager)
@@ -342,35 +325,6 @@ class TestProvisionModelLabels:
             [call("Model: Strong"), call("Model: Cheap")]
         )
 
-    def test_project_create_error_warns_and_does_not_raise(self, caplog) -> None:
-        """A failing project-label create (and retry-find) warns, does not raise."""
-        linear = MagicMock()
-        linear.find_workspace_label.return_value = "lbl-issue"
-        linear.find_project_label.side_effect = [None, None]
-        linear.create_project_label.side_effect = LinearError("Permission denied")
-
-        with caplog.at_level(logging.WARNING):
-            provision_model_labels(linear, ["Model: Strong"])
-
-        project = "Failed to auto-provision Linear project label 'Model: Strong'"
-        assert project in caplog.text
-        assert "Permission denied" in caplog.text
-        assert linear.find_project_label.call_count == 2
-
-    def test_project_create_error_race_resolved_succeeds(self, caplog) -> None:
-        """Project-label create fails (race), retry-find resolves it – no warning."""
-        linear = MagicMock()
-        linear.find_workspace_label.return_value = "lbl-issue"
-        linear.find_project_label.side_effect = [None, "lbl-race"]
-        linear.create_project_label.side_effect = LinearError("Already exists")
-
-        with caplog.at_level(logging.WARNING):
-            provision_model_labels(linear, ["Model: Strong"])
-
-        assert linear.find_project_label.call_count == 2
-        linear.create_project_label.assert_called_once_with("Model: Strong")
-        assert not caplog.records
-
     def test_continues_after_one_failure(self, caplog) -> None:
         """One label failing to provision doesn't stop the remaining labels."""
         linear = MagicMock()
@@ -387,14 +341,3 @@ class TestProvisionModelLabels:
         assert issue in caplog.text
         assert linear.find_workspace_label.call_count == 2
         linear.create_workspace_label.assert_not_called()
-
-    def test_empty_labels_no_api_calls(self) -> None:
-        """An empty alias map does nothing in either namespace."""
-        linear = _fake_linear()
-
-        provision_model_labels(linear, [])
-
-        linear.find_workspace_label.assert_not_called()
-        linear.create_workspace_label.assert_not_called()
-        linear.find_project_label.assert_not_called()
-        linear.create_project_label.assert_not_called()

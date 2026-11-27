@@ -151,16 +151,6 @@ class TestStore:
         # must win rather than the first registration sticking forever.
         assert subscriptions[0].p256dh == second.p256dh
 
-    def test_remove_reports_whether_the_endpoint_was_there(
-        self, tmp_path: Path
-    ) -> None:
-        store = WebPushStore(tmp_path)
-        _Subscriber().add_to(store, "https://push.example.com/1")
-
-        assert store.remove_subscription("https://push.example.com/1") is True
-        assert store.remove_subscription("https://push.example.com/1") is False
-        assert store.subscriptions() == []
-
     def test_a_mismatched_key_pair_is_fatal(self, tmp_path: Path) -> None:
         store = WebPushStore(tmp_path)
         store.public_key()

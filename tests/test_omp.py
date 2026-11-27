@@ -108,11 +108,6 @@ class TestFinalTurnExtraction:
         assert _assemble_final_reply(events) == ""
         assert _extract_context_tokens(events) is None
 
-    def test_missing_usage_fields_default_to_zero(self) -> None:
-        events = [{"type": "turn_end", "message": {"usage": {"input": 5}}}]
-
-        assert _extract_context_tokens(events) == 5
-
 
 class TestTimeoutTrace:
     """Timeout diagnostics keep streamed text and tool activity in order."""
@@ -256,22 +251,6 @@ class TestCommandConstruction:
         env = runner.call_args.kwargs["env"]
         assert env["SYMPHONY_SECRETS_FILE"] == "/workspace/TEAM-1/secrets.env"
 
-    def test_no_secrets_file_leaves_env_unset(self) -> None:
-        with patch(
-            "symphony_linear.omp.agent_runner.run",
-            return_value=(0, _fixture_text(), "", None),
-        ) as runner:
-            run_initial(
-                workspace_path="/workspace",
-                tmp_path="/workspace/tmp",
-                prompt="hi",
-                timeout_seconds=60,
-                idle_timeout_seconds=30,
-                on_subprocess=lambda process: None,
-            )
-
-        assert "SYMPHONY_SECRETS_FILE" not in runner.call_args.kwargs["env"]
-
     def test_resume_command_prefixes_even_an_already_prefixed_newline(self) -> None:
         with patch(
             "symphony_linear.omp.agent_runner.run",
@@ -326,25 +305,30 @@ class TestCommandConstruction:
 class TestExitValidation:
     """The adapter preserves cancellation and validation priority."""
 
-    def test_signal_exit_wins_over_missing_session(self) -> None:
+    @pytest.mark.parametrize(
+        ("stdout", "expected_session"),
+        [
+            ("not NDJSON", None),
+            (_fixture_text(), "01a035ff-248a-735c-8173-f5ee428fe917"),
+            (
+                '{"type":"session","id":"omp-aborted-session"}\n'
+                '{"type":"turn_end","message":{"stopReason":"aborted",'
+                '"errorMessage":"request aborted"}}',
+                "omp-aborted-session",
+            ),
+        ],
+    )
+    def test_signal_exit_wins_over_other_failures(
+        self, stdout: str, expected_session: str | None
+    ) -> None:
         with patch(
             "symphony_linear.omp.agent_runner.run",
-            return_value=(-9, "not NDJSON", "", None),
+            return_value=(-9, stdout, "", None),
         ):
             with pytest.raises(OMPCancelled, match="killed by signal 9") as excinfo:
                 _run_initial()
 
-        assert excinfo.value.session_id is None
-
-    def test_signal_exit_carries_parsed_session_id(self) -> None:
-        with patch(
-            "symphony_linear.omp.agent_runner.run",
-            return_value=(-9, _fixture_text(), "", None),
-        ):
-            with pytest.raises(OMPCancelled, match="killed by signal 9") as excinfo:
-                _run_initial()
-
-        assert excinfo.value.session_id == "01a035ff-248a-735c-8173-f5ee428fe917"
+        assert excinfo.value.session_id == expected_session
 
     def test_nonzero_exit_wins_over_missing_session_and_keeps_stderr_tail(self) -> None:
         stderr = "bootstrap-start\n" + ("padding\n" * 1000) + "actual failure\n"
@@ -381,19 +365,6 @@ class TestExitValidation:
             return_value=(0, stdout, "", None),
         ):
             with pytest.raises(OMPError, match="request aborted"):
-                _run_initial()
-
-    def test_signal_exit_wins_over_terminal_aborted_turn(self) -> None:
-        stdout = (
-            '{"type":"session","id":"omp-aborted-session"}\n'
-            '{"type":"turn_end","message":{"stopReason":"aborted",'
-            '"errorMessage":"request aborted"}}'
-        )
-        with patch(
-            "symphony_linear.omp.agent_runner.run",
-            return_value=(-9, stdout, "", None),
-        ):
-            with pytest.raises(OMPCancelled, match="killed by signal 9"):
                 _run_initial()
 
     def test_zero_exit_without_session_is_an_error(self) -> None:

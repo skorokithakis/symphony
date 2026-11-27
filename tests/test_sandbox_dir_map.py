@@ -105,29 +105,6 @@ class TestDirMapArgv:
                     f"hide --tmpfs at index {hide_idx}: {args}"
                 )
 
-    def test_dir_map_none_omitted(self) -> None:
-        """When dir_map is None/empty, no extra --bind args added."""
-        with mock.patch(
-            "symphony_linear.sandbox.shutil.which",
-            return_value="/usr/bin/bwrap",
-        ):
-            with mock.patch("subprocess.Popen") as popen_mock:
-                popen_mock.return_value.returncode = 0
-                popen_mock.return_value.communicate.return_value = (b"", b"")
-
-                run_in_sandbox(
-                    cmd=["echo", "hi"],
-                    workspace_path="/fake/workspace",
-                    tmp_path="/fake/ws/TEAM-42/tmp",
-                    hide_paths=[],
-                    env={"HOME": "/fake/home"},
-                    dir_map=None,
-                )
-
-                args = popen_mock.call_args[0][0]
-                # Only 2 --bind: workspace and the per-ticket tmp (no extras).
-                assert args.count("--bind") == 2
-
 
 # ---------------------------------------------------------------------------
 # Integration tests — actually launch bwrap

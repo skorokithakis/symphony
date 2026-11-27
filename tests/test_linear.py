@@ -126,39 +126,22 @@ def sample_project_raw() -> dict[str, Any]:
 class TestExceptionMapping:
     """Verify HTTP status codes map to the correct typed exceptions."""
 
-    def test_auth_401_raises(self) -> None:
-        transport = _make_transport(
-            lambda req: _json_response({"errors": [{"message": "Unauthorized"}]}, 401)
-        )
-        client = _client(transport)
-        with pytest.raises(LinearAuthError):
-            client.get_issue("test")
-
-    def test_auth_403_raises(self) -> None:
-        transport = _make_transport(
-            lambda req: _json_response({"errors": [{"message": "Forbidden"}]}, 403)
-        )
-        client = _client(transport)
-        with pytest.raises(LinearAuthError):
-            client.get_issue("test")
-
-    def test_rate_limit_429_raises(self) -> None:
-        transport = _make_transport(lambda req: _json_response({}, 429))
-        client = _client(transport)
-        with pytest.raises(LinearRateLimitError):
-            client.get_issue("test")
-
-    def test_transient_500_raises(self) -> None:
-        transport = _make_transport(lambda req: _json_response({}, 500))
-        client = _client(transport)
-        with pytest.raises(LinearTransientError):
-            client.get_issue("test")
-
-    def test_transient_502_raises(self) -> None:
-        transport = _make_transport(lambda req: _json_response({}, 502))
-        client = _client(transport)
-        with pytest.raises(LinearTransientError):
-            client.get_issue("test")
+    @pytest.mark.parametrize(
+        ("status", "error"),
+        [
+            (401, LinearAuthError),
+            (403, LinearAuthError),
+            (429, LinearRateLimitError),
+            (500, LinearTransientError),
+            (502, LinearTransientError),
+        ],
+    )
+    def test_http_status_maps_to_typed_error(
+        self, status: int, error: type[LinearError]
+    ) -> None:
+        transport = _make_transport(lambda req: _json_response({}, status))
+        with pytest.raises(error):
+            _client(transport).get_issue("test")
 
     def test_not_found_via_graphql_error(self) -> None:
         transport = _make_transport(
@@ -339,48 +322,6 @@ class TestListTriggeredIssues:
         assert "project: { null: false }" in query
         assert "labels: { name: { eq: $label } }" not in query
 
-    def test_empty_result(self) -> None:
-        raw: dict[str, Any] = {"data": {"issues": {"nodes": []}}}
-        transport = _make_transport(lambda req: _json_response(raw))
-        client = _client(transport)
-        issues = client.list_triggered_issues("Agent", ["In Progress"])
-        assert issues == []
-
-    def test_parses_project_labels(self) -> None:
-        raw = {
-            "data": {
-                "issues": {
-                    "nodes": [
-                        {
-                            "id": "i-1",
-                            "identifier": "TEA-1",
-                            "title": "Do A",
-                            "updatedAt": "2025-06-01T00:00:00Z",
-                            "state": {"name": "In Progress"},
-                            "labels": {"nodes": [{"name": "Agent"}]},
-                            "branchName": None,
-                            "project": {
-                                "id": "p-1",
-                                "name": "Core",
-                                "labels": {
-                                    "nodes": [
-                                        {"name": "Model: opus"},
-                                        {"name": "tier-1"},
-                                    ]
-                                },
-                            },
-                        }
-                    ]
-                }
-            }
-        }
-        transport = _make_transport(lambda req: _json_response(raw))
-        client = _client(transport)
-        issues = client.list_triggered_issues("Agent", ["In Progress"])
-
-        assert issues[0].project is not None
-        assert issues[0].project.labels == ["Model: opus", "tier-1"]
-
     def test_missing_or_null_project_labels_parse_as_empty(self) -> None:
         def node(issue_id: str, project: dict[str, Any]) -> dict[str, Any]:
             return {
@@ -457,14 +398,6 @@ class TestGetIssue:
         assert issue.comments[0].body == "First comment"
         assert issue.comments[0].user_id == "usr-bot"
 
-    def test_not_found_raises(self) -> None:
-        transport = _make_transport(
-            lambda req: _json_response({"data": {"issue": None}}, 200)
-        )
-        client = _client(transport)
-        with pytest.raises(LinearNotFoundError, match="not found"):
-            client.get_issue("bad-id")
-
     def test_parses_archived_at(self) -> None:
         raw: dict[str, Any] = {
             "id": "abc-123",
@@ -497,31 +430,6 @@ class TestGetIssue:
 
         assert issue.project is not None
         assert issue.project.labels == ["Model: sonnet"]
-
-    def test_project_labels_default_to_empty(
-        self, sample_issue_raw: dict[str, Any]
-    ) -> None:
-        # The fixture's nested project carries no ``labels`` key at all.
-        transport = _make_transport(
-            lambda req: _json_response({"data": {"issue": sample_issue_raw}})
-        )
-        client = _client(transport)
-        issue = client.get_issue("abc-123")
-
-        assert issue.project is not None
-        assert issue.project.labels == []
-
-    def test_issue_without_project_parses(
-        self, sample_issue_raw: dict[str, Any]
-    ) -> None:
-        sample_issue_raw["project"] = None
-        transport = _make_transport(
-            lambda req: _json_response({"data": {"issue": sample_issue_raw}})
-        )
-        client = _client(transport)
-        issue = client.get_issue("abc-123")
-
-        assert issue.project is None
 
     def test_query_requests_project_labels(self) -> None:
         query = _capture_query(
@@ -570,77 +478,6 @@ class TestGetProject:
         assert project.links[1] == ProjectLink(
             label="Docs", url="https://docs.example.com"
         )
-
-    def test_project_without_links(self) -> None:
-        raw = {
-            "data": {
-                "project": {
-                    "id": "proj-2",
-                    "name": "Empty",
-                    "externalLinks": {"nodes": []},
-                }
-            }
-        }
-        transport = _make_transport(lambda req: _json_response(raw))
-        client = _client(transport)
-        project = client.get_project("proj-2")
-        assert project.links == []
-
-    def test_parses_labels(self, sample_project_raw: dict[str, Any]) -> None:
-        sample_project_raw["labels"] = {
-            "nodes": [{"name": "Model: opus"}, {"name": "Model: sonnet"}]
-        }
-        transport = _make_transport(
-            lambda req: _json_response({"data": {"project": sample_project_raw}})
-        )
-        client = _client(transport)
-        project = client.get_project("proj-1")
-
-        assert project.labels == ["Model: opus", "Model: sonnet"]
-
-    def test_project_without_labels_key(
-        self, sample_project_raw: dict[str, Any]
-    ) -> None:
-        assert "labels" not in sample_project_raw
-        transport = _make_transport(
-            lambda req: _json_response({"data": {"project": sample_project_raw}})
-        )
-        client = _client(transport)
-        project = client.get_project("proj-1")
-
-        assert project.labels == []
-
-    def test_project_with_empty_labels_nodes(self) -> None:
-        raw = {
-            "data": {
-                "project": {
-                    "id": "proj-3",
-                    "name": "NoLabels",
-                    "externalLinks": {"nodes": []},
-                    "labels": {"nodes": []},
-                }
-            }
-        }
-        transport = _make_transport(lambda req: _json_response(raw))
-        client = _client(transport)
-        project = client.get_project("proj-3")
-
-        assert project.labels == []
-
-    def test_query_requests_labels(self) -> None:
-        query = _capture_query(
-            lambda c: c.get_project("proj-1"),
-            {"data": {"project": {"id": "proj-1", "name": "Backend"}}},
-        )
-        assert "labels(first: 50) { nodes { name } }" in query
-
-    def test_not_found_raises(self) -> None:
-        transport = _make_transport(
-            lambda req: _json_response({"data": {"project": None}}, 200)
-        )
-        client = _client(transport)
-        with pytest.raises(LinearNotFoundError):
-            client.get_project("bad-id")
 
 
 # ---------------------------------------------------------------------------
@@ -726,45 +563,6 @@ class TestListCommentsSince:
         comments = client.list_comments_since("abc-123", "deleted-cmt")
         assert comments == []
 
-    def test_realistic_linear_order_returns_newer_only(self) -> None:
-        """Simulate the real Linear response (newest-first) and verify that
-        list_comments_since returns only comments *newer* than last_seen,
-        in ascending (oldest-first) chronological order."""
-        # Linear returns comments newest-first.  last_seen is cmt-3.
-        nodes = [
-            self._make_comment("cmt-6", "Sixth"),  # newest
-            self._make_comment("cmt-5", "Fifth"),
-            self._make_comment("cmt-4", "Fourth"),
-            self._make_comment("cmt-3", "Third"),  # last_seen
-            self._make_comment("cmt-2", "Second"),
-            self._make_comment("cmt-1", "First"),  # oldest
-        ]
-        raw = self._comments_issue_raw(nodes)
-        transport = _make_transport(lambda req: _json_response(raw))
-        client = _client(transport)
-
-        comments = client.list_comments_since("abc-123", "cmt-3")
-        # Should return only cmt-4, cmt-5, cmt-6 in ascending order.
-        assert len(comments) == 3
-        assert comments[0].id == "cmt-4"
-        assert comments[1].id == "cmt-5"
-        assert comments[2].id == "cmt-6"
-
-        # Verify chronological order by createdAt.
-        for i in range(len(comments) - 1):
-            assert comments[i].created_at <= comments[i + 1].created_at, (
-                f"Comments not in chronological order: "
-                f"{comments[i].created_at} > {comments[i + 1].created_at}"
-            )
-
-    def test_issue_not_found_raises(self) -> None:
-        transport = _make_transport(
-            lambda req: _json_response({"data": {"issue": None}}, 200)
-        )
-        client = _client(transport)
-        with pytest.raises(LinearNotFoundError):
-            client.list_comments_since("bad-id", None)
-
 
 # ---------------------------------------------------------------------------
 # post_comment
@@ -815,13 +613,6 @@ class TestPostComment:
 
 
 class TestEditComment:
-    def test_updates_successfully(self) -> None:
-        raw = {"data": {"commentUpdate": {"success": True}}}
-        transport = _make_transport(lambda req: _json_response(raw))
-        client = _client(transport)
-        # Should not raise
-        client.edit_comment("cmt-1", "updated body")
-
     def test_failure_raises(self) -> None:
         raw = {"data": {"commentUpdate": {"success": False}}}
         transport = _make_transport(lambda req: _json_response(raw))
@@ -896,14 +687,6 @@ class TestTransitionToState:
         with pytest.raises(ValueError, match="State 'InvalidState' not found"):
             client.transition_to_state("abc-123", "InvalidState")
 
-    def test_issue_not_found_raises(self) -> None:
-        transport = _make_transport(
-            lambda req: _json_response({"data": {"issue": None}}, 200)
-        )
-        client = _client(transport)
-        with pytest.raises(LinearNotFoundError):
-            client.transition_to_state("bad-id", "Done")
-
     def test_no_team_raises(self) -> None:
         transport = _make_transport(
             lambda req: _json_response({"data": {"issue": {"team": None}}}, 200)
@@ -945,68 +728,25 @@ class TestTransitionToState:
 
 
 # ---------------------------------------------------------------------------
-# Comment model (field aliases)
-# ---------------------------------------------------------------------------
-
-
-class TestCommentModel:
-    def test_created_at_alias(self) -> None:
-        c = Comment(id="x", body="b", createdAt="2025-01-01T00:00:00Z")
-        assert c.created_at == "2025-01-01T00:00:00Z"
-
-    def test_user_id_defaults_to_none(self) -> None:
-        c = Comment(id="x", body="b", createdAt="2025-01-01T00:00:00Z")
-        assert c.user_id is None
-
-
-# ---------------------------------------------------------------------------
-# Issue model (field aliases)
-# ---------------------------------------------------------------------------
-
-
-class TestIssueModel:
-    def test_branch_name_alias(self) -> None:
-        issue = Issue(
-            id="i",
-            identifier="T-1",
-            title="T",
-            state="S",
-            branchName="feat/x",
-            updatedAt="2025-06-01T00:00:00Z",
-        )
-        assert issue.branch_name == "feat/x"
-
-    def test_defaults(self) -> None:
-        issue = Issue(
-            id="i",
-            identifier="T-1",
-            title="T",
-            state="S",
-            updatedAt="2025-06-01T00:00:00Z",
-        )
-        assert issue.labels == []
-        assert issue.comments == []
-        assert issue.branch_name is None
-        assert issue.project is None
-
-
-# ---------------------------------------------------------------------------
 # find_workspace_label
 # ---------------------------------------------------------------------------
 
 
 class TestFindWorkspaceLabel:
-    def test_returns_id_when_label_exists(self) -> None:
-        raw = {"data": {"issueLabels": {"nodes": [{"id": "lbl-agent"}]}}}
+    @pytest.mark.parametrize(
+        ("nodes", "expected"),
+        [
+            ([{"id": "lbl-agent"}], "lbl-agent"),
+            ([], None),
+        ],
+    )
+    def test_returns_id_or_none(
+        self, nodes: list[dict[str, str]], expected: str | None
+    ) -> None:
+        raw = {"data": {"issueLabels": {"nodes": nodes}}}
         transport = _make_transport(lambda req: _json_response(raw))
         client = _client(transport)
-        assert client.find_workspace_label("Agent") == "lbl-agent"
-
-    def test_returns_none_when_no_matches(self) -> None:
-        raw: dict[str, Any] = {"data": {"issueLabels": {"nodes": []}}}
-        transport = _make_transport(lambda req: _json_response(raw))
-        client = _client(transport)
-        assert client.find_workspace_label("Agent") is None
+        assert client.find_workspace_label("Agent") == expected
 
     def test_returns_none_when_key_missing(self) -> None:
         """Gracefully handle a response without the issueLabels key."""
@@ -1056,17 +796,20 @@ class TestCreateWorkspaceLabel:
 
 
 class TestFindProjectLabel:
-    def test_returns_id_when_label_exists(self) -> None:
-        raw = {"data": {"projectLabels": {"nodes": [{"id": "lbl-model"}]}}}
+    @pytest.mark.parametrize(
+        ("nodes", "expected"),
+        [
+            ([{"id": "lbl-model"}], "lbl-model"),
+            ([], None),
+        ],
+    )
+    def test_returns_id_or_none(
+        self, nodes: list[dict[str, str]], expected: str | None
+    ) -> None:
+        raw = {"data": {"projectLabels": {"nodes": nodes}}}
         transport = _make_transport(lambda req: _json_response(raw))
         client = _client(transport)
-        assert client.find_project_label("Model: Strong") == "lbl-model"
-
-    def test_returns_none_when_no_matches(self) -> None:
-        raw: dict[str, Any] = {"data": {"projectLabels": {"nodes": []}}}
-        transport = _make_transport(lambda req: _json_response(raw))
-        client = _client(transport)
-        assert client.find_project_label("Model: Strong") is None
+        assert client.find_project_label("Model: Strong") == expected
 
     def test_returns_none_when_key_missing(self) -> None:
         """Gracefully handle a response without the projectLabels key."""

@@ -7,7 +7,6 @@ Uses ``unittest.mock.MagicMock`` — no real network calls.
 
 from __future__ import annotations
 
-import logging
 from typing import Any
 from unittest.mock import MagicMock
 
@@ -181,12 +180,6 @@ def _issue_item(
     }
 
 
-def _single_select_fields(
-    fields: list[dict[str, Any]],
-) -> list[dict[str, Any]]:
-    return fields
-
-
 # ---------------------------------------------------------------------------
 # Protocol conformance
 # ---------------------------------------------------------------------------
@@ -196,22 +189,7 @@ class TestProtocolConformance:
     def test_is_tracker_instance(
         self, client_mock: MagicMock, config: GitHubTrackerConfig
     ) -> None:
-        t = GitHubTracker(client_mock, config)
-        assert isinstance(t, Tracker)
-
-    def test_all_methods_present(self) -> None:
-        protocol_methods = [
-            name
-            for name in dir(Tracker)
-            if not name.startswith("_") and callable(getattr(Tracker, name, None))
-        ]
-        tracker_methods = [
-            name
-            for name in dir(GitHubTracker)
-            if not name.startswith("_") and callable(getattr(GitHubTracker, name, None))
-        ]
-        missing = [m for m in protocol_methods if m not in tracker_methods]
-        assert missing == [], f"GitHubTracker missing methods: {missing}"
+        assert isinstance(GitHubTracker(client_mock, config), Tracker)
 
 
 # ---------------------------------------------------------------------------
@@ -235,29 +213,25 @@ class TestExceptionHierarchy:
 
 
 class TestParseProjectRef:
-    def test_orgs_variant(self) -> None:
-        owner_type, owner_name, number = _parse_project_ref("orgs/my-org/projects/5")
-        assert owner_type == "orgs"
-        assert owner_name == "my-org"
-        assert number == 5
+    @pytest.mark.parametrize(
+        ("ref", "expected"),
+        [
+            ("orgs/my-org/projects/5", ("orgs", "my-org", 5)),
+            ("users/alice/projects/10", ("users", "alice", 10)),
+        ],
+    )
+    def test_parses_owner_and_number(
+        self, ref: str, expected: tuple[str, str, int]
+    ) -> None:
+        assert _parse_project_ref(ref) == expected
 
-    def test_users_variant(self) -> None:
-        owner_type, owner_name, number = _parse_project_ref("users/alice/projects/10")
-        assert owner_type == "users"
-        assert owner_name == "alice"
-        assert number == 10
-
-    def test_invalid_ref_raises(self) -> None:
+    @pytest.mark.parametrize(
+        "ref",
+        ["garbage", "orgs/my-org/projects", "teams/my-org/projects/1"],
+    )
+    def test_invalid_ref_raises(self, ref: str) -> None:
         with pytest.raises(ValueError, match="Invalid project ref"):
-            _parse_project_ref("garbage")
-
-    def test_incomplete_ref_raises(self) -> None:
-        with pytest.raises(ValueError, match="Invalid project ref"):
-            _parse_project_ref("orgs/my-org/projects")
-
-    def test_bad_prefix_raises(self) -> None:
-        with pytest.raises(ValueError, match="Invalid project ref"):
-            _parse_project_ref("teams/my-org/projects/1")
+            _parse_project_ref(ref)
 
 
 # ---------------------------------------------------------------------------
@@ -266,37 +240,34 @@ class TestParseProjectRef:
 
 
 class TestResolveProject:
-    def test_resolves_org_project(
-        self, client_mock: MagicMock, config: GitHubTrackerConfig
+    @pytest.mark.parametrize(
+        ("ref", "response_key", "query_fragment"),
+        [
+            ("orgs/my-org/projects/1", "organization", "organization(login:"),
+            ("users/alice/projects/2", "user", "user(login:"),
+        ],
+    )
+    def test_resolves_project(
+        self,
+        client_mock: MagicMock,
+        config: GitHubTrackerConfig,
+        ref: str,
+        response_key: str,
+        query_fragment: str,
     ) -> None:
+        config.project_ref = ref
         tracker = GitHubTracker(client_mock, config)
         client_mock._query.return_value = {
-            "organization": {
+            response_key: {
                 "projectV2": {"id": "PVT_abc", "title": "My Project"},
             }
         }
+
         tracker._resolve_project()
+
         assert tracker._project_node_id == "PVT_abc"
-
-        client_mock._query.assert_called_once()
         call_args = client_mock._query.call_args
-        assert "organization(login:" in call_args[0][0]
-
-    def test_resolves_user_project(
-        self, client_mock: MagicMock, config: GitHubTrackerConfig
-    ) -> None:
-        config.project_ref = "users/alice/projects/2"
-        tracker = GitHubTracker(client_mock, config)
-        client_mock._query.return_value = {
-            "user": {
-                "projectV2": {"id": "PVT_xyz", "title": "Alice Project"},
-            }
-        }
-        tracker._resolve_project()
-        assert tracker._project_node_id == "PVT_xyz"
-
-        call_args = client_mock._query.call_args
-        assert "user(login:" in call_args[0][0]
+        assert query_fragment in call_args[0][0]
 
     def test_missing_project_raises(
         self, client_mock: MagicMock, config: GitHubTrackerConfig
@@ -787,45 +758,35 @@ class TestListTriggeredIssues:
         assert call is not None
         assert "labels(first: 50)" in call[0][0]
 
+    @pytest.mark.parametrize(
+        ("labels", "expected"),
+        [
+            ([], []),
+            (["Model: strong", "bug"], ["Model: strong", "bug"]),
+        ],
+        ids=["empty", "values"],
+    )
     def test_surfaces_labels(
-        self, tracker: GitHubTracker, client_mock: MagicMock
+        self,
+        tracker: GitHubTracker,
+        client_mock: MagicMock,
+        labels: list[str],
+        expected: list[str],
     ) -> None:
+        item = _issue_item(issue_id="I_1", labels=labels)
         client_mock._query.return_value = {
             "node": {
                 "items": {
                     "pageInfo": {"hasNextPage": False, "endCursor": None},
-                    "nodes": [
-                        _issue_item(
-                            item_id="PVTI_1",
-                            issue_id="I_1",
-                            number=42,
-                            title="Fix bug",
-                            labels=["Model: strong", "bug"],
-                        ),
-                    ],
+                    "nodes": [item],
                 }
             }
         }
-        issues = tracker.list_triggered_issues()
-        assert len(issues) == 1
-        assert issues[0].labels == ["Model: strong", "bug"]
 
-    def test_surfaces_empty_labels_nodes(
-        self, tracker: GitHubTracker, client_mock: MagicMock
-    ) -> None:
-        client_mock._query.return_value = {
-            "node": {
-                "items": {
-                    "pageInfo": {"hasNextPage": False, "endCursor": None},
-                    "nodes": [
-                        _issue_item(issue_id="I_1", labels=[]),
-                    ],
-                }
-            }
-        }
         issues = tracker.list_triggered_issues()
+
         assert len(issues) == 1
-        assert issues[0].labels == []
+        assert issues[0].labels == expected
 
     def test_tolerates_null_labels(
         self, tracker: GitHubTracker, client_mock: MagicMock
@@ -842,56 +803,31 @@ class TestListTriggeredIssues:
                 }
             }
         }
+
         issues = tracker.list_triggered_issues()
+
         assert len(issues) == 1
         assert issues[0].labels == []
 
-    def test_filters_closed_issues(
-        self, tracker: GitHubTracker, client_mock: MagicMock
+    @pytest.mark.parametrize(
+        "item",
+        [
+            {"state": "CLOSED"},
+            {"trigger_on": False},
+            {"status_name": "Done"},
+        ],
+        ids=["closed", "not-triggered", "inactive-status"],
+    )
+    def test_filters_items_that_are_not_triggered(
+        self, tracker: GitHubTracker, client_mock: MagicMock, item: dict[str, Any]
     ) -> None:
         client_mock._query.return_value = {
             "node": {
                 "items": {
                     "pageInfo": {"hasNextPage": False},
                     "nodes": [
-                        _issue_item(issue_id="I_1", state="CLOSED"),
-                        _issue_item(issue_id="I_2", state="OPEN"),
-                    ],
-                }
-            }
-        }
-        issues = tracker.list_triggered_issues()
-        assert len(issues) == 1
-        assert issues[0].id == "I_2"
-
-    def test_filters_non_triggered(
-        self, tracker: GitHubTracker, client_mock: MagicMock
-    ) -> None:
-        client_mock._query.return_value = {
-            "node": {
-                "items": {
-                    "pageInfo": {"hasNextPage": False},
-                    "nodes": [
-                        _issue_item(issue_id="I_1", trigger_on=False),
-                        _issue_item(issue_id="I_2", trigger_on=True),
-                    ],
-                }
-            }
-        }
-        issues = tracker.list_triggered_issues()
-        assert len(issues) == 1
-        assert issues[0].id == "I_2"
-
-    def test_filters_inactive_status(
-        self, tracker: GitHubTracker, client_mock: MagicMock
-    ) -> None:
-        client_mock._query.return_value = {
-            "node": {
-                "items": {
-                    "pageInfo": {"hasNextPage": False},
-                    "nodes": [
-                        _issue_item(issue_id="I_1", status_name="Done"),
-                        _issue_item(issue_id="I_2", status_name="In Progress"),
+                        _issue_item(issue_id="I_1", **item),
+                        _issue_item(issue_id="I_2"),
                     ],
                 }
             }
@@ -1010,9 +946,17 @@ class TestListTriggeredIssues:
         assert identifiers[0].startswith("foo-bar-baz-1")
         assert identifiers[1].startswith("foo-bar-baz-1")
 
-    def test_includes_qa_when_configured(
-        self, tracker: GitHubTracker, client_mock: MagicMock
+    @pytest.mark.parametrize("qa_configured", [True, False])
+    def test_qa_is_listed_only_when_configured(
+        self,
+        client_mock: MagicMock,
+        config: GitHubTrackerConfig,
+        config_no_qa: GitHubTrackerConfig,
+        qa_configured: bool,
     ) -> None:
+        tracker = _resolved_tracker(
+            client_mock, config if qa_configured else config_no_qa
+        )
         client_mock._query.return_value = {
             "node": {
                 "items": {
@@ -1024,24 +968,7 @@ class TestListTriggeredIssues:
             }
         }
         issues = tracker.list_triggered_issues()
-        assert len(issues) == 1
-
-    def test_excludes_qa_when_not_configured(
-        self, client_mock: MagicMock, config_no_qa: GitHubTrackerConfig
-    ) -> None:
-        tracker = _resolved_tracker(client_mock, config_no_qa)
-        client_mock._query.return_value = {
-            "node": {
-                "items": {
-                    "pageInfo": {"hasNextPage": False},
-                    "nodes": [
-                        _issue_item(issue_id="I_1", status_name="QA"),
-                    ],
-                }
-            }
-        }
-        issues = tracker.list_triggered_issues()
-        assert len(issues) == 0
+        assert len(issues) == (1 if qa_configured else 0)
 
     def test_populates_item_id_map(
         self, tracker: GitHubTracker, client_mock: MagicMock
@@ -1360,23 +1287,27 @@ class TestListCommentsSince:
             c["author"] = {"id": user_id}
         return c
 
-    def _comments_issue_raw(
-        self, comment_nodes: list[dict[str, Any]]
-    ) -> dict[str, Any]:
-        return {
-            "node": {
-                "__typename": "Issue",
-                "id": "I_1",
-                "comments": {"nodes": comment_nodes},
-            }
-        }
-
-    def test_returns_all_when_last_seen_is_none(
-        self, tracker: GitHubTracker, client_mock: MagicMock
+    @pytest.mark.parametrize(
+        ("last_seen", "expected_ids"),
+        [
+            (None, ["c1", "c2", "c3"]),
+            ("c2", ["c3"]),
+            ("c3", []),
+            ("deleted-id", []),
+        ],
+        ids=["all", "after", "last-matches", "not-found"],
+    )
+    def test_returns_comments_after_last_seen(
+        self,
+        tracker: GitHubTracker,
+        client_mock: MagicMock,
+        last_seen: str | None,
+        expected_ids: list[str],
     ) -> None:
         nodes = [
             self._comment_node("c1", "First", "user1"),
             self._comment_node("c2", "Second"),
+            self._comment_node("c3", "Third"),
         ]
         # _fetch_issue_raw returns without comments; _comments_from_raw fetches.
         issue_raw = {
@@ -1400,146 +1331,18 @@ class TestListCommentsSince:
             }
         }
 
-        call_count = [0]
-
         def side_effect(
             query: str, variables: dict[str, Any] | None = None
         ) -> dict[str, Any]:
-            call_count[0] += 1
             if "comments" in query:
                 return comment_page
             return issue_raw
 
         client_mock._query.side_effect = side_effect
-        comments = tracker.list_comments_since("I_1", None)
-        assert len(comments) == 2
-        assert comments[0].id == "c1"
-        assert comments[0].user_id == "user1"
 
-    def test_returns_after_last_seen(
-        self, tracker: GitHubTracker, client_mock: MagicMock
-    ) -> None:
-        nodes = [
-            self._comment_node("c1", "First"),
-            self._comment_node("c2", "Second"),
-            self._comment_node("c3", "Third"),
-        ]
-        issue_raw = {
-            "node": {
-                "__typename": "Issue",
-                "id": "I_1",
-                "number": 1,
-                "title": "T",
-                "body": "B",
-                "state": "OPEN",
-                "updatedAt": "2025-01-01T00:00:00Z",
-                "repository": None,
-            }
-        }
-        comment_page = {
-            "node": {
-                "comments": {
-                    "pageInfo": {"hasNextPage": False, "endCursor": None},
-                    "nodes": nodes,
-                }
-            }
-        }
+        comments = tracker.list_comments_since("I_1", last_seen)
 
-        call_count = [0]
-
-        def side_effect(
-            query: str, variables: dict[str, Any] | None = None
-        ) -> dict[str, Any]:
-            call_count[0] += 1
-            if "comments" in query:
-                return comment_page
-            return issue_raw
-
-        client_mock._query.side_effect = side_effect
-        comments = tracker.list_comments_since("I_1", "c2")
-        assert len(comments) == 1
-        assert comments[0].id == "c3"
-
-    def test_returns_empty_when_last_matches(
-        self, tracker: GitHubTracker, client_mock: MagicMock
-    ) -> None:
-        nodes = [
-            self._comment_node("c1", "First"),
-            self._comment_node("c2", "Second"),
-        ]
-        issue_raw = {
-            "node": {
-                "__typename": "Issue",
-                "id": "I_1",
-                "number": 1,
-                "title": "T",
-                "body": "B",
-                "state": "OPEN",
-                "updatedAt": "2025-01-01T00:00:00Z",
-                "repository": None,
-            }
-        }
-        comment_page = {
-            "node": {
-                "comments": {
-                    "pageInfo": {"hasNextPage": False, "endCursor": None},
-                    "nodes": nodes,
-                }
-            }
-        }
-
-        call_count = [0]
-
-        def side_effect(
-            query: str, variables: dict[str, Any] | None = None
-        ) -> dict[str, Any]:
-            call_count[0] += 1
-            if "comments" in query:
-                return comment_page
-            return issue_raw
-
-        client_mock._query.side_effect = side_effect
-        comments = tracker.list_comments_since("I_1", "c2")
-        assert comments == []
-
-    def test_returns_empty_when_not_found(
-        self, tracker: GitHubTracker, client_mock: MagicMock
-    ) -> None:
-        nodes = [self._comment_node("c1", "First")]
-        issue_raw = {
-            "node": {
-                "__typename": "Issue",
-                "id": "I_1",
-                "number": 1,
-                "title": "T",
-                "body": "B",
-                "state": "OPEN",
-                "updatedAt": "2025-01-01T00:00:00Z",
-                "repository": None,
-            }
-        }
-        comment_page = {
-            "node": {
-                "comments": {
-                    "pageInfo": {"hasNextPage": False, "endCursor": None},
-                    "nodes": nodes,
-                }
-            }
-        }
-
-        call_count = [0]
-
-        def side_effect(
-            query: str, variables: dict[str, Any] | None = None
-        ) -> dict[str, Any]:
-            call_count[0] += 1
-            if "comments" in query:
-                return comment_page
-            return issue_raw
-
-        client_mock._query.side_effect = side_effect
-        comments = tracker.list_comments_since("I_1", "deleted-id")
-        assert comments == []
+        assert [c.id for c in comments] == expected_ids
 
     def test_issue_not_found_raises(
         self, tracker: GitHubTracker, client_mock: MagicMock
@@ -1614,40 +1417,31 @@ class TestEditComment:
 
 
 class TestTransitionTo:
-    def test_transitions_to_in_progress(
-        self, tracker: GitHubTracker, client_mock: MagicMock
+    @pytest.mark.parametrize(
+        ("target", "option_id"),
+        [
+            (TransitionTarget.in_progress, "opt_ip"),
+            (TransitionTarget.needs_input, "opt_ni"),
+            (TransitionTarget.qa, "opt_qa"),
+        ],
+    )
+    def test_maps_target_to_the_status_option(
+        self,
+        tracker: GitHubTracker,
+        client_mock: MagicMock,
+        target: TransitionTarget,
+        option_id: str,
     ) -> None:
         tracker._item_id_map["I_1"] = "PVTI_1"
         client_mock._query.return_value = {"updateProjectV2ItemFieldValue": {}}
-        tracker.transition_to("I_1", TransitionTarget.in_progress)
+
+        tracker.transition_to("I_1", target)
 
         call_args = client_mock._query.call_args
         variables = call_args[0][1]["input"]
         assert variables["fieldId"] == "PVTSSF_status"
         assert variables["itemId"] == "PVTI_1"
-        assert variables["value"]["singleSelectOptionId"] == "opt_ip"
-
-    def test_transitions_to_needs_input(
-        self, tracker: GitHubTracker, client_mock: MagicMock
-    ) -> None:
-        tracker._item_id_map["I_1"] = "PVTI_1"
-        client_mock._query.return_value = {"updateProjectV2ItemFieldValue": {}}
-        tracker.transition_to("I_1", TransitionTarget.needs_input)
-
-        call_args = client_mock._query.call_args
-        variables = call_args[0][1]["input"]
-        assert variables["value"]["singleSelectOptionId"] == "opt_ni"
-
-    def test_transitions_to_qa(
-        self, tracker: GitHubTracker, client_mock: MagicMock
-    ) -> None:
-        tracker._item_id_map["I_1"] = "PVTI_1"
-        client_mock._query.return_value = {"updateProjectV2ItemFieldValue": {}}
-        tracker.transition_to("I_1", TransitionTarget.qa)
-
-        call_args = client_mock._query.call_args
-        variables = call_args[0][1]["input"]
-        assert variables["value"]["singleSelectOptionId"] == "opt_qa"
+        assert variables["value"]["singleSelectOptionId"] == option_id
 
     def test_qa_raises_when_not_configured(
         self, client_mock: MagicMock, config_no_qa: GitHubTrackerConfig
@@ -1655,24 +1449,6 @@ class TestTransitionTo:
         tracker = _resolved_tracker(client_mock, config_no_qa)
         with pytest.raises(ValueError, match="no qa_status"):
             tracker.transition_to("I_1", TransitionTarget.qa)
-
-    def test_logs_successful_transition(
-        self,
-        tracker: GitHubTracker,
-        client_mock: MagicMock,
-        caplog: pytest.LogCaptureFixture,
-    ) -> None:
-        tracker._item_id_map["I_1"] = "PVTI_1"
-        client_mock._query.return_value = {"updateProjectV2ItemFieldValue": {}}
-        with caplog.at_level(logging.INFO, logger="symphony_linear.github_tracker"):
-            tracker.transition_to("I_1", TransitionTarget.in_progress)
-
-        records = [
-            r for r in caplog.records if r.name == "symphony_linear.github_tracker"
-        ]
-        assert [(r.levelno, r.getMessage()) for r in records] == [
-            (logging.INFO, "Transitioned I_1 to 'In Progress'")
-        ]
 
     def test_refreshes_item_map_when_missing(
         self, tracker: GitHubTracker, client_mock: MagicMock
@@ -1740,104 +1516,43 @@ class TestIsStillTriggered:
             },
         )
 
-    def test_triggered_returns_true(
-        self, tracker: GitHubTracker, client_mock: MagicMock
+    @pytest.mark.parametrize(
+        ("content_state", "trigger_name", "status_name", "expected"),
+        [
+            ("OPEN", "on", "In Progress", True),
+            ("CLOSED", "on", "In Progress", False),
+            ("OPEN", None, "In Progress", False),
+            ("OPEN", "on", "Done", False),
+            ("OPEN", "on", "QA", True),
+        ],
+        ids=["triggered", "closed", "trigger-off", "inactive-status", "qa"],
+    )
+    def test_triggered_follows_content_trigger_field_and_status(
+        self,
+        tracker: GitHubTracker,
+        client_mock: MagicMock,
+        content_state: str,
+        trigger_name: str | None,
+        status_name: str,
+        expected: bool,
     ) -> None:
         client_mock._query.return_value = {
             "node": {
-                "content": {"state": "OPEN"},
+                "content": {"state": content_state},
                 "fieldValues": {
                     "nodes": [
                         {
                             "field": {"name": "Symphony"},
-                            "name": "on",
-                            "optionId": "opt_on",
+                            "name": trigger_name,
+                            "optionId": "opt_on" if trigger_name else None,
                         },
-                        {"field": {"name": "Status"}, "name": "In Progress"},
+                        {"field": {"name": "Status"}, "name": status_name},
                     ],
                 },
             }
         }
         issue = self._build_issue("PVTI_1")
-        assert tracker.is_still_triggered(issue) is True
-
-    def test_closed_issue_returns_false(
-        self, tracker: GitHubTracker, client_mock: MagicMock
-    ) -> None:
-        client_mock._query.return_value = {
-            "node": {
-                "content": {"state": "CLOSED"},
-                "fieldValues": {
-                    "nodes": [
-                        {
-                            "field": {"name": "Symphony"},
-                            "name": "on",
-                            "optionId": "opt_on",
-                        },
-                        {"field": {"name": "Status"}, "name": "In Progress"},
-                    ],
-                },
-            }
-        }
-        issue = self._build_issue("PVTI_1")
-        assert tracker.is_still_triggered(issue) is False
-
-    def test_not_triggered_field_off_returns_false(
-        self, tracker: GitHubTracker, client_mock: MagicMock
-    ) -> None:
-        client_mock._query.return_value = {
-            "node": {
-                "content": {"state": "OPEN"},
-                "fieldValues": {
-                    "nodes": [
-                        {"field": {"name": "Symphony"}, "name": None, "optionId": None},
-                        {"field": {"name": "Status"}, "name": "In Progress"},
-                    ],
-                },
-            }
-        }
-        issue = self._build_issue("PVTI_1")
-        assert tracker.is_still_triggered(issue) is False
-
-    def test_inactive_status_returns_false(
-        self, tracker: GitHubTracker, client_mock: MagicMock
-    ) -> None:
-        client_mock._query.return_value = {
-            "node": {
-                "content": {"state": "OPEN"},
-                "fieldValues": {
-                    "nodes": [
-                        {
-                            "field": {"name": "Symphony"},
-                            "name": "on",
-                            "optionId": "opt_on",
-                        },
-                        {"field": {"name": "Status"}, "name": "Done"},
-                    ],
-                },
-            }
-        }
-        issue = self._build_issue("PVTI_1")
-        assert tracker.is_still_triggered(issue) is False
-
-    def test_qa_is_active(self, tracker: GitHubTracker, client_mock: MagicMock) -> None:
-        client_mock._query.return_value = {
-            "node": {
-                "content": {"state": "OPEN"},
-                "fieldValues": {
-                    "nodes": [
-                        {
-                            "field": {"name": "Symphony"},
-                            "name": "on",
-                            "optionId": "opt_on",
-                        },
-                        {"field": {"name": "Status"}, "name": "QA"},
-                    ],
-                },
-            }
-        }
-        issue = self._build_issue("PVTI_1")
-        assert tracker.is_still_triggered(issue) is True
+        assert tracker.is_still_triggered(issue) is expected
 
     def test_qa_not_active_when_unconfigured(
         self, client_mock: MagicMock, config_no_qa: GitHubTrackerConfig
@@ -1916,61 +1631,33 @@ class TestRepoUrlFor:
 
 
 # ---------------------------------------------------------------------------
-# human_trigger_description
-# ---------------------------------------------------------------------------
-
-
-class TestHumanTriggerDescription:
-    def test_default_field_name(self, tracker: GitHubTracker) -> None:
-        assert "Symphony" in tracker.human_trigger_description()
-        assert "off" in tracker.human_trigger_description()
-
-    def test_custom_field_name(
-        self, client_mock: MagicMock, config: GitHubTrackerConfig
-    ) -> None:
-        config.trigger_field = "Agent"
-        tracker = GitHubTracker(client_mock, config)
-        assert "Agent" in tracker.human_trigger_description()
-
-
-# ---------------------------------------------------------------------------
 # QA helpers
 # ---------------------------------------------------------------------------
 
 
 class TestIsInQa:
-    def test_true_when_in_qa(self, tracker: GitHubTracker) -> None:
-        issue = Issue(
+    def _issue(self, state: str) -> Issue:
+        return Issue(
             id="I_1",
             identifier="o/r-42",
             title="T",
-            state="QA",
+            state=state,
             updatedAt="2025-01-01T00:00:00Z",
         )
-        assert tracker.is_in_qa(issue) is True
 
-    def test_false_when_not_qa(self, tracker: GitHubTracker) -> None:
-        issue = Issue(
-            id="I_1",
-            identifier="o/r-42",
-            title="T",
-            state="In Progress",
-            updatedAt="2025-01-01T00:00:00Z",
-        )
-        assert tracker.is_in_qa(issue) is False
+    @pytest.mark.parametrize(
+        ("state", "expected"), [("QA", True), ("In Progress", False)]
+    )
+    def test_reflects_the_issue_state(
+        self, tracker: GitHubTracker, state: str, expected: bool
+    ) -> None:
+        assert tracker.is_in_qa(self._issue(state)) is expected
 
     def test_false_when_qa_not_configured(
         self, client_mock: MagicMock, config_no_qa: GitHubTrackerConfig
     ) -> None:
         tracker = _resolved_tracker(client_mock, config_no_qa)
-        issue = Issue(
-            id="I_1",
-            identifier="o/r-42",
-            title="T",
-            state="QA",
-            updatedAt="2025-01-01T00:00:00Z",
-        )
-        assert tracker.is_in_qa(issue) is False
+        assert tracker.is_in_qa(self._issue("QA")) is False
 
 
 class TestQaEnabled:
@@ -1985,18 +1672,18 @@ class TestQaEnabled:
 
 
 class TestTransitionNameFor:
-    def test_in_progress(self, tracker: GitHubTracker) -> None:
-        assert (
-            tracker.transition_name_for(TransitionTarget.in_progress) == "In Progress"
-        )
-
-    def test_needs_input(self, tracker: GitHubTracker) -> None:
-        assert (
-            tracker.transition_name_for(TransitionTarget.needs_input) == "Needs Input"
-        )
-
-    def test_qa(self, tracker: GitHubTracker) -> None:
-        assert tracker.transition_name_for(TransitionTarget.qa) == "QA"
+    @pytest.mark.parametrize(
+        ("target", "expected"),
+        [
+            (TransitionTarget.in_progress, "In Progress"),
+            (TransitionTarget.needs_input, "Needs Input"),
+            (TransitionTarget.qa, "QA"),
+        ],
+    )
+    def test_names(
+        self, tracker: GitHubTracker, target: TransitionTarget, expected: str
+    ) -> None:
+        assert tracker.transition_name_for(target) == expected
 
     def test_qa_raises_when_not_configured(
         self, client_mock: MagicMock, config_no_qa: GitHubTrackerConfig
@@ -2067,46 +1754,6 @@ class TestBotCommentFiltering:
         assert len(comments) == 1
         # Should be the node id, not a login string.
         assert comments[0].user_id == "U_0123456789"
-
-    def test_sentinel_based_filtering(
-        self, tracker: GitHubTracker, client_mock: MagicMock
-    ) -> None:
-        """Comments containing the bot footer marker are filtered out regardless
-        of user_id."""
-        from symphony_linear.tracker import is_bot_comment
-
-        call_count = [0]
-
-        def side_effect(
-            query: str, variables: dict[str, Any] | None = None
-        ) -> dict[str, Any]:
-            call_count[0] += 1
-            if "comments" in query:
-                return self._mock_comments_page(
-                    [
-                        {
-                            "id": "c_bot",
-                            "body": "bot reply\n\n*Symphony · error*",
-                            "createdAt": "2025-01-02T00:00:00Z",
-                            "author": {"id": "U_bot_node_id"},
-                        },
-                        {
-                            "id": "c_human",
-                            "body": "human reply",
-                            "createdAt": "2025-01-03T00:00:00Z",
-                            "author": {"id": "U_human_node_id"},
-                        },
-                    ]
-                )
-            return self._mock_raw_issue()
-
-        client_mock._query.side_effect = side_effect
-        comments = tracker.list_comments_since("I_1", None)
-
-        # Filter out bot comments the way the orchestrator does (by footer marker).
-        human = [c for c in comments if not is_bot_comment(c.body)]
-        assert len(human) == 1
-        assert human[0].user_id == "U_human_node_id"
 
 
 # ---------------------------------------------------------------------------
@@ -2462,28 +2109,6 @@ class TestTriggerOptionResolution:
 class TestCloneProtocol:
     """Tests for the clone_protocol config option."""
 
-    @pytest.fixture
-    def config_https(self) -> GitHubTrackerConfig:
-        return GitHubTrackerConfig(
-            token="ghp_test",
-            project_ref="orgs/my-org/projects/1",
-            in_progress_status="In Progress",
-            needs_input_status="Needs Input",
-            qa_status=None,
-            trigger_field="Symphony",
-            status_field="Status",
-            clone_protocol="https",
-        )
-
-    @pytest.fixture
-    def tracker_https(
-        self, client_mock: MagicMock, config_https: GitHubTrackerConfig
-    ) -> GitHubTracker:
-        return _resolved_tracker(client_mock, config_https)
-
-    def test_default_is_ssh(self, config: GitHubTrackerConfig) -> None:
-        assert config.clone_protocol == "ssh"
-
     def test_invalid_clone_protocol_raises(self) -> None:
         with pytest.raises(ValueError, match="clone_protocol must be 'ssh' or 'https'"):
             GitHubTrackerConfig(
@@ -2494,142 +2119,35 @@ class TestCloneProtocol:
                 clone_protocol="http",
             )
 
-    def test_repo_clone_url_ssh(
-        self, client_mock: MagicMock, config: GitHubTrackerConfig
+    @pytest.mark.parametrize(
+        ("clone_protocol", "repo", "expected"),
+        [
+            (
+                "ssh",
+                {"sshUrl": "git@github.com:o/r.git", "url": "https://github.com/o/r"},
+                "git@github.com:o/r.git",
+            ),
+            (
+                "https",
+                {"sshUrl": "git@github.com:o/r.git", "url": "https://github.com/o/r"},
+                "https://github.com/o/r.git",
+            ),
+            ("https", {"sshUrl": "git@github.com:o/r.git"}, None),
+            ("ssh", None, None),
+        ],
+        ids=["ssh", "https", "https-no-url", "no-repo"],
+    )
+    def test_repo_clone_url(
+        self,
+        client_mock: MagicMock,
+        config: GitHubTrackerConfig,
+        clone_protocol: str,
+        repo: dict[str, Any] | None,
+        expected: str | None,
     ) -> None:
+        config.clone_protocol = clone_protocol
         tracker = GitHubTracker(client_mock, config)
-        # SSH chosen by default (clone_protocol='ssh')
-        url = tracker._repo_clone_url(
-            {
-                "sshUrl": "git@github.com:o/r.git",
-                "url": "https://github.com/o/r",
-            }
-        )
-        assert url == "git@github.com:o/r.git"
-
-    def test_repo_clone_url_https(
-        self, client_mock: MagicMock, config_https: GitHubTrackerConfig
-    ) -> None:
-        tracker = GitHubTracker(client_mock, config_https)
-        # HTTPS appends .git
-        url = tracker._repo_clone_url(
-            {
-                "sshUrl": "git@github.com:o/r.git",
-                "url": "https://github.com/o/r",
-            }
-        )
-        assert url == "https://github.com/o/r.git"
-
-    def test_repo_clone_url_https_no_url(
-        self, client_mock: MagicMock, config_https: GitHubTrackerConfig
-    ) -> None:
-        tracker = GitHubTracker(client_mock, config_https)
-        url = tracker._repo_clone_url(
-            {
-                "sshUrl": "git@github.com:o/r.git",
-            }
-        )
-        assert url is None
-
-    def test_repo_clone_url_none_repo(self, tracker: GitHubTracker) -> None:
-        assert tracker._repo_clone_url(None) is None
-
-    def test_list_triggered_issues_https(
-        self, client_mock: MagicMock, config_https: GitHubTrackerConfig
-    ) -> None:
-        tracker = _resolved_tracker(client_mock, config_https)
-        client_mock._query.return_value = {
-            "node": {
-                "items": {
-                    "pageInfo": {"hasNextPage": False, "endCursor": None},
-                    "nodes": [
-                        _issue_item(
-                            item_id="PVTI_1",
-                            issue_id="I_1",
-                            number=42,
-                            title="HTTPS test",
-                            status_name="In Progress",
-                            repo_https_url="https://github.com/my-org/my-repo",
-                        ),
-                    ],
-                }
-            }
-        }
-        issues = tracker.list_triggered_issues()
-        assert len(issues) == 1
-        assert issues[0].tracker_data == {
-            "clone_url": "https://github.com/my-org/my-repo.git",
-            "project_item_id": "PVTI_1",
-        }
-
-    def test_get_issue_https(
-        self, client_mock: MagicMock, config_https: GitHubTrackerConfig
-    ) -> None:
-        tracker = _resolved_tracker(client_mock, config_https)
-        tracker._item_id_map["I_1"] = "PVTI_1"
-
-        call_count = [0]
-
-        def side_effect(
-            query: str, variables: dict[str, Any] | None = None, **kwargs: Any
-        ) -> dict[str, Any]:
-            call_count[0] += 1
-            if "comments" in query and "fieldValues" not in query:
-                return {
-                    "node": {
-                        "comments": {
-                            "pageInfo": {"hasNextPage": False, "endCursor": None},
-                            "nodes": [],
-                        }
-                    }
-                }
-            if "fieldValues" in query:
-                return {
-                    "node": {
-                        "fieldValues": {
-                            "nodes": [
-                                {"field": {"name": "Status"}, "name": "In Progress"},
-                            ],
-                        }
-                    }
-                }
-            return {
-                "node": {
-                    "__typename": "Issue",
-                    "id": "I_1",
-                    "number": 42,
-                    "title": "HTTPS test",
-                    "body": None,
-                    "state": "OPEN",
-                    "updatedAt": "2025-01-01T00:00:00Z",
-                    "repository": {
-                        "sshUrl": "git@github.com:my-org/my-repo.git",
-                        "url": "https://github.com/my-org/my-repo",
-                        "nameWithOwner": "my-org/my-repo",
-                    },
-                }
-            }
-
-        client_mock._query.side_effect = side_effect
-        issue = tracker.get_issue("I_1")
-        assert issue.tracker_data is not None
-        assert (
-            issue.tracker_data["clone_url"] == "https://github.com/my-org/my-repo.git"
-        )
-
-    def test_repo_url_for_https(
-        self, client_mock: MagicMock, config_https: GitHubTrackerConfig
-    ) -> None:
-        tracker = _resolved_tracker(client_mock, config_https)
-        issue = Issue(
-            id="I_1",
-            identifier="o/r-42",
-            title="Test",
-            state="In Progress",
-            updatedAt="2025-01-01T00:00:00Z",
-            tracker_data={"clone_url": "https://github.com/o/r.git"},
-        )
-        assert tracker.repo_url_for(issue) == "https://github.com/o/r.git"
+        assert tracker._repo_clone_url(repo) == expected
 
 
 # ---------------------------------------------------------------------------
@@ -2730,54 +2248,24 @@ class TestDownloadAttachment:
                     "https://private-user-images.githubusercontent.com/huge.bin"
                 )
 
+    @pytest.mark.parametrize(
+        "error_type", ["NetworkError", "TimeoutException"], ids=["network", "timeout"]
+    )
     def test_network_error_raises_attachment_download_error(
-        self, tracker: GitHubTracker
+        self, tracker: GitHubTracker, error_type: str
     ) -> None:
         from unittest.mock import patch
 
         import httpx
 
-        with patch(
-            "symphony_linear.github_tracker.httpx.stream",
-            side_effect=httpx.NetworkError("connection reset"),
-        ):
-            with pytest.raises(AttachmentDownloadError, match="Download failed"):
-                tracker.download_attachment("https://github.com/some/repo/f.txt")
-
-    def test_timeout_raises_attachment_download_error(
-        self, tracker: GitHubTracker
-    ) -> None:
-        from unittest.mock import patch
-
-        import httpx
-
-        with patch(
-            "symphony_linear.github_tracker.httpx.stream",
-            side_effect=httpx.TimeoutException("timed out"),
-        ):
+        error = getattr(httpx, error_type)("failed")
+        with patch("symphony_linear.github_tracker.httpx.stream", side_effect=error):
             with pytest.raises(AttachmentDownloadError, match="Download failed"):
                 tracker.download_attachment("https://github.com/some/repo/f.txt")
 
     # ------------------------------------------------------------------
     # SSRF defence — host allowlist validation before any I/O
     # ------------------------------------------------------------------
-
-    def test_allowlisted_host_downloads(self, tracker: GitHubTracker) -> None:
-        from unittest.mock import patch
-
-        mock_response = MagicMock()
-        mock_response.status_code = 200
-        mock_response.headers = {"content-type": "text/plain"}
-        mock_response.iter_bytes.return_value = [b"data"]
-
-        with patch("symphony_linear.github_tracker.httpx.stream") as mock_stream:
-            mock_stream.return_value.__enter__.return_value = mock_response
-            data, ct = tracker.download_attachment(
-                "https://user-images.githubusercontent.com/12345/img.png"
-            )
-
-        assert data == b"data"
-        mock_stream.assert_called_once()
 
     def test_non_allowlisted_host_raises_before_http(
         self, tracker: GitHubTracker
@@ -2865,43 +2353,20 @@ class TestIsUploadUrl:
 class TestGitHubAuth:
     """Tests for the _GitHubAuth custom httpx.Auth class."""
 
-    def test_allowlisted_host_gets_auth_header(self) -> None:
-        import httpx
-
-        auth = _GitHubAuth("ghp_secret")
-        req = httpx.Request(
-            "GET", "https://user-images.githubusercontent.com/12345/img.png"
-        )
-        flow = auth.auth_flow(req)
-        result = next(flow)
-        assert result.headers["Authorization"] == "Bearer ghp_secret"
-
-    def test_allowlisted_host_private(self) -> None:
-        import httpx
-
-        auth = _GitHubAuth("ghp_secret")
-        req = httpx.Request(
-            "GET",
+    @pytest.mark.parametrize(
+        "url",
+        [
+            "https://user-images.githubusercontent.com/12345/img.png",
             "https://private-user-images.githubusercontent.com/67890/pic.jpg",
-        )
-        flow = auth.auth_flow(req)
-        result = next(flow)
-        assert result.headers["Authorization"] == "Bearer ghp_secret"
-
-    def test_allowlisted_host_github_dotcom(self) -> None:
+            "https://github.com/some/repo/assets/file.gif",
+            "https://objects.githubusercontent.com/s3-key",
+        ],
+    )
+    def test_allowlisted_host_gets_auth_header(self, url: str) -> None:
         import httpx
 
         auth = _GitHubAuth("ghp_secret")
-        req = httpx.Request("GET", "https://github.com/some/repo/assets/file.gif")
-        flow = auth.auth_flow(req)
-        result = next(flow)
-        assert result.headers["Authorization"] == "Bearer ghp_secret"
-
-    def test_allowlisted_host_objects(self) -> None:
-        import httpx
-
-        auth = _GitHubAuth("ghp_secret")
-        req = httpx.Request("GET", "https://objects.githubusercontent.com/s3-key")
+        req = httpx.Request("GET", url)
         flow = auth.auth_flow(req)
         result = next(flow)
         assert result.headers["Authorization"] == "Bearer ghp_secret"

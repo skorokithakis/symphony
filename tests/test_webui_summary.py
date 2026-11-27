@@ -172,33 +172,38 @@ class TestReplyCallback:
     def test_without_a_key_there_is_no_callback(self) -> None:
         assert summary.agent_reply_hook(_config(None).webui) is None
 
-    def test_agent_reply_kinds_invoke_the_hook(self, tmp_path: Path) -> None:
+    @pytest.mark.parametrize(
+        ("kind", "invoked"),
+        [
+            ("final", True),
+            ("final · model: provider/model", True),
+            ("context: 1,234 tokens", True),
+            ("error", False),
+            ("workspace", False),
+            ("qa", False),
+            ("cleanup", False),
+            ("ignored", False),
+        ],
+    )
+    def test_only_agent_reply_kinds_invoke_the_hook(
+        self, tmp_path: Path, kind: str, invoked: bool
+    ) -> None:
         hook = Mock()
         tracker = LocalTracker(tmp_path, on_agent_reply=hook)
         ticket = tracker.store.create_draft(description="x")
 
-        comment = tracker.post_comment(ticket.id, "I fixed it.", "final")
+        comment = tracker.post_comment(ticket.id, "I fixed it.", kind)
 
-        store, ticket_id, comment_id, reply = hook.call_args.args
-        assert store is tracker.store
-        assert ticket_id == ticket.id
-        assert comment_id == comment.id
-        assert reply == "I fixed it."
-
-        for kind in ("final · model: provider/model", "context: 1,234 tokens"):
-            hook.reset_mock()
-            tracker.post_comment(ticket.id, "reply", kind)
-            hook.assert_called_once()
-
-    def test_non_agent_kinds_do_not_invoke_the_hook(self, tmp_path: Path) -> None:
-        hook = Mock()
-        tracker = LocalTracker(tmp_path, on_agent_reply=hook)
-        ticket = tracker.store.create_draft(description="x")
-
-        for kind in ("error", "workspace", "qa", "cleanup", "ignored"):
-            tracker.post_comment(ticket.id, "notice", kind)
-
-        hook.assert_not_called()
+        if not invoked:
+            hook.assert_not_called()
+            return
+        # The hook gets everything it needs to write the summary later.
+        assert hook.call_args.args == (
+            tracker.store,
+            ticket.id,
+            comment.id,
+            "I fixed it.",
+        )
 
     def test_the_configured_callback_stores_the_summary(
         self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch

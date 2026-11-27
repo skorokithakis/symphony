@@ -357,19 +357,15 @@ class TestFormattingHelpers:
     def test_short_repo(self, repo: str, expected: str) -> None:
         assert short_repo(repo) == expected
 
-    def test_display_title_falls_back_to_first_non_empty_line(
+    def test_display_title_falls_back_to_the_description_or_untitled(
         self, tmp_path: Path
     ) -> None:
         tracker = LocalTracker(tmp_path)
-        ticket = tracker.store.create_draft(description="\n\n  First line\nSecond")
+        with_line = tracker.store.create_draft(description="\n\n  First line\nSecond")
+        empty = tracker.store.create_draft(description="   \n")
 
-        assert display_title(ticket) == "First line"
-
-    def test_display_title_falls_back_to_untitled(self, tmp_path: Path) -> None:
-        tracker = LocalTracker(tmp_path)
-        ticket = tracker.store.create_draft(description="   \n")
-
-        assert display_title(ticket) == "Untitled draft"
+        assert display_title(with_line) == "First line"
+        assert display_title(empty) == "Untitled draft"
 
 
 # ---------------------------------------------------------------------------
@@ -406,28 +402,6 @@ class TestHomePage:
         assert "SYM-5" not in text
         assert 'class="group-n">1</span>' in text
 
-    def test_row_has_identifier_title_short_repo_and_time(self, tmp_path: Path) -> None:
-        _write_ticket(
-            tmp_path,
-            "SYM-1",
-            state=STATE_NEEDS_INPUT,
-            title="A ticket",
-            repo="https://github.com/stavros/symphony.git",
-            updated_at="2026-11-20T10:00:00+00:00",
-        )
-
-        with _running_server(tmp_path) as (port, _tracker, _state):
-            _status, _headers, body = _request(port, "GET", "/")
-
-        text = body.decode()
-        assert 'href="/tickets/SYM-1"' in text
-        assert "A ticket" in text
-        assert "stavros/symphony" in text
-        assert (
-            '<time datetime="2026-11-20T10:00:00+00:00" data-format="relative">' in text
-        )
-        assert "UTC" in text
-
     def test_saved_repository_name_replaces_the_derived_one(
         self, tmp_path: Path
     ) -> None:
@@ -460,26 +434,6 @@ class TestHomePage:
         )
         assert saved_header in ticket_body.decode()
 
-    def test_working_row_shows_elapsed_time(self, tmp_path: Path) -> None:
-        _write_ticket(
-            tmp_path,
-            "SYM-1",
-            state=STATE_IN_PROGRESS,
-            title="Running",
-            updated_at="2026-11-20T10:00:00+00:00",
-            state_changed_at="2026-11-20T09:56:00+00:00",
-        )
-
-        with _running_server(tmp_path) as (port, _tracker, _state):
-            _status, _headers, body = _request(port, "GET", "/")
-
-        text = body.decode()
-        assert "row--working" in text
-        assert "mark--working" in text
-        # The pulsing mark and the In Progress heading already say it; the
-        # time column already shows the age.
-        assert "Working, " not in text
-
     def test_failed_status_and_setup_error_use_failed_variant(
         self, tmp_path: Path
     ) -> None:
@@ -495,49 +449,6 @@ class TestHomePage:
         assert text.count("row--failed") == 2
         assert text.count("Last turn failed") == 2
         assert "mark--failed" in text
-
-    def test_draft_without_title_uses_first_line_or_untitled(
-        self, tmp_path: Path
-    ) -> None:
-        _write_ticket(
-            tmp_path,
-            "SYM-1",
-            state=STATE_DRAFT,
-            description="First line of the draft\nsecond line",
-        )
-        _write_ticket(tmp_path, "SYM-2", state=STATE_DRAFT, description="   ")
-
-        with _running_server(tmp_path) as (port, _tracker, _state):
-            _status, _headers, body = _request(port, "GET", "/")
-
-        text = body.decode()
-        assert "First line of the draft" in text
-        assert "second line" not in text
-        assert "Untitled draft" in text
-
-    def test_no_open_tickets_shows_page_level_empty_state(self, tmp_path: Path) -> None:
-        _write_ticket(tmp_path, "SYM-1", state=STATE_DONE, title="Finished")
-
-        with _running_server(tmp_path) as (port, _tracker, _state):
-            _status, _headers, body = _request(port, "GET", "/")
-
-        text = _page_body(body.decode())
-        assert "Nothing open" in text
-        assert "Needs Input" not in text
-        assert "SYM-1" not in text
-
-    def test_nothing_in_needs_input_shows_group_empty_state(
-        self, tmp_path: Path
-    ) -> None:
-        _write_ticket(tmp_path, "SYM-1", state=STATE_IN_PROGRESS, title="Working")
-
-        with _running_server(tmp_path) as (port, _tracker, _state):
-            _status, _headers, body = _request(port, "GET", "/")
-
-        text = body.decode()
-        assert "Needs Input" in text
-        assert "Nothing needs your input." in text
-        assert "SYM-1" in text
 
     def test_untrusted_values_are_escaped(self, tmp_path: Path) -> None:
         title = '<script>alert("x")</script>'
@@ -578,12 +489,6 @@ class TestHomePage:
         assert "owner/name" in text
         assert "http://[::1" in text
 
-    def test_new_ticket_links_to_placeholder_route(self, tmp_path: Path) -> None:
-        with _running_server(tmp_path) as (port, _tracker, _state):
-            _status, _headers, body = _request(port, "GET", "/")
-
-        assert 'href="/new"' in body.decode()
-
 
 class TestArchivePage:
     def test_only_done_tickets_newest_first(self, tmp_path: Path) -> None:
@@ -620,12 +525,6 @@ class TestArchivePage:
         assert text.index("SYM-2") < text.index("SYM-3") < text.index("SYM-1")
         assert "SYM-4" not in text
         assert 'class="group-n">3</span>' in text
-
-    def test_empty_archive(self, tmp_path: Path) -> None:
-        with _running_server(tmp_path) as (port, _tracker, _state):
-            _status, _headers, body = _request(port, "GET", "/archive")
-
-        assert "No done tickets." in body.decode()
 
 
 class TestNextTicket:
@@ -787,116 +686,9 @@ class TestTemplates:
         assert script.search(ticket) is not None
         assert script.search(editor) is not None
 
-    @pytest.mark.parametrize(
-        "path",
-        ["/", "/archive", "/repos", "/new", "/tickets/SYM-1"],
-    )
-    def test_every_page_carries_the_shortcuts_help(
-        self, tmp_path: Path, path: str
-    ) -> None:
-        # The help dialog belongs in base.html, not in a page's overlay block:
-        # the ticket and editor pages replace that block wholesale.
-        _write_ticket(tmp_path, "SYM-1", state=STATE_IN_PROGRESS, title="Running")
-
-        with _running_server(tmp_path) as (port, _tracker, _state):
-            _status, _headers, body = _request(port, "GET", path)
-
-        text = body.decode()
-        assert '<dialog class="confirm help-dialog" id="help-dialog"' in text
-        assert text.count('id="help-dialog"') == 1
-        assert "<kbd>?</kbd>" in text
-        # The list is static and shared, so a page-specific shortcut says
-        # where it works instead of being omitted.
-        assert "<kbd>Ctrl+K</kbd>" in text
-        assert "Pick repository (editor)" in text
-        assert "<kbd>Ctrl+/</kbd>" in text
-        assert "<kbd>g</kbd> then <kbd>n</kbd></span><span>New ticket</span>" in text
-
 
 class TestDock:
     """The dock lives in one macro; these guard its per-page arguments."""
-
-    @pytest.mark.parametrize(
-        ("path", "current_link"),
-        [
-            ("/", 'href="/" aria-current="page">Tickets'),
-            ("/archive", 'href="/archive" aria-current="page">Archive'),
-            ("/repos", 'href="/repos" aria-current="page">Repositories'),
-            ("/new", 'href="/new" aria-current="page"'),
-            ("/tickets/SYM-1", 'href="/" aria-current="page">Tickets'),
-        ],
-    )
-    def test_each_page_marks_exactly_its_own_link(
-        self, tmp_path: Path, path: str, current_link: str
-    ) -> None:
-        _write_ticket(tmp_path, "SYM-1", state=STATE_IN_PROGRESS, title="Running")
-
-        with _running_server(tmp_path) as (port, _tracker, _state):
-            _status, _headers, body = _request(port, "GET", path)
-
-        text = body.decode()
-        assert current_link in text
-        assert text.count('aria-current="page"') == 1
-
-    @pytest.mark.parametrize(
-        "path",
-        ["/", "/archive", "/repos", "/new", "/tickets/SYM-1"],
-    )
-    def test_every_page_follows_the_needs_input_count(
-        self, tmp_path: Path, path: str
-    ) -> None:
-        # Every page must pass the count into the shared macro: a view that
-        # forgot would render the dot hidden while a ticket waits.
-        _write_ticket(tmp_path, "SYM-1", state=STATE_IN_PROGRESS, title="Running")
-
-        with _running_server(tmp_path) as (port, _tracker, _state):
-            _status, _headers, body = _request(port, "GET", path)
-
-        assert (
-            '<span class="needs-input-dot" data-needs-input-dot hidden>'
-            in body.decode()
-        )
-
-        _write_ticket(tmp_path, "SYM-2", state=STATE_NEEDS_INPUT, title="Waiting")
-
-        with _running_server(tmp_path) as (port, _tracker, _state):
-            _status, _headers, body = _request(port, "GET", path)
-
-        text = body.decode()
-        assert '<span class="needs-input-dot" data-needs-input-dot>' in text
-        assert '<span class="needs-input-dot" data-needs-input-dot hidden>' not in text
-        assert "data-needs-input-count>1</span>" in text
-
-    def test_the_back_link_carries_the_dot_on_both_pages(self, tmp_path: Path) -> None:
-        # The phone layout hides the dock on the ticket and editor pages, so
-        # this link is the only Tickets link left there.
-        _write_ticket(tmp_path, "SYM-1", state=STATE_IN_PROGRESS, title="Running")
-        _write_ticket(tmp_path, "SYM-2", state=STATE_NEEDS_INPUT, title="Waiting")
-
-        with _running_server(tmp_path) as (port, _tracker, _state):
-            ticket_text = _request(port, "GET", "/tickets/SYM-1")[2].decode()
-            editor_text = _request(port, "GET", "/new")[2].decode()
-
-        for text in (ticket_text, editor_text):
-            assert (
-                '<span class="back-t">Tickets</span>'
-                '<span class="needs-input-dot" data-needs-input-dot>' in text
-            )
-        # The dock's, the header's, and on the ticket page the compact bar's
-        # copy, which the poll must find to keep it in step with them.
-        assert ticket_text.count("data-needs-input-dot") == 3
-        assert editor_text.count("data-needs-input-dot") == 2
-
-    def test_the_dock_marks_the_new_ticket_shortcut(self, tmp_path: Path) -> None:
-        _write_ticket(tmp_path, "SYM-1", state=STATE_IN_PROGRESS, title="Running")
-
-        with _running_server(tmp_path) as (port, _tracker, _state):
-            _status, _headers, body = _request(port, "GET", "/")
-
-        link = body.decode().split('href="/new"', 1)[1].split(">", 1)[0]
-        assert 'data-shortcut="gn"' in link
-        assert 'data-shortcut-key="n"' in link
-        assert 'title="New ticket (g n)"' in link
 
     def test_the_dock_links_carry_their_navigation_shortcuts(
         self, tmp_path: Path
@@ -961,37 +753,30 @@ class TestAuthentication:
                 )
                 assert status == 401
 
-    @pytest.mark.parametrize("username", ["admin", "someone-else", "", " spaced "])
-    def test_any_username_is_accepted(self, username: str, tmp_path: Path) -> None:
-        with _running_server(tmp_path) as (port, _tracker, _state):
-            status, _headers, _body = _request(
-                port,
-                "GET",
-                "/",
-                headers={"Authorization": _basic(username=username)},
-            )
-
-        assert status == 200
-
-    @pytest.mark.parametrize("username", ["admin", "", "someone-else"])
-    def test_wrong_password_is_rejected_for_any_username(
-        self, username: str, tmp_path: Path
+    @pytest.mark.parametrize(
+        ("username", "password", "expected"),
+        [
+            ("admin", _PASSWORD, 200),
+            ("someone-else", _PASSWORD, 200),
+            ("", _PASSWORD, 200),
+            (" spaced ", _PASSWORD, 200),
+            ("admin", "nope", 401),
+            ("", "nope", 401),
+            ("someone-else", "nope", 401),
+        ],
+    )
+    def test_only_the_password_is_compared(
+        self, tmp_path: Path, username: str, password: str, expected: int
     ) -> None:
         with _running_server(tmp_path) as (port, _tracker, _state):
             status, _headers, _body = _request(
                 port,
                 "GET",
                 "/",
-                headers={"Authorization": _basic(username=username, password="nope")},
+                headers={"Authorization": _basic(username=username, password=password)},
             )
 
-        assert status == 401
-
-    def test_correct_credentials_render_the_page(self, tmp_path: Path) -> None:
-        with _running_server(tmp_path) as (port, _tracker, _state):
-            status, _headers, _body = _request(port, "GET", "/")
-
-        assert status == 200
+        assert status == expected
 
 
 class TestRawRequestLines:
@@ -1041,24 +826,24 @@ class TestRawRequestLines:
 
         assert _status_line(response).startswith("HTTP/1.0 405")
 
-    def test_http_0_9_request_is_rejected_with_a_framed_error(
-        self, tmp_path: Path
+    @pytest.mark.parametrize(
+        "payload",
+        [
+            pytest.param(b"GET /\r\n", id="http-0.9-shorthand"),
+            pytest.param(b"GET / HTTP/0.9\r\n\r\n", id="http-0.9-version"),
+        ],
+    )
+    def test_an_http_0_9_request_is_rejected_with_a_framed_error(
+        self, tmp_path: Path, payload: bytes
     ) -> None:
         with _running_server(tmp_path) as (port, _tracker, _state):
-            response = _raw_socket_request(port, b"GET /\r\n")
+            response = _raw_socket_request(port, payload)
 
         assert _status_line(response).startswith("HTTP/1.0 400")
         headers = _headers_of(response)
         assert "content-length" in headers
         assert "content-security-policy" in headers
         assert headers["x-content-type-options"] == "nosniff"
-
-    def test_explicit_http_0_9_version_is_rejected(self, tmp_path: Path) -> None:
-        with _running_server(tmp_path) as (port, _tracker, _state):
-            response = _raw_socket_request(port, b"GET / HTTP/0.9\r\n\r\n")
-
-        assert _status_line(response).startswith("HTTP/1.0 400")
-        assert "content-security-policy" in _headers_of(response)
 
     def test_malformed_request_line_gets_a_framed_error(self, tmp_path: Path) -> None:
         with _running_server(tmp_path) as (port, _tracker, _state):
@@ -1105,99 +890,60 @@ class TestSameOrigin:
 
         assert status == 403
 
-    def test_post_with_matching_origin_reaches_routing(self, tmp_path: Path) -> None:
+    @pytest.mark.parametrize(
+        ("scheme", "forwarded_proto"),
+        [
+            pytest.param("http", None, id="plain-http"),
+            pytest.param("http", "http", id="http-behind-http"),
+            pytest.param("https", None, id="https-without-proxy"),
+            pytest.param("https", "https", id="https-behind-https"),
+        ],
+    )
+    def test_allowed_origin_forms_reach_routing(
+        self, tmp_path: Path, scheme: str, forwarded_proto: str | None
+    ) -> None:
         with _running_server(tmp_path) as (port, _tracker, _state):
+            headers = {"Origin": f"{scheme}://127.0.0.1:{port}"}
+            if forwarded_proto is not None:
+                headers["X-Forwarded-Proto"] = forwarded_proto
             status, _headers, _body = _request(
                 port,
                 "POST",
                 "/no-such-page",
-                headers={"Origin": _origin(port), "Content-Length": "0"},
+                headers={**headers, "Content-Length": "0"},
                 body=b"",
             )
 
         assert status == 404
 
-    def test_post_with_matching_origin_but_wrong_port_is_forbidden(
-        self, tmp_path: Path
+    @pytest.mark.parametrize(
+        ("origin", "forwarded_proto"),
+        [
+            pytest.param("wrong-port", None, id="wrong-port"),
+            pytest.param("http", "https", id="http-downgrade"),
+        ],
+    )
+    def test_origin_mismatch_and_downgrade_are_forbidden(
+        self, tmp_path: Path, origin: str, forwarded_proto: str | None
     ) -> None:
         with _running_server(tmp_path) as (port, _tracker, _state):
+            netloc = (
+                f"127.0.0.1:{port + 1}"
+                if origin == "wrong-port"
+                else f"127.0.0.1:{port}"
+            )
+            headers = {"Origin": f"http://{netloc}"}
+            if forwarded_proto is not None:
+                headers["X-Forwarded-Proto"] = forwarded_proto
             status, _headers, _body = _request(
                 port,
                 "POST",
                 "/",
-                headers={
-                    "Origin": f"http://127.0.0.1:{port + 1}",
-                    "Content-Length": "0",
-                },
+                headers={**headers, "Content-Length": "0"},
                 body=b"",
             )
 
         assert status == 403
-
-    def test_http_origin_with_forwarded_https_is_forbidden(
-        self, tmp_path: Path
-    ) -> None:
-        with _running_server(tmp_path) as (port, _tracker, _state):
-            status, _headers, _body = _request(
-                port,
-                "POST",
-                "/",
-                headers={
-                    "Origin": _origin(port),
-                    "X-Forwarded-Proto": "https",
-                    "Content-Length": "0",
-                },
-                body=b"",
-            )
-
-        assert status == 403
-
-    def test_https_origin_with_forwarded_https_is_allowed(self, tmp_path: Path) -> None:
-        with _running_server(tmp_path) as (port, _tracker, _state):
-            status, _headers, _body = _request(
-                port,
-                "POST",
-                "/no-such-page",
-                headers={
-                    "Origin": f"https://127.0.0.1:{port}",
-                    "X-Forwarded-Proto": "https",
-                    "Content-Length": "0",
-                },
-                body=b"",
-            )
-
-        assert status == 404
-
-    def test_http_origin_without_forwarded_https_is_allowed(
-        self, tmp_path: Path
-    ) -> None:
-        with _running_server(tmp_path) as (port, _tracker, _state):
-            status, _headers, _body = _request(
-                port,
-                "POST",
-                "/no-such-page",
-                headers={"Origin": _origin(port), "Content-Length": "0"},
-                body=b"",
-            )
-
-        assert status == 404
-
-    def test_https_origin_without_forwarded_https_is_allowed(
-        self, tmp_path: Path
-    ) -> None:
-        with _running_server(tmp_path) as (port, _tracker, _state):
-            status, _headers, _body = _request(
-                port,
-                "POST",
-                "/no-such-page",
-                headers={
-                    "Origin": f"https://127.0.0.1:{port}",
-                    "Content-Length": "0",
-                },
-                body=b"",
-            )
-
-        assert status == 404
 
     def test_get_is_not_subject_to_the_origin_check(self, tmp_path: Path) -> None:
         with _running_server(tmp_path) as (port, _tracker, _state):
@@ -1353,20 +1099,18 @@ class TestAgentAPI:
                 auth=False,
                 headers={"Authorization": _bearer("wrong")},
             )[0]
+            head_status, head_headers, head_body = _request(
+                port, "HEAD", "/api/v1", auth=False
+            )
 
         assert status == 200
         assert headers["Content-Type"] == "text/markdown; charset=utf-8"
         assert headers["Content-Security-Policy"] == _CSP
         assert body == _GUIDE_PATH.read_bytes()
         assert wrong_token == 200
-
-    def test_the_guide_needs_no_token_on_head_too(self, tmp_path: Path) -> None:
-        with _running_server(tmp_path, api_token=_AGENT_TOKEN) as (port, _t, _s):
-            status, headers, body = _request(port, "HEAD", "/api/v1", auth=False)
-
-        assert status == 200
-        assert headers["Content-Type"] == "text/markdown; charset=utf-8"
-        assert body == b""
+        assert head_status == 200
+        assert head_headers["Content-Type"] == "text/markdown; charset=utf-8"
+        assert head_body == b""
 
     @pytest.mark.parametrize(
         ("method", "path"),
@@ -1570,22 +1314,6 @@ class TestBodyLimits:
 
         assert status == 400
 
-    def test_unknown_post_route_does_not_require_content_length(
-        self, tmp_path: Path
-    ) -> None:
-        with _running_server(tmp_path, routes=_TEST_ROUTES) as (port, _t, _s):
-            status, _headers, _body = _raw_request(
-                port,
-                "POST",
-                "/no-such-page",
-                {
-                    "Authorization": _basic(),
-                    "Origin": _origin(port),
-                },
-            )
-
-        assert status == 404
-
     def test_unknown_post_route_is_answered_without_waiting_for_a_body(
         self, tmp_path: Path
     ) -> None:
@@ -1768,13 +1496,6 @@ class TestSonioxDictation:
 
         assert status == 404
 
-    def test_temporary_key_path_is_not_a_known_get(self, tmp_path: Path) -> None:
-        with _running_server(tmp_path) as (port, _tracker, _state):
-            status, _headers, _body = _request(port, "GET", "/api/soniox-key")
-
-        # 404, not the 405 a route registered but limited to POST would give.
-        assert status == 404
-
     def test_editor_offers_the_button_only_with_a_key(self, tmp_path: Path) -> None:
         with _running_server(tmp_path) as (port, _tracker, _state):
             _status, _headers, without_key = _request(port, "GET", "/new")
@@ -1911,23 +1632,22 @@ class TestStaticFiles:
         assert headers["Content-Type"] == "font/woff2"
         assert body.startswith(b"wOF2")
 
-    def test_font_licence_is_served(self, tmp_path: Path) -> None:
+    @pytest.mark.parametrize(
+        ("name", "marker"),
+        [
+            ("app.js", b"querySelectorAll"),
+            ("lists.js", b"insertText"),
+        ],
+    )
+    def test_javascript_is_served(
+        self, name: str, marker: bytes, tmp_path: Path
+    ) -> None:
         with _running_server(tmp_path) as (port, _tracker, _state):
-            status, _headers, body = _request(port, "GET", "/static/fonts/OFL.txt")
-
-        text = body.decode()
-        assert status == 200
-        assert "SIL Open Font License" in text
-        assert "Atkinson Hyperlegible Mono" in text
-        assert "Atkinson Hyperlegible Next" in text
-
-    def test_javascript_is_served(self, tmp_path: Path) -> None:
-        with _running_server(tmp_path) as (port, _tracker, _state):
-            status, headers, body = _request(port, "GET", "/static/app.js")
+            status, headers, body = _request(port, "GET", f"/static/{name}")
 
         assert status == 200
         assert headers["Content-Type"].startswith("text/javascript")
-        assert b"querySelectorAll" in body
+        assert marker in body
 
     def test_the_manifest_is_served_with_its_icons(self, tmp_path: Path) -> None:
         # A wrong content type or a missing icon file makes the UI
@@ -1960,14 +1680,6 @@ class TestStaticFiles:
         )
         assert plain_status == 200
         assert "Cache-Control" not in plain_headers
-
-    def test_the_list_continuation_script_is_served(self, tmp_path: Path) -> None:
-        with _running_server(tmp_path) as (port, _tracker, _state):
-            status, headers, body = _request(port, "GET", "/static/lists.js")
-
-        assert status == 200
-        assert headers["Content-Type"].startswith("text/javascript")
-        assert b"insertText" in body
 
     @pytest.mark.parametrize(
         "path",

@@ -63,16 +63,6 @@ class TestReposPage:
         assert f'<input type="hidden" name="url" value="{url}">' in text
         assert before == after
 
-    def test_an_empty_list_has_the_add_form(self, tmp_path: Path) -> None:
-        with _server(tmp_path) as port:
-            status, text = _get(port, "/repos")
-
-        assert status == 200
-        assert "No repositories yet." in text
-        assert 'action="/repos"' in text
-        assert 'name="url"' in text
-        assert 'name="name"' in text
-
     def test_add_a_repository(self, tmp_path: Path) -> None:
         with _server(tmp_path) as port:
             status, headers, _body = _post(

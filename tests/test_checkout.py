@@ -6,6 +6,7 @@ import logging
 import subprocess
 import sys
 from pathlib import Path
+from typing import Any
 from unittest import mock
 
 import pytest
@@ -25,15 +26,12 @@ def _completed(
 
 
 class TestCheckoutWatcher:
-    def test_reads_head_at_construction(
-        self, tmp_path: Path, caplog: pytest.LogCaptureFixture
-    ) -> None:
+    def test_reads_head_at_construction(self, tmp_path: Path) -> None:
         with mock.patch(
             "symphony_linear.checkout.subprocess.run",
             return_value=_completed(0, "abc123\n"),
         ) as mock_run:
-            with caplog.at_level(logging.INFO, logger="symphony_linear.checkout"):
-                watcher = CheckoutWatcher(package_dir=tmp_path)
+            watcher = CheckoutWatcher(package_dir=tmp_path)
 
         assert watcher.disabled is False
         assert watcher.head == "abc123"
@@ -54,64 +52,42 @@ class TestCheckoutWatcher:
             "--error-unmatch",
             "__init__.py",
         ]
-        assert "Auto-restart on checkout change is on (HEAD abc123)" in caplog.text
 
-    def test_not_a_checkout_is_disabled(
-        self, tmp_path: Path, caplog: pytest.LogCaptureFixture
+    @pytest.mark.parametrize(
+        "run_kwargs",
+        [
+            # git is not installed at all.
+            {"side_effect": FileNotFoundError("git not found")},
+            # Not a git repository.
+            {"return_value": _completed(128, stderr="fatal: not a git repository")},
+            # git reports an empty HEAD.
+            {"return_value": _completed(0, "   \n")},
+            # A wheel installed into a repo's own .venv: rev-parse succeeds
+            # because the package sits under the checkout, but its
+            # __init__.py is not in the index, so it is not the checkout's
+            # code.
+            {
+                "side_effect": [
+                    _completed(0, "abc123\n"),
+                    _completed(1, stderr="error: pathspec '__init__.py' did not match"),
+                ]
+            },
+        ],
+        ids=["git-missing", "not-a-checkout", "blank-head", "untracked-package"],
+    )
+    def test_disabled_when_not_a_tracked_checkout(
+        self,
+        tmp_path: Path,
+        caplog: pytest.LogCaptureFixture,
+        run_kwargs: dict[str, Any],
     ) -> None:
-        with mock.patch(
-            "symphony_linear.checkout.subprocess.run",
-            return_value=_completed(128, stderr="fatal: not a git repository"),
-        ):
+        with mock.patch("symphony_linear.checkout.subprocess.run", **run_kwargs):
             with caplog.at_level(logging.INFO, logger="symphony_linear.checkout"):
                 watcher = CheckoutWatcher(package_dir=tmp_path)
 
         assert watcher.disabled is True
         assert watcher.head is None
         assert "auto-restart on checkout change is off" in caplog.text
-
-    def test_untracked_package_in_checkout_is_disabled(
-        self, tmp_path: Path, caplog: pytest.LogCaptureFixture
-    ) -> None:
-        """A wheel installed into a repo's own .venv resolves HEAD but is off.
-
-        ``rev-parse`` succeeds because the package sits under the checkout, but
-        its ``__init__.py`` is not in the index, so it is not the checkout's
-        code.
-        """
-        with mock.patch(
-            "symphony_linear.checkout.subprocess.run",
-            side_effect=[
-                _completed(0, "abc123\n"),
-                _completed(1, stderr="error: pathspec '__init__.py' did not match"),
-            ],
-        ):
-            with caplog.at_level(logging.INFO, logger="symphony_linear.checkout"):
-                watcher = CheckoutWatcher(package_dir=tmp_path)
-
-        assert watcher.disabled is True
-        assert watcher.head is None
-        assert "auto-restart on checkout change is off" in caplog.text
-
-    def test_git_missing_is_disabled(self, tmp_path: Path) -> None:
-        with mock.patch(
-            "symphony_linear.checkout.subprocess.run",
-            side_effect=FileNotFoundError("git not found"),
-        ):
-            watcher = CheckoutWatcher(package_dir=tmp_path)
-
-        assert watcher.disabled is True
-        assert watcher.head is None
-
-    def test_blank_head_is_disabled(self, tmp_path: Path) -> None:
-        with mock.patch(
-            "symphony_linear.checkout.subprocess.run",
-            return_value=_completed(0, "   \n"),
-        ):
-            watcher = CheckoutWatcher(package_dir=tmp_path)
-
-        assert watcher.disabled is True
-        assert watcher.head is None
 
 
 # ---------------------------------------------------------------------------
@@ -138,39 +114,38 @@ class TestValidateCheckout:
         ]
         assert mock_run.call_args.kwargs["timeout"] == 60
 
-    def test_failure_logs_output_tail(
-        self, tmp_path: Path, caplog: pytest.LogCaptureFixture
+    @pytest.mark.parametrize(
+        ("run_kwargs", "log_parts"),
+        [
+            (
+                {"return_value": _completed(1, stdout="boom", stderr="details")},
+                ("Checkout validation failed (rc=1)", "boom", "details"),
+            ),
+            (
+                {
+                    "side_effect": subprocess.TimeoutExpired(
+                        cmd="x", timeout=60, output="partial"
+                    )
+                },
+                ("timed out", "partial"),
+            ),
+            (
+                {"side_effect": OSError("cannot exec")},
+                ("could not run",),
+            ),
+        ],
+        ids=["non-zero-exit", "timeout", "oserror"],
+    )
+    def test_failure_is_reported(
+        self,
+        tmp_path: Path,
+        caplog: pytest.LogCaptureFixture,
+        run_kwargs: dict[str, Any],
+        log_parts: tuple[str, ...],
     ) -> None:
-        with mock.patch(
-            "symphony_linear.checkout.subprocess.run",
-            return_value=_completed(1, stdout="boom", stderr="details"),
-        ):
+        with mock.patch("symphony_linear.checkout.subprocess.run", **run_kwargs):
             with caplog.at_level(logging.ERROR, logger="symphony_linear.checkout"):
                 assert validate_checkout(tmp_path) is False
 
-        assert "Checkout validation failed (rc=1)" in caplog.text
-        assert "boom" in caplog.text
-        assert "details" in caplog.text
-
-    def test_timeout_is_failure(
-        self, tmp_path: Path, caplog: pytest.LogCaptureFixture
-    ) -> None:
-        exc = subprocess.TimeoutExpired(cmd="x", timeout=60, output="partial")
-        with mock.patch("symphony_linear.checkout.subprocess.run", side_effect=exc):
-            with caplog.at_level(logging.ERROR, logger="symphony_linear.checkout"):
-                assert validate_checkout(tmp_path) is False
-
-        assert "timed out" in caplog.text
-        assert "partial" in caplog.text
-
-    def test_oserror_is_failure(
-        self, tmp_path: Path, caplog: pytest.LogCaptureFixture
-    ) -> None:
-        with mock.patch(
-            "symphony_linear.checkout.subprocess.run",
-            side_effect=OSError("cannot exec"),
-        ):
-            with caplog.at_level(logging.ERROR, logger="symphony_linear.checkout"):
-                assert validate_checkout(tmp_path) is False
-
-        assert "could not run" in caplog.text
+        for part in log_parts:
+            assert part in caplog.text

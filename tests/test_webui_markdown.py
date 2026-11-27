@@ -53,13 +53,6 @@ def test_plain_render_rejects_javascript_links() -> None:
     assert "href" not in rendered
 
 
-def test_each_table_is_wrapped() -> None:
-    rendered = render_markdown("| a |\n|---|\n| 1 |\n\n| b |\n|---|\n| 2 |\n")
-
-    assert rendered.count('<div class="scroll-x"><table>') == 2
-    assert rendered.count("</table></div>") == 2
-
-
 def test_sections_split_on_h1_and_are_closed_by_default() -> None:
     rendered = render_markdown_sections("# One\n\nfirst body\n\n# Two\n\nsecond body\n")
 

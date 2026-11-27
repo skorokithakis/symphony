@@ -34,35 +34,29 @@ def _make_issue(labels: list[str], project_labels: list[str] | None) -> Issue:
 
 
 class TestIsBotComment:
-    def test_positive_workspace_kind(self) -> None:
-        """A body containing the '*Symphony · workspace*' footer returns True."""
-        assert is_bot_comment("Some work done\n\n*Symphony · workspace*") is True
+    @pytest.mark.parametrize(
+        "body",
+        [
+            "Some work done\n\n*Symphony · workspace*",
+            "Done.\n\n*Symphony · context: 37,074 tokens*",
+            # The marker is the prefix alone; trailing content does not matter.
+            "Foo\n\n*Symphony · ",
+        ],
+    )
+    def test_marker_present(self, body: str) -> None:
+        assert is_bot_comment(body) is True
 
-    def test_positive_context_tokens_variant(self) -> None:
-        """A body containing the '*Symphony · context: ... tokens*' footer returns True."""
-        assert is_bot_comment("Done.\n\n*Symphony · context: 37,074 tokens*") is True
-
-    def test_negative_plain_human_comment(self) -> None:
-        """A plain human comment with no marker returns False."""
-        assert is_bot_comment("This is a regular human comment.") is False
-
-    def test_negative_partial_match_no_dot(self) -> None:
-        """A body containing 'Symphony' without the middle dot returns False."""
-        assert is_bot_comment("I like Symphony music") is False
-
-    def test_negative_only_marker_substring(self) -> None:
-        """Only the '*Symphony · ' substring without the closing '*' returns True."""
-        # The marker is '*Symphony · ', trailing content does not matter.
-        assert is_bot_comment("Foo\n\n*Symphony · ") is True
-
-    def test_negative_empty_body(self) -> None:
-        """An empty string returns False."""
-        assert is_bot_comment("") is False
-
-    def test_negative_none_raises(self) -> None:
-        """None raises TypeError (since str methods cannot be called on None)."""
-        with pytest.raises(TypeError):
-            is_bot_comment(None)  # type: ignore[arg-type]
+    @pytest.mark.parametrize(
+        "body",
+        [
+            "This is a regular human comment.",
+            # 'Symphony' without the middle dot is not the marker.
+            "I like Symphony music",
+            "",
+        ],
+    )
+    def test_marker_absent(self, body: str) -> None:
+        assert is_bot_comment(body) is False
 
 
 class TestModelFromLabels:
@@ -70,11 +64,9 @@ class TestModelFromLabels:
 
     ALIASES = {"strong": "anthropic/claude-opus-5", "cheap": "openai/gpt-5-mini"}
 
-    def test_no_matching_label_returns_none(self) -> None:
-        assert model_from_labels(["Agent", "Bug"], self.ALIASES) is None
-
-    def test_empty_labels_returns_none(self) -> None:
-        assert model_from_labels([], self.ALIASES) is None
+    @pytest.mark.parametrize("labels", [["Agent", "Bug"], []])
+    def test_no_matching_label_returns_none(self, labels: list[str]) -> None:
+        assert model_from_labels(labels, self.ALIASES) is None
 
     def test_alias_hit_returns_mapped_id(self) -> None:
         assert (
@@ -82,48 +74,35 @@ class TestModelFromLabels:
             == "anthropic/claude-opus-5"
         )
 
-    def test_prefix_is_case_insensitive(self) -> None:
-        assert (
-            model_from_labels(["MODEL: strong"], self.ALIASES)
-            == "anthropic/claude-opus-5"
-        )
-
-    def test_alias_lookup_is_case_insensitive(self) -> None:
-        assert (
-            model_from_labels(["Model: STRONG"], self.ALIASES)
-            == "anthropic/claude-opus-5"
-        )
+    @pytest.mark.parametrize("label", ["MODEL: strong", "Model: STRONG"])
+    def test_prefix_and_alias_lookup_are_case_insensitive(self, label: str) -> None:
+        assert model_from_labels([label], self.ALIASES) == "anthropic/claude-opus-5"
 
     def test_unknown_value_passed_through_verbatim(self) -> None:
         raw = "anthropic/claude-sonnet-4-6"
         assert model_from_labels([f"Model: {raw}"], self.ALIASES) == raw
 
-    def test_value_is_stripped(self) -> None:
-        assert (
-            model_from_labels(["Model:   strong   "], self.ALIASES)
-            == "anthropic/claude-opus-5"
-        )
+    @pytest.mark.parametrize("label", ["Model:   strong   ", "  Model: strong  "])
+    def test_value_and_label_are_stripped(self, label: str) -> None:
+        assert model_from_labels([label], self.ALIASES) == "anthropic/claude-opus-5"
 
-    def test_label_is_stripped(self) -> None:
-        assert (
-            model_from_labels(["  Model: strong  "], self.ALIASES)
-            == "anthropic/claude-opus-5"
-        )
-
-    def test_empty_value_ignored_with_warning(
+    def test_empty_value_ignored_with_warning_naming_the_ticket(
         self, caplog: pytest.LogCaptureFixture
     ) -> None:
         with caplog.at_level(logging.WARNING):
             assert model_from_labels(["Model: "], self.ALIASES) is None
-        assert any("empty" in rec.message for rec in caplog.records)
+        assert any(
+            "empty" in rec.message and "on ticket" in rec.message
+            for rec in caplog.records
+        )
 
-    def test_multiple_labels_first_in_sorted_order(
+    def test_multiple_labels_take_the_first_in_sorted_order(
         self, caplog: pytest.LogCaptureFixture
     ) -> None:
         with caplog.at_level(logging.WARNING):
             result = model_from_labels(["Model: zeta", "Model: alpha"], self.ALIASES)
         assert result == "alpha"
-        assert any("Multiple" in rec.message for rec in caplog.records)
+        assert any("labels on ticket" in rec.message for rec in caplog.records)
 
     def test_multiple_labels_skip_empty_candidate(
         self, caplog: pytest.LogCaptureFixture
@@ -137,20 +116,6 @@ class TestModelFromLabels:
 
     def test_near_prefix_labels_do_not_match(self) -> None:
         assert model_from_labels(["Model", "modelish"], self.ALIASES) is None
-
-    def test_empty_value_warning_names_the_ticket_by_default(
-        self, caplog: pytest.LogCaptureFixture
-    ) -> None:
-        with caplog.at_level(logging.WARNING):
-            assert model_from_labels(["Model: "], self.ALIASES) is None
-        assert any("on ticket" in rec.message for rec in caplog.records)
-
-    def test_multiple_labels_warning_names_the_ticket_by_default(
-        self, caplog: pytest.LogCaptureFixture
-    ) -> None:
-        with caplog.at_level(logging.WARNING):
-            model_from_labels(["Model: zeta", "Model: alpha"], self.ALIASES)
-        assert any("labels on ticket" in rec.message for rec in caplog.records)
 
     def test_source_is_interpolated_into_both_warnings(
         self, caplog: pytest.LogCaptureFixture
@@ -179,37 +144,29 @@ class TestModelForIssue:
         issue = _make_issue(["Agent"], ["Team: core", "Model: cheap"])
         assert model_for_issue(issue, self.ALIASES) == "openai/gpt-5-mini"
 
-    def test_no_label_on_either_tier_returns_none(self) -> None:
-        issue = _make_issue(["Agent"], ["Team: core"])
-        assert model_for_issue(issue, self.ALIASES) is None
-
-    def test_no_project_returns_none(self) -> None:
-        """A ticket with no project (e.g. the GitHub backend) has one tier."""
-        issue = _make_issue(["Agent"], None)
+    @pytest.mark.parametrize("project_labels", [["Team: core"], [], None])
+    def test_no_model_label_on_either_tier_returns_none(
+        self, project_labels: list[str] | None
+    ) -> None:
+        """``project_labels=None`` is the GitHub backend, which has no project."""
+        issue = _make_issue(["Agent"], project_labels)
         assert model_for_issue(issue, self.ALIASES) is None
 
     def test_no_project_still_honours_issue_label(self) -> None:
         issue = _make_issue(["Model: cheap"], None)
         assert model_for_issue(issue, self.ALIASES) == "openai/gpt-5-mini"
 
-    def test_project_unknown_alias_passed_through_verbatim(self) -> None:
-        raw = "anthropic/claude-sonnet-4-6"
-        issue = _make_issue(["Agent"], [f"Model: {raw}"])
-        assert model_for_issue(issue, self.ALIASES) == raw
-
     def test_empty_issue_label_falls_through_to_project(
         self, caplog: pytest.LogCaptureFixture
     ) -> None:
         """An unusable issue-tier label is not an override, so the project
-        default still applies."""
+        default still applies, and the warning names the ticket tier."""
         issue = _make_issue(["Model: "], ["Model: strong"])
         with caplog.at_level(logging.WARNING):
             assert model_for_issue(issue, self.ALIASES) == "anthropic/claude-opus-5"
-        assert any("empty" in rec.message for rec in caplog.records)
-
-    def test_empty_project_labels_returns_none(self) -> None:
-        issue = _make_issue(["Agent"], [])
-        assert model_for_issue(issue, self.ALIASES) is None
+        messages = [rec.message for rec in caplog.records]
+        assert any("empty" in m and "on ticket" in m for m in messages)
+        assert not any("project" in m for m in messages)
 
     def test_empty_project_label_warning_names_the_project(
         self, caplog: pytest.LogCaptureFixture
@@ -223,35 +180,12 @@ class TestModelForIssue:
         assert any("empty value" in m and "on project" in m for m in messages)
         assert not any("ticket" in m for m in messages)
 
-    def test_multiple_project_labels_warning_names_the_project(
-        self, caplog: pytest.LogCaptureFixture
-    ) -> None:
-        issue = _make_issue(["Agent"], ["Model: zeta", "Model: alpha"])
-        with caplog.at_level(logging.WARNING):
-            assert model_for_issue(issue, self.ALIASES) == "alpha"
-        messages = [rec.message for rec in caplog.records]
-        assert any("labels on project" in m for m in messages)
-        assert not any("ticket" in m for m in messages)
-
-    def test_empty_issue_label_warning_names_the_ticket(
-        self, caplog: pytest.LogCaptureFixture
-    ) -> None:
-        """The issue tier keeps the original wording."""
-        issue = _make_issue(["Model: "], ["Model: strong"])
-        with caplog.at_level(logging.WARNING):
-            assert model_for_issue(issue, self.ALIASES) == "anthropic/claude-opus-5"
-        assert any("on ticket" in rec.message for rec in caplog.records)
-        assert not any("project" in rec.message for rec in caplog.records)
-
 
 class TestModelLabelName:
     """Unit tests for the Model: <alias> label name builder."""
 
     def test_simple_alias(self) -> None:
         assert model_label_name("Strong") == "Model: Strong"
-
-    def test_alias_with_spaces_kept_verbatim(self) -> None:
-        assert model_label_name("my alias") == "Model: my alias"
 
     def test_roundtrip_resolves_via_model_from_labels(self) -> None:
         """A label built by model_label_name resolves through the parser."""

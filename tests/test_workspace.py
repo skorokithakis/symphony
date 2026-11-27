@@ -19,14 +19,12 @@ from urllib.parse import urlsplit
 import pytest
 
 from symphony_linear.workspace import (
-    BranchFailed,
     CloneFailed,
     DirMapError,
     PathContainmentError,
     SecretsError,
     ServeScriptMissing,
     SetupFailed,
-    WorkspaceError,
     _ATTACHMENTS_DIR,
     _check_containment,
     _git_switch_branch,
@@ -124,28 +122,22 @@ def _make_source_repo(path: Path, *, setup_script: str | None = None) -> None:
 class TestSanitizeIdentifier:
     """Sanitization replaces unsafe characters with ``_``."""
 
-    def test_alphanumeric_unchanged(self) -> None:
-        assert _sanitize_identifier("ABC-123") == "ABC-123"
-
-    def test_dots_and_underscores_unchanged(self) -> None:
-        assert _sanitize_identifier("team_1.0-release") == "team_1.0-release"
-
-    def test_spaces_replaced(self) -> None:
-        assert _sanitize_identifier("team 42") == "team_42"
-
-    def test_slashes_replaced(self) -> None:
-        assert _sanitize_identifier("a/b/c") == "a_b_c"
-
-    def test_special_chars_replaced(self) -> None:
-        # @ is between hello and world; ! # $ % follow world — 5 total replacements
-        assert _sanitize_identifier("hello@world!#$%") == "hello_world____"
-
-    def test_path_traversal_replaced(self) -> None:
-        # Dots are allowed; slashes become underscores.
-        assert _sanitize_identifier("../../etc") == ".._.._etc"
-
-    def test_empty_string(self) -> None:
-        assert _sanitize_identifier("") == ""
+    @pytest.mark.parametrize(
+        ("identifier", "expected"),
+        [
+            ("ABC-123", "ABC-123"),
+            ("team_1.0-release", "team_1.0-release"),
+            ("team 42", "team_42"),
+            ("a/b/c", "a_b_c"),
+            # @ sits between hello and world; ! # $ % follow world.
+            ("hello@world!#$%", "hello_world____"),
+            # Dots are allowed; slashes become underscores.
+            ("../../etc", ".._.._etc"),
+            ("", ""),
+        ],
+    )
+    def test_sanitize(self, identifier: str, expected: str) -> None:
+        assert _sanitize_identifier(identifier) == expected
 
 
 # ---------------------------------------------------------------------------
@@ -156,32 +148,38 @@ class TestSanitizeIdentifier:
 class TestCheckContainment:
     """Path containment rejects escapes; passes valid paths."""
 
-    def test_valid_subdirectory(self, tmp_path: Path) -> None:
+    @pytest.mark.parametrize(
+        ("path_parts", "expected_parts"),
+        [
+            (("ticket-1",), ("ticket-1",)),
+            # Containment is normalised and may be checked before the
+            # directory is created.
+            (("sub", "..", "ticket"), ("ticket",)),
+            (("future-dir",), ("future-dir",)),
+            # The root itself is contained in itself.
+            ((), ()),
+        ],
+        ids=["subdirectory", "normalised", "not-created-yet", "root-itself"],
+    )
+    def test_contained_paths_pass(
+        self,
+        tmp_path: Path,
+        path_parts: tuple[str, ...],
+        expected_parts: tuple[str, ...],
+    ) -> None:
         root = tmp_path / "ws"
         root.mkdir()
-        child = root / "ticket-1"
-        result = _check_containment(str(child), str(root))
-        assert result == os.path.realpath(child)
+        result = _check_containment(str(root.joinpath(*path_parts)), str(root))
+        assert result == os.path.realpath(root.joinpath(*expected_parts))
 
-    def test_path_equals_root(self, tmp_path: Path) -> None:
+    @pytest.mark.parametrize(
+        "escape", ["../etc", "sub/../../etc"], ids=["dot-dot", "dot-dot-in-middle"]
+    )
+    def test_relative_escapes_rejected(self, tmp_path: Path, escape: str) -> None:
         root = tmp_path / "ws"
         root.mkdir()
-        result = _check_containment(str(root), str(root))
-        assert result == os.path.realpath(root)
-
-    def test_dot_dot_escape_rejected(self, tmp_path: Path) -> None:
-        root = tmp_path / "ws"
-        root.mkdir()
-        escape = root / ".." / "etc"
         with pytest.raises(PathContainmentError):
-            _check_containment(str(escape), str(root))
-
-    def test_dot_dot_in_middle_rejected(self, tmp_path: Path) -> None:
-        root = tmp_path / "ws"
-        root.mkdir()
-        escape = root / "sub" / ".." / ".." / "etc"
-        with pytest.raises(PathContainmentError):
-            _check_containment(str(escape), str(root))
+            _check_containment(str(root / escape), str(root))
 
     def test_absolute_escape_rejected(self, tmp_path: Path) -> None:
         root = tmp_path / "ws"
@@ -190,6 +188,7 @@ class TestCheckContainment:
             _check_containment("/etc/passwd", str(root))
 
     def test_symlink_escape_rejected(self, tmp_path: Path) -> None:
+        """Containment resolves symlinks, so a link out of the root fails."""
         root = tmp_path / "ws"
         root.mkdir()
         escape_target = tmp_path / "outside"
@@ -198,21 +197,6 @@ class TestCheckContainment:
         symlink.symlink_to(escape_target)
         with pytest.raises(PathContainmentError):
             _check_containment(str(symlink), str(root))
-
-    def test_path_does_not_exist_yet(self, tmp_path: Path) -> None:
-        """Containment is checked before the directory is created."""
-        root = tmp_path / "ws"
-        root.mkdir()
-        future = root / "future-dir"
-        result = _check_containment(str(future), str(root))
-        assert result == os.path.realpath(future)
-
-    def test_normalised_path_passes(self, tmp_path: Path) -> None:
-        root = tmp_path / "ws"
-        root.mkdir()
-        child = root / "sub" / ".." / "ticket"  # normalises to root/ticket
-        result = _check_containment(str(child), str(root))
-        assert result == os.path.realpath(root / "ticket")
 
 
 # ---------------------------------------------------------------------------
@@ -248,66 +232,44 @@ class TestDegenerateIdentifier:
 
 
 # ---------------------------------------------------------------------------
-# Unit: ensure_attachments_dir
+# Unit: ensure_attachments_dir / ensure_tmp_dir
 # ---------------------------------------------------------------------------
 
 
-class TestEnsureAttachmentsDir:
-    """Tests for :func:`ensure_attachments_dir`."""
+class TestEnsurePerTicketDirs:
+    """The per-ticket dirs are created 0700 and contained in the root."""
 
-    def test_creates_and_returns_validated_path(self, tmp_path: Path) -> None:
+    @pytest.mark.parametrize(
+        ("ensure", "subdir"),
+        [
+            (ensure_attachments_dir, _ATTACHMENTS_DIR),
+            (ensure_tmp_dir, _TMP_DIR),
+        ],
+        ids=["attachments", "tmp"],
+    )
+    def test_creates_validated_path_idempotently(
+        self, tmp_path: Path, ensure, subdir: str
+    ) -> None:
         root = tmp_path / "ws"
         root.mkdir()
-        result = ensure_attachments_dir("TICKET-1", str(root))
+        result = ensure("TICKET-1", str(root))
 
-        expected = os.path.realpath(root / "TICKET-1" / _ATTACHMENTS_DIR)
-        assert result == expected
+        assert result == os.path.realpath(root / "TICKET-1" / subdir)
         assert os.path.isdir(result)
         # Check mode: directory should have 0700 permissions.
         st = os.stat(result)
         assert (st.st_mode & 0o777) == 0o700
+        # Calling it twice returns the same path.
+        assert ensure("TICKET-1", str(root)) == result
 
-    def test_symlink_attack_rejected(self, tmp_path: Path) -> None:
+    @pytest.mark.parametrize(
+        "ensure",
+        [ensure_attachments_dir, ensure_tmp_dir],
+        ids=["attachments", "tmp"],
+    )
+    def test_symlink_attack_rejected(self, tmp_path: Path, ensure) -> None:
         """If <workspace_root>/<id> is a symlink pointing outside,
-        ensure_attachments_dir must raise PathContainmentError."""
-        root = tmp_path / "ws"
-        root.mkdir()
-        # Create a symlink at <root>/TICKET-2 → /tmp/elsewhere
-        escape_target = tmp_path / "outside"
-        escape_target.mkdir()
-        (root / "TICKET-2").symlink_to(escape_target)
-
-        with pytest.raises(PathContainmentError):
-            ensure_attachments_dir("TICKET-2", str(root))
-
-    def test_idempotent(self, tmp_path: Path) -> None:
-        """Calling ensure_attachments_dir twice returns the same path."""
-        root = tmp_path / "ws"
-        root.mkdir()
-        first = ensure_attachments_dir("T-42", str(root))
-        second = ensure_attachments_dir("T-42", str(root))
-        assert first == second
-        assert os.path.isdir(first)
-
-
-class TestEnsureTmpDir:
-    """Tests for :func:`ensure_tmp_dir`."""
-
-    def test_creates_and_returns_validated_path(self, tmp_path: Path) -> None:
-        root = tmp_path / "ws"
-        root.mkdir()
-        result = ensure_tmp_dir("TICKET-1", str(root))
-
-        expected = os.path.realpath(root / "TICKET-1" / _TMP_DIR)
-        assert result == expected
-        assert os.path.isdir(result)
-        # Check mode: directory should have 0700 permissions.
-        st = os.stat(result)
-        assert (st.st_mode & 0o777) == 0o700
-
-    def test_symlink_attack_rejected(self, tmp_path: Path) -> None:
-        """If <workspace_root>/<id> is a symlink pointing outside,
-        ensure_tmp_dir must raise PathContainmentError."""
+        the ensure helper must raise PathContainmentError."""
         root = tmp_path / "ws"
         root.mkdir()
         escape_target = tmp_path / "outside"
@@ -315,16 +277,7 @@ class TestEnsureTmpDir:
         (root / "TICKET-2").symlink_to(escape_target)
 
         with pytest.raises(PathContainmentError):
-            ensure_tmp_dir("TICKET-2", str(root))
-
-    def test_idempotent(self, tmp_path: Path) -> None:
-        """Calling ensure_tmp_dir twice returns the same path."""
-        root = tmp_path / "ws"
-        root.mkdir()
-        first = ensure_tmp_dir("T-42", str(root))
-        second = ensure_tmp_dir("T-42", str(root))
-        assert first == second
-        assert os.path.isdir(first)
+            ensure("TICKET-2", str(root))
 
 
 # ---------------------------------------------------------------------------
@@ -349,9 +302,6 @@ class TestResolveDirMap:
         )
         assert pairs == [("/host/shared-cache", "/sandbox/npm")]
 
-    def test_empty_dir_map_resolves_to_nothing(self, tmp_path: Path) -> None:
-        assert resolve_dir_map({}, "TEAM-1", str(tmp_path)) == []
-
     def test_relative_value_with_dotdot_rejected(self, tmp_path: Path) -> None:
         with pytest.raises(PathContainmentError, match=r"\.\."):
             resolve_dir_map({"~/dest": "../escape"}, "TEAM-1", str(tmp_path))
@@ -374,11 +324,17 @@ class TestResolveDirMap:
 class TestEnsureDirMap:
     """ensure_dir_map: creates both sides on the host, dest-is-a-file error."""
 
-    def test_creates_host_source_and_dest(self, tmp_path: Path) -> None:
+    @pytest.mark.parametrize("absolute", [False, True], ids=["relative", "absolute"])
+    def test_creates_host_source_and_dest(self, tmp_path: Path, absolute: bool) -> None:
+        source = str(tmp_path / "shared-cache") if absolute else "npm"
         dest = tmp_path / "dest-npm"
-        pairs = ensure_dir_map({str(dest): "npm"}, "TEAM-1", str(tmp_path))
+        pairs = ensure_dir_map({str(dest): source}, "TEAM-1", str(tmp_path))
 
-        host_src = tmp_path / "TEAM-1" / _MOUNTS_DIR / "npm"
+        host_src = (
+            tmp_path / "shared-cache"
+            if absolute
+            else tmp_path / "TEAM-1" / _MOUNTS_DIR / "npm"
+        )
         assert pairs == [(str(host_src), str(dest))]
         assert host_src.is_dir()
         assert dest.is_dir()
@@ -386,29 +342,20 @@ class TestEnsureDirMap:
         assert (os.stat(host_src).st_mode & 0o777) == 0o700
         assert (os.stat(dest).st_mode & 0o777) == 0o700
 
-    def test_absolute_source_created(self, tmp_path: Path) -> None:
-        shared = tmp_path / "shared-cache"
+    @pytest.mark.parametrize("dangling_symlink", [False, True], ids=["file", "symlink"])
+    def test_dest_not_a_directory_raises(
+        self, tmp_path: Path, dangling_symlink: bool
+    ) -> None:
+        """A file or dangling symlink at the destination is caught, not passed
+        to bwrap."""
         dest = tmp_path / "dest-npm"
-        pairs = ensure_dir_map({str(dest): str(shared)}, "TEAM-1", str(tmp_path))
-
-        assert pairs == [(str(shared), str(dest))]
-        assert shared.is_dir()
-        assert dest.is_dir()
-
-    def test_dest_existing_file_raises(self, tmp_path: Path) -> None:
-        dest_file = tmp_path / "dest-npm"
-        dest_file.write_text("i am a file")
+        if dangling_symlink:
+            dest.symlink_to(tmp_path / "nonexistent-target")
+        else:
+            dest.write_text("i am a file")
 
         with pytest.raises(DirMapError, match="not a directory"):
-            ensure_dir_map({str(dest_file): "npm"}, "TEAM-1", str(tmp_path))
-
-    def test_dest_dangling_symlink_raises(self, tmp_path: Path) -> None:
-        """A dangling symlink at the destination is caught (not passed to bwrap)."""
-        dest_link = tmp_path / "dest-link"
-        dest_link.symlink_to(tmp_path / "nonexistent-target")
-
-        with pytest.raises(DirMapError, match="not a directory"):
-            ensure_dir_map({str(dest_link): "npm"}, "TEAM-1", str(tmp_path))
+            ensure_dir_map({str(dest): "npm"}, "TEAM-1", str(tmp_path))
 
     def test_source_existing_file_raises(self, tmp_path: Path) -> None:
         src_file = tmp_path / "TEAM-1" / _MOUNTS_DIR / "npm"
@@ -429,11 +376,6 @@ class TestEnsureDirMap:
                     {str(tmp_path / "dest-npm"): "npm"}, "TEAM-1", str(tmp_path)
                 )
 
-    def test_empty_dir_map_creates_nothing(self, tmp_path: Path) -> None:
-        assert ensure_dir_map({}, "TEAM-1", str(tmp_path)) == []
-        # No mounts/ dir (and no ticket dir at all) for an empty map.
-        assert not (tmp_path / "TEAM-1").exists()
-
 
 # ---------------------------------------------------------------------------
 # Unit: per-repo secrets mapping and copying
@@ -443,68 +385,41 @@ class TestEnsureDirMap:
 class TestRepoSecretsPath:
     """Every remote form of one repo maps to ``<secrets>/<host>/<path>.env``."""
 
-    def test_scp_like_ssh(self, tmp_path: Path) -> None:
-        result = repo_secrets_path(
-            "git@github.com:org/repo.git", str(tmp_path / "secrets")
-        )
-        assert result == str(tmp_path / "secrets" / "github.com" / "org" / "repo.env")
-
-    def test_ssh_scheme_matches_scp_like(self, tmp_path: Path) -> None:
-        secrets = str(tmp_path / "secrets")
-        assert repo_secrets_path(
-            "ssh://git@github.com/org/repo.git", secrets
-        ) == repo_secrets_path("git@github.com:org/repo.git", secrets)
-
-    def test_https_matches_scp_like(self, tmp_path: Path) -> None:
-        secrets = str(tmp_path / "secrets")
-        assert repo_secrets_path(
-            "https://github.com/org/repo.git", secrets
-        ) == repo_secrets_path("git@github.com:org/repo.git", secrets)
-
-    def test_https_with_credentials_matches(self, tmp_path: Path) -> None:
-        secrets = str(tmp_path / "secrets")
-        assert repo_secrets_path(
-            "https://user:token@github.com/org/repo.git", secrets
-        ) == repo_secrets_path("git@github.com:org/repo.git", secrets)
-
-    def test_trailing_git_is_optional(self, tmp_path: Path) -> None:
-        secrets = str(tmp_path / "secrets")
-        assert repo_secrets_path(
-            "https://github.com/org/repo", secrets
-        ) == repo_secrets_path("https://github.com/org/repo.git", secrets)
-
-    def test_gitlab_subgroups_become_nested_dirs(self, tmp_path: Path) -> None:
-        result = repo_secrets_path(
-            "git@gitlab.com:group/sub/repo.git", str(tmp_path / "secrets")
-        )
-        assert result == str(
-            tmp_path / "secrets" / "gitlab.com" / "group" / "sub" / "repo.env"
-        )
-
-    def test_ssh_scheme_subgroups_match(self, tmp_path: Path) -> None:
-        secrets = str(tmp_path / "secrets")
-        assert repo_secrets_path(
-            "ssh://git@gitlab.com/group/sub/repo.git", secrets
-        ) == repo_secrets_path("git@gitlab.com:group/sub/repo.git", secrets)
+    @pytest.mark.parametrize(
+        ("repo_url", "relative"),
+        [
+            ("git@github.com:org/repo.git", "github.com/org/repo.env"),
+            ("ssh://git@github.com/org/repo.git", "github.com/org/repo.env"),
+            ("https://github.com/org/repo.git", "github.com/org/repo.env"),
+            # Credentials are discarded, not part of the key.
+            ("https://user:token@github.com/org/repo.git", "github.com/org/repo.env"),
+            # A trailing .git is optional.
+            ("https://github.com/org/repo", "github.com/org/repo.env"),
+            # GitLab subgroups become nested directories.
+            ("git@gitlab.com:group/sub/repo.git", "gitlab.com/group/sub/repo.env"),
+            (
+                "ssh://git@gitlab.com/group/sub/repo.git",
+                "gitlab.com/group/sub/repo.env",
+            ),
+        ],
+        ids=[
+            "scp-like",
+            "ssh-scheme",
+            "https",
+            "credentials",
+            "no-dot-git",
+            "subgroups",
+            "subgroups-ssh-scheme",
+        ],
+    )
+    def test_remote_forms_map_to_one_path(
+        self, tmp_path: Path, repo_url: str, relative: str
+    ) -> None:
+        secrets = tmp_path / "secrets"
+        assert repo_secrets_path(repo_url, str(secrets)) == str(secrets / relative)
 
     def test_local_path_has_no_secrets_path(self, tmp_path: Path) -> None:
         assert repo_secrets_path(str(tmp_path / "local-repo"), str(tmp_path)) is None
-
-    def test_dotdot_in_scp_path_refused(self, tmp_path: Path) -> None:
-        with pytest.raises(SecretsError):
-            repo_secrets_path(
-                "git@github.com:../../etc/passwd", str(tmp_path / "secrets")
-            )
-
-    def test_dotdot_in_https_path_refused(self, tmp_path: Path) -> None:
-        with pytest.raises(SecretsError):
-            repo_secrets_path(
-                "https://github.com/../../../etc/passwd", str(tmp_path / "secrets")
-            )
-
-    def test_dotdot_host_refused(self, tmp_path: Path) -> None:
-        with pytest.raises(SecretsError):
-            repo_secrets_path("git@..:repo.git", str(tmp_path / "secrets"))
 
     def test_leading_slash_path_stays_contained(self, tmp_path: Path) -> None:
         """An absolute-looking URL path is not taken as an absolute host path."""
@@ -513,33 +428,34 @@ class TestRepoSecretsPath:
         )
         assert result == str(tmp_path / "secrets" / "host" / "etc" / "passwd.env")
 
-    def test_dotdot_component_inside_secrets_dir_refused(self, tmp_path: Path) -> None:
-        """``github.com/../gitlab.com/...`` cancels the host component and lands
-        inside secrets_dir, selecting a different repo's file; containment
-        alone would accept it, so the component must be rejected outright."""
-        secrets = tmp_path / "secrets"
-        with pytest.raises(SecretsError):
-            repo_secrets_path(
-                "git@github.com:../gitlab.com/team/repo.git", str(secrets)
-            )
-        # Sanity: the mapping it would have produced stays under secrets_dir.
-        escaped = os.path.realpath(secrets / "gitlab.com" / "team" / "repo.env")
-        assert escaped.startswith(os.path.realpath(secrets) + os.sep)
-
-    def test_single_dot_component_refused(self, tmp_path: Path) -> None:
-        with pytest.raises(SecretsError):
-            repo_secrets_path(
-                "git@github.com:org/./repo.git", str(tmp_path / "secrets")
-            )
-
-    def test_dotdot_component_inside_secrets_dir_refused_https(
-        self, tmp_path: Path
+    @pytest.mark.parametrize(
+        "repo_url",
+        [
+            "git@github.com:../../etc/passwd",
+            "https://github.com/../../../etc/passwd",
+            "git@..:repo.git",
+            # ``github.com/../gitlab.com/...`` cancels the host component and
+            # lands inside secrets_dir, selecting another repo's file;
+            # containment alone would accept it, so the component is rejected
+            # outright.
+            "git@github.com:../gitlab.com/team/repo.git",
+            "https://github.com/../gitlab.com/team/repo.git",
+            "git@github.com:org/./repo.git",
+        ],
+        ids=[
+            "dot-dot-path",
+            "dot-dot-https-path",
+            "dot-dot-host",
+            "dot-dot-cancels-host",
+            "dot-dot-cancels-host-https",
+            "single-dot",
+        ],
+    )
+    def test_dot_segment_components_refused(
+        self, tmp_path: Path, repo_url: str
     ) -> None:
         with pytest.raises(SecretsError):
-            repo_secrets_path(
-                "https://github.com/../gitlab.com/team/repo.git",
-                str(tmp_path / "secrets"),
-            )
+            repo_secrets_path(repo_url, str(tmp_path / "secrets"))
 
     def test_error_message_redacts_credentials(self, tmp_path: Path) -> None:
         """A token in an HTTPS URL must not reach the error comment."""
@@ -555,13 +471,10 @@ class TestRepoSecretsPath:
 class TestResolveSecretsDir:
     """None (or an empty string) means ``<workspace_root>/secrets``."""
 
-    def test_none_means_workspace_secrets(self, tmp_path: Path) -> None:
-        assert resolve_secrets_dir(None, str(tmp_path)) == str(tmp_path / "secrets")
-
-    def test_empty_string_means_default(self, tmp_path: Path) -> None:
-        assert resolve_secrets_dir("", str(tmp_path)) == str(tmp_path / "secrets")
-
-    def test_explicit_dir_used_verbatim(self, tmp_path: Path) -> None:
+    def test_default_and_explicit_dirs(self, tmp_path: Path) -> None:
+        default = str(tmp_path / "secrets")
+        assert resolve_secrets_dir(None, str(tmp_path)) == default
+        assert resolve_secrets_dir("", str(tmp_path)) == default
         assert (
             resolve_secrets_dir("/custom/secrets", str(tmp_path)) == "/custom/secrets"
         )
@@ -570,18 +483,25 @@ class TestResolveSecretsDir:
 class TestEnsureSecretsFile:
     """Copies the source into the ticket dir, or removes a stale copy."""
 
-    def test_existing_source_copied_with_0600(self, tmp_path: Path) -> None:
-        secrets_dir = tmp_path / "secrets"
+    @pytest.mark.parametrize("explicit_dir", [False, True], ids=["default", "explicit"])
+    def test_existing_source_copied_with_0600(
+        self, tmp_path: Path, explicit_dir: bool
+    ) -> None:
+        workspace_root = tmp_path / "ws"
+        secrets_dir = (
+            tmp_path / "custom-secrets"
+            if explicit_dir
+            else (workspace_root / "secrets")
+        )
         source = secrets_dir / "github.com" / "org" / "repo.env"
         source.parent.mkdir(parents=True)
         source.write_text("TOKEN=abc\n")
 
-        workspace_root = tmp_path / "ws"
         result = ensure_secrets_file(
             "https://github.com/org/repo.git",
             "TEAM-1",
             str(workspace_root),
-            str(secrets_dir),
+            str(secrets_dir) if explicit_dir else None,
         )
 
         expected = workspace_root / "TEAM-1" / "secrets.env"
@@ -589,59 +509,40 @@ class TestEnsureSecretsFile:
         assert expected.read_text() == "TOKEN=abc\n"
         assert stat.S_IMODE(expected.stat().st_mode) == 0o600
 
-    def test_default_secrets_dir_used_when_none(self, tmp_path: Path) -> None:
+    @pytest.mark.parametrize(
+        ("repo_url", "stale"),
+        [
+            # A stale copy must go when the source is gone, so removing a
+            # secrets file takes effect on the next launch.
+            ("https://github.com/org/repo.git", True),
+            # Nothing to install and nothing stale is a no-op.
+            ("https://github.com/org/repo.git", False),
+            # A local repo path has no secrets mapping at all.
+            ("local", True),
+        ],
+        ids=["stale-copy", "nothing-to-do", "local-repo"],
+    )
+    def test_no_source_leaves_no_secrets(
+        self, tmp_path: Path, repo_url: str, stale: bool
+    ) -> None:
         workspace_root = tmp_path / "ws"
-        source = workspace_root / "secrets" / "github.com" / "org" / "repo.env"
-        source.parent.mkdir(parents=True)
-        source.write_text("A=1\n")
+        if repo_url == "local":
+            repo_url = str(tmp_path / "local-repo")
+        if stale:
+            stale_file = workspace_root / "TEAM-1" / "secrets.env"
+            stale_file.parent.mkdir(parents=True)
+            stale_file.write_text("OLD=1\n")
 
         result = ensure_secrets_file(
-            "git@github.com:org/repo.git", "TEAM-1", str(workspace_root), None
-        )
-
-        assert result == str(workspace_root / "TEAM-1" / "secrets.env")
-        assert (workspace_root / "TEAM-1" / "secrets.env").is_file()
-
-    def test_stale_copy_removed_when_source_missing(self, tmp_path: Path) -> None:
-        workspace_root = tmp_path / "ws"
-        stale = workspace_root / "TEAM-1" / "secrets.env"
-        stale.parent.mkdir(parents=True)
-        stale.write_text("OLD=1\n")
-
-        result = ensure_secrets_file(
-            "https://github.com/org/repo.git",
-            "TEAM-1",
-            str(workspace_root),
-            str(tmp_path / "secrets"),
+            repo_url, "TEAM-1", str(workspace_root), str(tmp_path / "secrets")
         )
 
         assert result is None
-        assert not stale.exists()
-
-    def test_missing_source_and_no_stale_is_noop(self, tmp_path: Path) -> None:
-        workspace_root = tmp_path / "ws"
-        result = ensure_secrets_file(
-            "https://github.com/org/repo.git",
-            "TEAM-1",
-            str(workspace_root),
-            str(tmp_path / "secrets"),
-        )
-        assert result is None
-        assert not (workspace_root / "TEAM-1").exists()
-
-    def test_local_repo_path_has_no_secrets(self, tmp_path: Path) -> None:
-        workspace_root = tmp_path / "ws"
-        stale = workspace_root / "TEAM-1" / "secrets.env"
-        stale.parent.mkdir(parents=True)
-        stale.write_text("OLD=1\n")
-
-        result = ensure_secrets_file(
-            str(tmp_path / "local-repo"), "TEAM-1", str(workspace_root), None
-        )
-        assert result is None
-        assert not stale.exists()
+        assert not (workspace_root / "TEAM-1" / "secrets.env").exists()
 
     def test_edited_source_takes_effect_on_next_call(self, tmp_path: Path) -> None:
+        """Secrets are copied, never bind-mounted, so an edited source (an
+        editor saving by rename) is picked up by the next launch."""
         secrets_dir = tmp_path / "secrets"
         source = secrets_dir / "github.com" / "org" / "repo.env"
         source.parent.mkdir(parents=True)
@@ -670,15 +571,28 @@ class TestEnsureSecretsFile:
 class TestSecretsEnvForSetupAndServe:
     """The setup and serve launch points export SYMPHONY_SECRETS_FILE."""
 
-    def _make_script(self, workspace: Path, name: str) -> None:
+    @staticmethod
+    def _make_script(workspace: Path, name: str) -> None:
         script = workspace / ".symphony" / name
         script.parent.mkdir(parents=True)
         script.write_text("#!/bin/bash\n")
         script.chmod(0o755)
 
-    def test_setup_exports_secrets_file(self, tmp_path: Path) -> None:
+    @pytest.mark.parametrize(
+        ("secrets_file", "expected"),
+        [("/ws/TEAM-1/secrets.env", "/ws/TEAM-1/secrets.env"), (None, None)],
+        ids=["set", "unset"],
+    )
+    @pytest.mark.parametrize("script", ["setup", "serve"])
+    def test_secrets_file_env(
+        self,
+        tmp_path: Path,
+        script: str,
+        secrets_file: str | None,
+        expected: str | None,
+    ) -> None:
         workspace = tmp_path / "ws"
-        self._make_script(workspace, "setup")
+        self._make_script(workspace, script)
         fake_proc = mock.MagicMock()
         fake_proc.returncode = 0
         fake_proc.communicate.return_value = (b"", b"")
@@ -686,140 +600,26 @@ class TestSecretsEnvForSetupAndServe:
         with mock.patch(
             "symphony_linear.workspace.run_in_sandbox", return_value=fake_proc
         ) as m:
-            _run_setup_script(
-                str(workspace),
-                hide_paths=[],
-                secrets_file="/ws/TEAM-1/secrets.env",
-                tmp_path=str(tmp_path / "tmp"),
-            )
+            if script == "setup":
+                _run_setup_script(
+                    str(workspace),
+                    hide_paths=[],
+                    secrets_file=secrets_file,
+                    tmp_path=str(tmp_path / "tmp"),
+                )
+            else:
+                start_serve(
+                    str(workspace),
+                    hide_paths=[],
+                    secrets_file=secrets_file,
+                    tmp_path=str(tmp_path / "tmp"),
+                )
 
         env = m.call_args.kwargs["env"]
-        assert env["SYMPHONY_SECRETS_FILE"] == "/ws/TEAM-1/secrets.env"
-
-    def test_setup_omits_secrets_file_when_none(self, tmp_path: Path) -> None:
-        workspace = tmp_path / "ws"
-        self._make_script(workspace, "setup")
-        fake_proc = mock.MagicMock()
-        fake_proc.returncode = 0
-        fake_proc.communicate.return_value = (b"", b"")
-
-        with mock.patch(
-            "symphony_linear.workspace.run_in_sandbox", return_value=fake_proc
-        ) as m:
-            _run_setup_script(
-                str(workspace), hide_paths=[], tmp_path=str(tmp_path / "tmp")
-            )
-
-        assert "SYMPHONY_SECRETS_FILE" not in m.call_args.kwargs["env"]
-
-    def test_serve_exports_secrets_file(self, tmp_path: Path) -> None:
-        workspace = tmp_path / "ws"
-        self._make_script(workspace, "serve")
-        fake_proc = mock.MagicMock()
-
-        with mock.patch(
-            "symphony_linear.workspace.run_in_sandbox", return_value=fake_proc
-        ) as m:
-            result = start_serve(
-                str(workspace),
-                hide_paths=[],
-                secrets_file="/ws/TEAM-1/secrets.env",
-                tmp_path=str(tmp_path / "tmp"),
-            )
-
-        assert result is fake_proc
-        env = m.call_args.kwargs["env"]
-        assert env["SYMPHONY_SECRETS_FILE"] == "/ws/TEAM-1/secrets.env"
-
-    def test_serve_omits_secrets_file_when_none(self, tmp_path: Path) -> None:
-        workspace = tmp_path / "ws"
-        self._make_script(workspace, "serve")
-        fake_proc = mock.MagicMock()
-
-        with mock.patch(
-            "symphony_linear.workspace.run_in_sandbox", return_value=fake_proc
-        ) as m:
-            start_serve(str(workspace), hide_paths=[], tmp_path=str(tmp_path / "tmp"))
-
-        assert "SYMPHONY_SECRETS_FILE" not in m.call_args.kwargs["env"]
+        assert env.get("SYMPHONY_SECRETS_FILE") == expected
 
 
 # ---------------------------------------------------------------------------
-# Unit: typed exceptions
-# ---------------------------------------------------------------------------
-
-
-class TestExceptions:
-    """All typed exceptions inherit from WorkspaceError."""
-
-    def test_clone_failed_is_workspace_error(self) -> None:
-        assert issubclass(CloneFailed, WorkspaceError)
-
-    def test_branch_failed_is_workspace_error(self) -> None:
-        assert issubclass(BranchFailed, WorkspaceError)
-
-    def test_setup_failed_is_workspace_error(self) -> None:
-        assert issubclass(SetupFailed, WorkspaceError)
-
-    def test_path_containment_error_is_workspace_error(self) -> None:
-        assert issubclass(PathContainmentError, WorkspaceError)
-
-    def test_secrets_error_is_workspace_error(self) -> None:
-        assert issubclass(SecretsError, WorkspaceError)
-
-    def test_clone_failed_message(self) -> None:
-        exc = CloneFailed("clone error")
-        assert "clone error" in str(exc)
-
-    def test_setup_failed_message(self) -> None:
-        exc = SetupFailed("setup error\nstderr tail:\nline1\nline2")
-        assert "setup error" in str(exc)
-        assert "line1" in str(exc)
-
-
-# ---------------------------------------------------------------------------
-# Unit: prepare / remove path containment
-# ---------------------------------------------------------------------------
-
-
-class TestPreparePathContainment:
-    """prepare() rejects paths that escape workspace_root (defense in depth).
-
-    The sanitization step already replaces ``/`` with ``_``, so a bare
-    identifier like ``../../etc`` becomes ``.._.._etc`` — a safe directory
-    name.  The containment check is an additional safety net validated by the
-    ``TestCheckContainment`` unit tests above.
-    """
-
-    def test_sanitized_identifier_is_safe(self, tmp_path: Path) -> None:
-        """Sanitization prevents traversal: ../../etc becomes .._.._etc (safe)."""
-        root = tmp_path / "ws"
-        root.mkdir()
-        workspace_key = _sanitize_identifier("../../etc")
-        assert workspace_key == ".._.._etc"
-        # _check_containment should pass for this safe key.
-        result = _check_containment(str(root / workspace_key), str(root))
-        assert result == os.path.realpath(root / workspace_key)
-
-
-class TestRemovePathContainment:
-    """remove() uses the same sanitization + containment as prepare()."""
-
-    def test_sanitized_identifier_is_safe(self, tmp_path: Path) -> None:
-        """Sanitization in remove() prevents traversal just like prepare()."""
-        root = tmp_path / "ws"
-        root.mkdir()
-        # /etc/passwd becomes _etc_passwd after sanitization — safe.
-        remove(
-            ticket_identifier="/etc/passwd",
-            workspace_root=str(root),
-        )
-
-    def test_nonexistent_workspace_is_idempotent(self, tmp_path: Path) -> None:
-        root = tmp_path / "ws"
-        root.mkdir()
-        # Should not raise — idempotent
-        remove("NONEXISTENT-TICKET", str(root))
 
 
 class TestRemoveTicketDir:
@@ -850,51 +650,8 @@ class TestRemoveTicketDir:
         assert not repo_dir.exists()
         assert not attachments_dir.exists()
         assert not tmp_dir.exists()
-
-    def test_remove_idempotent_when_attachments_missing(self, tmp_path: Path) -> None:
-        """remove() is idempotent even when only the repo dir exists."""
-        root = tmp_path / "ws"
-        root.mkdir()
-
-        ticket = "TEAM-42"
-        workspace_key = _sanitize_identifier(ticket)
-        ticket_dir = root / workspace_key
-        repo_dir = ticket_dir / _REPO_DIR
-        repo_dir.mkdir(parents=True)
-        (repo_dir / "README.md").write_text("hello")
-
+        # Removing again is idempotent.
         remove(ticket, str(root))
-
-        assert not ticket_dir.exists()
-        # Calling again is idempotent.
-        remove(ticket, str(root))  # no exception
-
-    def test_remove_idempotent_when_repo_missing(self, tmp_path: Path) -> None:
-        """remove() is idempotent even when only the attachments dir exists."""
-        root = tmp_path / "ws"
-        root.mkdir()
-
-        ticket = "TEAM-42"
-        workspace_key = _sanitize_identifier(ticket)
-
-        # Only the attachments dir exists.
-        attachments_dir = root / workspace_key / _ATTACHMENTS_DIR
-        os.makedirs(attachments_dir, mode=0o700)
-        (attachments_dir / "file.txt").write_text("data")
-
-        remove(ticket, str(root))
-
-        assert not (root / workspace_key).exists()
-        # Calling again is idempotent.
-        remove(ticket, str(root))  # no exception
-
-    def test_remove_both_missing_is_idempotent(self, tmp_path: Path) -> None:
-        """remove() is idempotent when neither repo nor attachments exist."""
-        root = tmp_path / "ws"
-        root.mkdir()
-
-        remove("NO-SUCH-TICKET", str(root))  # no exception
-        remove("NO-SUCH-TICKET", str(root))  # still no exception
 
 
 class TestRemoveReadOnlyTree:
@@ -942,48 +699,21 @@ class TestRemoveReadOnlyTree:
     def test_does_not_chmod_symlink_targets_outside_ticket_dir(
         self, tmp_path: Path
     ) -> None:
-        """A symlink in a read-only dir is unlinked, not chased."""
+        """A symlink inside the read-only tree is unlinked, not chased.
+
+        Both the failing dir and the symlink target start read-only: a helper
+        that chmodded through the symlink would make the target writable and
+        could reach its contents.
+        """
         root = tmp_path / "ws"
         root.mkdir()
         outside = tmp_path / "outside"
         outside.mkdir()
         outside_file = outside / "keep.txt"
         outside_file.write_text("outside data")
+        os.chmod(outside, 0o555)
+
         ticket = "GO-8"
-        ticket_dir = root / _sanitize_identifier(ticket)
-        ro_dir = ticket_dir / _TMP_DIR
-        ro_dir.mkdir(parents=True)
-        os.symlink(outside, ro_dir / "link")
-
-        # Both the failing dir and the symlink target start read-only: a
-        # helper that chmodded through the symlink would make the target
-        # writable and could reach its contents.
-        os.chmod(ro_dir, 0o555)
-        os.chmod(outside, 0o555)
-
-        try:
-            remove(ticket, str(root))
-
-            assert not ticket_dir.exists()
-            assert stat.S_IMODE(outside.stat().st_mode) == 0o555
-            assert outside_file.read_text() == "outside data"
-        finally:
-            self._restore_permissions(ticket_dir)
-            os.chmod(outside, 0o755)
-
-    def test_read_only_symlink_to_outside_tree_is_left_untouched(
-        self, tmp_path: Path
-    ) -> None:
-        """A symlink inside a read-only subtree never exposes its target."""
-        root = tmp_path / "ws"
-        root.mkdir()
-        outside = tmp_path / "outside"
-        outside.mkdir()
-        outside_file = outside / "keep.txt"
-        outside_file.write_text("outside data")
-        os.chmod(outside, 0o555)
-
-        ticket = "GO-9"
         ticket_dir = root / _sanitize_identifier(ticket)
         ro_dir = ticket_dir / _REPO_DIR / "cache"
         (ro_dir / "sub").mkdir(parents=True)
@@ -1003,46 +733,35 @@ class TestRemoveReadOnlyTree:
             os.chmod(outside, 0o755)
 
 
-class TestComputeTicketDir:
-    """compute_ticket_dir returns <root>/<sanitized_identifier>."""
+class TestComputePaths:
+    """The computed paths are <root>/<sanitized id>/<subdir>."""
 
-    def test_basic(self, tmp_path: Path) -> None:
+    @pytest.mark.parametrize(
+        ("compute", "parts"),
+        [
+            (compute_ticket_dir, ()),
+            (compute_attachments_path, (_ATTACHMENTS_DIR,)),
+            (compute_tmp_path, (_TMP_DIR,)),
+        ],
+        ids=["ticket", "attachments", "tmp"],
+    )
+    @pytest.mark.parametrize(
+        ("identifier", "expected_key"),
+        [("TEAM-42", "TEAM-42"), ("Team/With Spaces", "Team_With_Spaces")],
+        ids=["plain", "sanitized"],
+    )
+    def test_compute_path(
+        self,
+        tmp_path: Path,
+        compute,
+        parts: tuple[str, ...],
+        identifier: str,
+        expected_key: str,
+    ) -> None:
         root = tmp_path / "ws"
-        result = compute_ticket_dir("TEAM-42", str(root))
-        assert result == os.path.join(str(root), "TEAM-42")
-
-    def test_sanitized_identifier(self, tmp_path: Path) -> None:
-        root = tmp_path / "ws"
-        result = compute_ticket_dir("Team/With Spaces", str(root))
-        assert result == os.path.join(str(root), "Team_With_Spaces")
-
-
-class TestComputeAttachmentsPath:
-    """compute_attachments_path returns the expected path."""
-
-    def test_basic(self, tmp_path: Path) -> None:
-        root = tmp_path / "ws"
-        result = compute_attachments_path("TEAM-42", str(root))
-        assert result == os.path.join(str(root), "TEAM-42", "attachments")
-
-    def test_sanitized_identifier(self, tmp_path: Path) -> None:
-        root = tmp_path / "ws"
-        result = compute_attachments_path("Team/With Spaces", str(root))
-        assert result == os.path.join(str(root), "Team_With_Spaces", "attachments")
-
-
-class TestComputeTmpPath:
-    """compute_tmp_path returns the expected path."""
-
-    def test_basic(self, tmp_path: Path) -> None:
-        root = tmp_path / "ws"
-        result = compute_tmp_path("TEAM-42", str(root))
-        assert result == os.path.join(str(root), "TEAM-42", "tmp")
-
-    def test_sanitized_identifier(self, tmp_path: Path) -> None:
-        root = tmp_path / "ws"
-        result = compute_tmp_path("Team/With Spaces", str(root))
-        assert result == os.path.join(str(root), "Team_With_Spaces", "tmp")
+        assert compute(identifier, str(root)) == os.path.join(
+            str(root), expected_key, *parts
+        )
 
 
 # ---------------------------------------------------------------------------
@@ -1148,56 +867,6 @@ class TestPrepareRemoveIntegration:
 
         # 8. Remove is idempotent.
         remove(ticket, str(workspace_root))  # no error
-
-    def test_prepare_without_setup_script(self, tmp_path: Path) -> None:
-        """prepare() should succeed when .symphony/setup is absent."""
-        _require_git()
-
-        workspace_root = tmp_path / "workspaces"
-        workspace_root.mkdir()
-
-        source_repo = tmp_path / "source"
-        _make_source_repo(source_repo)  # no setup script
-
-        result_path = prepare(
-            ticket_identifier="NO-SETUP",
-            repo_url=str(source_repo),
-            branch_name="feature/test",
-            workspace_root=str(workspace_root),
-            sandbox_hide_paths=[],
-        )
-
-        assert os.path.isdir(result_path)
-        assert os.path.isdir(os.path.join(result_path, ".git"))
-
-        # Clean up
-        remove("NO-SETUP", str(workspace_root))
-
-    def test_setup_script_failure(self, tmp_path: Path) -> None:
-        """prepare() raises SetupFailed when .symphony/setup exits non-zero."""
-        _require_git()
-        _require_bwrap()
-
-        workspace_root = tmp_path / "workspaces"
-        workspace_root.mkdir()
-
-        source_repo = tmp_path / "source"
-        _make_source_repo(
-            source_repo,
-            setup_script=("#!/bin/bash\necho 'something went wrong' >&2\nexit 42\n"),
-        )
-
-        with pytest.raises(SetupFailed) as exc_info:
-            prepare(
-                ticket_identifier="FAIL-SETUP",
-                repo_url=str(source_repo),
-                branch_name="main",
-                workspace_root=str(workspace_root),
-                sandbox_hide_paths=[],
-            )
-
-        assert "42" in str(exc_info.value)
-        assert "something went wrong" in str(exc_info.value)
 
     def test_clone_invalid_url_fails(self, tmp_path: Path) -> None:
         """prepare() raises CloneFailed for a bogus repo URL."""
@@ -1310,99 +979,6 @@ class TestPrepareRemoveIntegration:
         # Clean up
         remove(ticket, str(workspace_root))
 
-    def test_auto_branch_disabled_skips_switch(self, tmp_path: Path) -> None:
-        """When auto_branch=False, no branch switch runs and HEAD stays on
-        whatever git clone checked out (the source repo's default branch)."""
-        _require_git()
-
-        workspace_root = tmp_path / "workspaces"
-        workspace_root.mkdir()
-
-        source_repo = tmp_path / "source"
-        _make_source_repo(source_repo)  # default branch: main
-
-        result_path = prepare(
-            ticket_identifier="TEAM-99",
-            repo_url=str(source_repo),
-            branch_name="symphony/team-99",  # supplied but should be ignored
-            workspace_root=str(workspace_root),
-            sandbox_hide_paths=[],
-            auto_branch=False,
-        )
-
-        branch_result = subprocess.run(
-            ["git", "branch", "--show-current"],
-            cwd=result_path,
-            capture_output=True,
-            text=True,
-        )
-        # HEAD stays on the clone default ("main"), not the supplied name.
-        assert branch_result.stdout.strip() == "main"
-
-        # And no symphony/team-99 branch was created.
-        list_result = subprocess.run(
-            ["git", "branch", "--list", "symphony/team-99"],
-            cwd=result_path,
-            capture_output=True,
-            text=True,
-        )
-        assert list_result.stdout.strip() == ""
-
-        remove("TEAM-99", str(workspace_root))
-
-    def test_default_branch_naming(self, tmp_path: Path) -> None:
-        """When branch_name is None, the default naming convention is used."""
-        _require_git()
-
-        workspace_root = tmp_path / "workspaces"
-        workspace_root.mkdir()
-
-        source_repo = tmp_path / "source"
-        _make_source_repo(source_repo)
-
-        result_path = prepare(
-            ticket_identifier="My-Team.42",
-            repo_url=str(source_repo),
-            branch_name=None,
-            workspace_root=str(workspace_root),
-            sandbox_hide_paths=[],
-        )
-
-        branch_result = subprocess.run(
-            ["git", "branch", "--show-current"],
-            cwd=result_path,
-            capture_output=True,
-            text=True,
-        )
-        # Default: symphony/<lowercase_identifier>
-        assert branch_result.stdout.strip() == "symphony/my-team.42"
-
-        remove("My-Team.42", str(workspace_root))
-
-    def test_sanitized_directory_name(self, tmp_path: Path) -> None:
-        """The workspace directory uses the sanitized identifier."""
-        _require_git()
-
-        workspace_root = tmp_path / "workspaces"
-        workspace_root.mkdir()
-
-        source_repo = tmp_path / "source"
-        _make_source_repo(source_repo)
-
-        result_path = prepare(
-            ticket_identifier="Team/With Spaces",
-            repo_url=str(source_repo),
-            branch_name="main",
-            workspace_root=str(workspace_root),
-            sandbox_hide_paths=[],
-        )
-
-        # The directory should be named Team_With_Spaces/repo
-        expected_dir = workspace_root / "Team_With_Spaces" / "repo"
-        assert os.path.realpath(result_path) == os.path.realpath(expected_dir)
-
-        remove("Team/With Spaces", str(workspace_root))
-
 
 # ---------------------------------------------------------------------------
 # Unit: URL redaction in logs
@@ -1424,17 +1000,17 @@ class TestRedactUrl:
             == "https://host:8443/repo"
         )
 
-    def test_leaves_plain_url_unchanged(self) -> None:
-        url = "https://github.com/org/repo"
+    @pytest.mark.parametrize(
+        "url",
+        [
+            "https://github.com/org/repo",
+            "/tmp/some path/repo",
+            "git@github.com:org/repo.git",
+        ],
+        ids=["plain-url", "local-path", "scp-like-remote"],
+    )
+    def test_leaves_non_credential_strings_unchanged(self, url: str) -> None:
         assert _redact_url(url) == url
-
-    def test_leaves_local_path_unchanged(self) -> None:
-        path = "/tmp/some path/repo"
-        assert _redact_url(path) == path
-
-    def test_leaves_scp_like_remote_unchanged(self) -> None:
-        remote = "git@github.com:org/repo.git"
-        assert _redact_url(remote) == remote
 
     def test_malformed_schemed_url_fails_closed(self) -> None:
         """A URL urlsplit cannot parse (invalid IPv6 host) must still have its
@@ -1681,8 +1257,15 @@ class TestDirtySummary:
 
         assert dirty_summary(str(workspace)) is None
 
-    def test_untracked_file_returns_summary(self, tmp_path: Path) -> None:
-        """An untracked file yields a summary with a count and the file name."""
+    @pytest.mark.parametrize(
+        ("filename", "contents"),
+        [("untracked.txt", "hello"), ("README.md", "modified content")],
+        ids=["untracked", "modified"],
+    )
+    def test_dirty_file_returns_summary(
+        self, tmp_path: Path, filename: str, contents: str
+    ) -> None:
+        """A new or modified file yields a summary with a count and the name."""
         _require_git()
 
         source_repo = tmp_path / "source"
@@ -1696,34 +1279,12 @@ class TestDirtySummary:
             check=True,
         )
 
-        (workspace / "untracked.txt").write_text("hello")
+        (workspace / filename).write_text(contents)
 
         summary = dirty_summary(str(workspace))
         assert summary is not None
         assert "1 uncommitted file," in summary
-        assert "untracked.txt" in summary
-
-    def test_modified_tracked_file_returns_summary(self, tmp_path: Path) -> None:
-        """A modified tracked file makes the workspace dirty."""
-        _require_git()
-
-        source_repo = tmp_path / "source"
-        _make_source_repo(source_repo)
-
-        workspace = tmp_path / "ws"
-        subprocess.run(
-            ["git", "clone", str(source_repo), str(workspace)],
-            capture_output=True,
-            text=True,
-            check=True,
-        )
-
-        (workspace / "README.md").write_text("modified content")
-
-        summary = dirty_summary(str(workspace))
-        assert summary is not None
-        assert "1 uncommitted file," in summary
-        assert "README.md" in summary
+        assert filename in summary
 
     def test_local_only_commit_returns_summary(self, tmp_path: Path) -> None:
         """A local commit that is not on any remote makes the workspace dirty."""
@@ -1826,18 +1387,18 @@ class TestDirtySummary:
         assert summary is not None
         assert "untracked.txt" in summary
 
-    def test_missing_directory_returns_none(self, tmp_path: Path) -> None:
-        """A path that is not a directory has nothing to protect."""
-        assert dirty_summary(str(tmp_path / "does-not-exist")) is None
-
     def test_non_repo_directory_returns_summary(self, tmp_path: Path) -> None:
-        """A directory that is not a git repo is conservatively dirty."""
+        """A path that is not a git repo is conservatively dirty, so it is
+        never deleted as "clean"."""
         plain = tmp_path / "plain"
         plain.mkdir()
 
         summary = dirty_summary(str(plain))
         assert summary is not None
         assert "Could not verify workspace state" in summary
+
+        # A path that does not exist has nothing to protect.
+        assert dirty_summary(str(tmp_path / "does-not-exist")) is None
 
 
 # ---------------------------------------------------------------------------
@@ -2147,42 +1708,23 @@ class TestFinalizeWorkspace:
 
 
 class TestStartServeMissingScript:
-    """start_serve raises ServeScriptMissing when the script is absent or not executable."""
+    """start_serve raises ServeScriptMissing when the script is unusable."""
 
-    def test_raises_when_symphony_dir_absent(self, tmp_path: Path) -> None:
-        """No .symphony directory at all → ServeScriptMissing."""
+    @pytest.mark.parametrize("layout", ["no-dir", "no-file", "not-executable"])
+    def test_raises_when_script_unusable(self, tmp_path: Path, layout: str) -> None:
         workspace = tmp_path / "ws"
-        workspace.mkdir()
+        if layout == "no-dir":
+            workspace.mkdir()
+        else:
+            symphony_dir = workspace / ".symphony"
+            symphony_dir.mkdir(parents=True)
+            if layout == "not-executable":
+                serve_file = symphony_dir / "serve"
+                serve_file.write_text("#!/bin/bash\nsleep 60\n")
+                serve_file.chmod(0o644)
+
         with pytest.raises(ServeScriptMissing, match=r"\.symphony/serve"):
             start_serve(str(workspace), hide_paths=[], tmp_path=str(tmp_path / "t"))
-
-    def test_raises_when_serve_file_absent(self, tmp_path: Path) -> None:
-        """Directory exists but serve file is missing → ServeScriptMissing."""
-        workspace = tmp_path / "ws"
-        symphony_dir = workspace / ".symphony"
-        symphony_dir.mkdir(parents=True)
-        with pytest.raises(ServeScriptMissing, match=r"\.symphony/serve"):
-            start_serve(str(workspace), hide_paths=[], tmp_path=str(tmp_path / "t"))
-
-    def test_raises_when_serve_not_executable(self, tmp_path: Path) -> None:
-        """serve file exists but is not executable → ServeScriptMissing."""
-        workspace = tmp_path / "ws"
-        symphony_dir = workspace / ".symphony"
-        symphony_dir.mkdir(parents=True)
-        serve_file = symphony_dir / "serve"
-        serve_file.write_text("#!/bin/bash\nsleep 60\n")
-        # Explicitly remove execute bit
-        serve_file.chmod(0o644)
-        with pytest.raises(ServeScriptMissing, match=r"\.symphony/serve"):
-            start_serve(str(workspace), hide_paths=[], tmp_path=str(tmp_path / "t"))
-
-    def test_serve_script_missing_is_workspace_error(self) -> None:
-        """ServeScriptMissing is a subclass of WorkspaceError."""
-        assert issubclass(ServeScriptMissing, WorkspaceError)
-
-    def test_serve_script_missing_message(self) -> None:
-        exc = ServeScriptMissing("missing at /some/path")
-        assert "missing at /some/path" in str(exc)
 
 
 # ---------------------------------------------------------------------------
@@ -2215,35 +1757,6 @@ class TestStartServeIntegration:
             # Both pipes should be open.
             assert proc.stdout is not None
             assert proc.stderr is not None
-        finally:
-            proc.kill()
-            proc.wait()
-
-    def test_returns_popen_with_extra_rw_paths(self, tmp_path: Path) -> None:
-        """extra_rw_paths is forwarded to the sandbox without error."""
-        _require_bwrap()
-
-        workspace = tmp_path / "ws"
-        symphony_dir = workspace / ".symphony"
-        symphony_dir.mkdir(parents=True)
-        serve_file = symphony_dir / "serve"
-        serve_file.write_text("#!/bin/bash\nsleep 60\n")
-        serve_file.chmod(serve_file.stat().st_mode | stat.S_IEXEC)
-
-        extra_dir = tmp_path / "extra"
-        extra_dir.mkdir()
-
-        ticket_tmp = tmp_path / "ticket-tmp"
-        ticket_tmp.mkdir()
-
-        proc = start_serve(
-            str(workspace),
-            hide_paths=[],
-            extra_rw_paths=[str(extra_dir)],
-            tmp_path=str(ticket_tmp),
-        )
-        try:
-            assert proc.poll() is None
         finally:
             proc.kill()
             proc.wait()

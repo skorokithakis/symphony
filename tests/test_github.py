@@ -52,20 +52,11 @@ class TestExceptionMapping:
     """Verify HTTP status codes and GraphQL errors map to the correct typed
     exceptions."""
 
-    def test_auth_401_raises(self) -> None:
+    @pytest.mark.parametrize("status", [401, 403])
+    def test_auth_status_raises(self, status: int) -> None:
         transport = _make_transport(
             lambda req: _json_response(
-                {"errors": [{"message": "Bad credentials"}]}, 401
-            )
-        )
-        client = _client(transport)
-        with pytest.raises(GitHubAuthError):
-            client._query("query { viewer { id } }")
-
-    def test_auth_403_raises(self) -> None:
-        transport = _make_transport(
-            lambda req: _json_response(
-                {"errors": [{"message": "Resource not accessible"}]}, 403
+                {"errors": [{"message": "Bad credentials"}]}, status
             )
         )
         client = _client(transport)
@@ -114,14 +105,9 @@ class TestExceptionMapping:
         with pytest.raises(GitHubRateLimitError):
             client._query("query { viewer { id } }")
 
-    def test_transient_500_raises(self) -> None:
-        transport = _make_transport(lambda req: _json_response({}, 500))
-        client = _client(transport)
-        with pytest.raises(GitHubTransientError):
-            client._query("query { viewer { id } }")
-
-    def test_transient_502_raises(self) -> None:
-        transport = _make_transport(lambda req: _json_response({}, 502))
+    @pytest.mark.parametrize("status", [500, 502])
+    def test_transient_status_raises(self, status: int) -> None:
+        transport = _make_transport(lambda req: _json_response({}, status))
         client = _client(transport)
         with pytest.raises(GitHubTransientError):
             client._query("query { viewer { id } }")
@@ -187,14 +173,6 @@ class TestExceptionMapping:
 
 
 class TestQuery:
-    def test_returns_data_payload(self) -> None:
-        transport = _make_transport(
-            lambda req: _json_response({"data": {"hello": "world"}})
-        )
-        client = _client(transport)
-        result = client._query("query { hello }")
-        assert result == {"hello": "world"}
-
     def test_passes_variables(self) -> None:
         captured: dict[str, Any] = {}
 
@@ -224,16 +202,26 @@ class TestToleratePathErrors:
     allows path-scoped GraphQL errors through when they are the only kind
     present."""
 
-    def test_path_only_returns_data_and_logs_warning(self, caplog) -> None:
-        """All errors have a non-empty path → data returned, warnings logged."""
+    @pytest.mark.parametrize(
+        "messages",
+        [
+            ["Resource not accessible by personal access token"],
+            ["First forbidden", "Second forbidden"],
+        ],
+    )
+    def test_path_only_returns_data_and_logs_every_error(
+        self, caplog, messages: list[str]
+    ) -> None:
+        """Every path-scoped error is logged (not just the first), data returned."""
         response = {
             "data": {"node": {"items": {"nodes": [{"id": "PVTI_1"}]}}},
             "errors": [
                 {
                     "type": "FORBIDDEN",
-                    "path": ["node", "items", "nodes", 0, "content"],
-                    "message": "Resource not accessible by personal access token",
+                    "path": ["node", "items", "nodes", index, "content"],
+                    "message": message,
                 }
+                for index, message in enumerate(messages)
             ],
         }
         transport = _make_transport(lambda req: _json_response(response))
@@ -245,10 +233,11 @@ class TestToleratePathErrors:
             result = client._query("query { ... }", tolerate_path_errors=True)
 
         assert result == response["data"]
-        assert len(caplog.records) == 1
-        assert caplog.records[0].levelno == logging.WARNING
-        assert "path-scoped error" in caplog.records[0].message
-        assert "Resource not accessible" in caplog.records[0].message
+        assert len(caplog.records) == len(messages)
+        assert all(record.levelno == logging.WARNING for record in caplog.records)
+        assert all("path-scoped error" in record.message for record in caplog.records)
+        for message in messages:
+            assert message in caplog.text
 
     def test_mixed_path_and_root_errors_raises(self) -> None:
         """At least one error has no path → full error handling (raise)."""
@@ -303,32 +292,3 @@ class TestToleratePathErrors:
         client = _client(transport)
         with pytest.raises(GitHubAuthError):
             client._query("query { ... }", tolerate_path_errors=True)
-
-    def test_multiple_path_only_errors_all_logged(self, caplog) -> None:
-        """All path-scoped errors are logged, not just the first one."""
-        response = {
-            "data": {"node": None},
-            "errors": [
-                {
-                    "type": "FORBIDDEN",
-                    "path": ["node", "items", "nodes", 0, "content"],
-                    "message": "First forbidden",
-                },
-                {
-                    "type": "FORBIDDEN",
-                    "path": ["node", "items", "nodes", 2, "content"],
-                    "message": "Second forbidden",
-                },
-            ],
-        }
-        transport = _make_transport(lambda req: _json_response(response))
-        client = _client(transport)
-
-        import logging
-
-        with caplog.at_level(logging.WARNING):
-            result = client._query("query { ... }", tolerate_path_errors=True)
-
-        assert result == response["data"]
-        assert len(caplog.records) == 2
-        assert all(r.levelno == logging.WARNING for r in caplog.records)

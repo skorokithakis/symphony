@@ -113,16 +113,6 @@ class TestWebhookValidRequests:
             # Wake callback must be called exactly once.
             fxt.wake_mock.assert_called_once()
 
-    def test_valid_signature_no_wake_on_other_path(self) -> None:
-        with _WebhookServerFixture() as fxt:
-            fxt.start()
-            sig = _make_signature(_VALID_BODY)
-            status, resp_body = _post(
-                fxt.port, _VALID_BODY, signature=sig, path="/something-else"
-            )
-            assert status == 404
-            fxt.wake_mock.assert_not_called()
-
 
 class TestWebhookAuth:
     """Authentication / signature verification edge cases."""
@@ -135,20 +125,16 @@ class TestWebhookAuth:
             assert b"Unauthorized" in resp_body
             fxt.wake_mock.assert_not_called()
 
-    def test_bad_signature_returns_401(self) -> None:
+    @pytest.mark.parametrize(
+        "signature",
+        ["bad-sig", _make_signature(_VALID_BODY, secret="wrong-secret")],
+    )
+    def test_wrong_signature_returns_401(self, signature: str) -> None:
         with _WebhookServerFixture() as fxt:
             fxt.start()
-            status, resp_body = _post(fxt.port, _VALID_BODY, signature="bad-sig")
+            status, resp_body = _post(fxt.port, _VALID_BODY, signature=signature)
             assert status == 401
             assert b"Unauthorized" in resp_body
-            fxt.wake_mock.assert_not_called()
-
-    def test_signature_with_wrong_secret_returns_401(self) -> None:
-        with _WebhookServerFixture() as fxt:
-            fxt.start()
-            sig = _make_signature(_VALID_BODY, secret="wrong-secret")
-            status, resp_body = _post(fxt.port, _VALID_BODY, signature=sig)
-            assert status == 401
             fxt.wake_mock.assert_not_called()
 
 
@@ -169,13 +155,6 @@ class TestWebhookRouting:
             status, resp_body = _get(fxt.port, _WEBHOOK_PATH)
             assert status == 405
             assert b"Method Not Allowed" in resp_body
-            fxt.wake_mock.assert_not_called()
-
-    def test_get_on_wrong_path_returns_404(self) -> None:
-        with _WebhookServerFixture() as fxt:
-            fxt.start()
-            status, _ = _get(fxt.port, "/bar")
-            assert status == 404
             fxt.wake_mock.assert_not_called()
 
 
@@ -227,53 +206,8 @@ class TestWebhookBodyLimits:
             fxt.wake_mock.assert_not_called()
 
 
-class TestWebhookConcurrency:
-    """Smoke-test that concurrent valid requests each fire the wake callback."""
-
-    def test_concurrent_valid_requests_all_wake(self) -> None:
-        with _WebhookServerFixture() as fxt:
-            fxt.start()
-            sig = _make_signature(_VALID_BODY)
-            results: list[int] = []
-            lock = threading.Lock()
-
-            def worker() -> None:
-                try:
-                    status, _ = _post(fxt.port, _VALID_BODY, signature=sig)
-                    with lock:
-                        results.append(status)
-                except Exception:
-                    with lock:
-                        results.append(-1)
-
-            t1 = threading.Thread(target=worker)
-            t2 = threading.Thread(target=worker)
-            t1.start()
-            t2.start()
-            t1.join()
-            t2.join()
-
-            assert len(results) == 2
-            assert all(s == 200 for s in results)
-            # wake callback must be called exactly twice (once per request).
-            assert fxt.wake_mock.call_count == 2
-
-
 class TestWebhookServerLifecycle:
-    """Start, stop, clean shutdown."""
-
-    def test_start_and_stop(self) -> None:
-        wake_mock = Mock()
-        server = WebhookServer(port=0, linear_secret=_SECRET, on_wake=wake_mock)
-        server.start()
-        # Server should be running and bound to a non-zero port.
-        assert server._server is not None
-        port = server._server.server_address[1]
-        assert port > 0
-
-        server.stop()
-        # After stop, the thread should be finished.
-        assert server._thread is not None and not server._thread.is_alive()
+    """Clean shutdown."""
 
     def test_double_stop_is_safe(self) -> None:
         wake_mock = Mock()

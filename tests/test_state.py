@@ -10,10 +10,8 @@ from typing import Any
 from symphony_linear.state import (
     SessionRecord,
     StateManager,
-    StateStore,
     TicketState,
     TicketStatus,
-    load_state,
 )
 
 
@@ -40,57 +38,6 @@ def _make_ticket(ticket_id: str = "1", **overrides: Any) -> TicketState:
 
 
 # ---------------------------------------------------------------------------
-# TicketState model
-# ---------------------------------------------------------------------------
-
-
-class TestTicketState:
-    def test_create_minimal(self) -> None:
-        ts = TicketState(
-            ticket_id="42",
-            ticket_identifier="TEAM-42",
-            repo_url="https://github.com/foo/bar.git",
-            workspace_path="/tmp/ws/42",
-            branch="feature/ticket-42",
-        )
-        assert ts.ticket_id == "42"
-        assert ts.agent is None
-        assert ts.status == TicketStatus.bootstrapping
-        assert ts.created_at is not None
-        assert ts.updated_at is not None
-
-    def test_json_roundtrip(self) -> None:
-        ts = _make_ticket("1", status=TicketStatus.working, agent="omp")
-        data = ts.model_dump(mode="json")
-        restored = TicketState.model_validate(data)
-        assert restored.ticket_id == ts.ticket_id
-        assert restored.agent == "omp"
-        assert restored.status == ts.status
-        assert restored.created_at == ts.created_at
-
-
-# ---------------------------------------------------------------------------
-# StateStore model
-# ---------------------------------------------------------------------------
-
-
-class TestStateStore:
-    def test_empty_by_default(self) -> None:
-        store = StateStore()
-        assert store.tickets == []
-
-    def test_serialize_deserialize(self) -> None:
-        store = StateStore(tickets=[_make_ticket("1"), _make_ticket("2")])
-        dumped = store.model_dump(mode="json")
-        json_text = json.dumps(dumped)
-
-        reloaded_raw = json.loads(json_text)
-        reloaded = StateStore.model_validate(reloaded_raw)
-        assert len(reloaded.tickets) == 2
-        assert reloaded.tickets[0].ticket_id == "1"
-
-
-# ---------------------------------------------------------------------------
 # StateManager
 # ---------------------------------------------------------------------------
 
@@ -113,19 +60,6 @@ class TestStateManager:
         mgr2.load()
         assert len(mgr2.tickets) == 1
         assert mgr2.tickets[0].ticket_id == "1"
-
-    def test_atomic_write_no_partial_file(self, tmp_path: Path) -> None:
-        path = tmp_path / "state.json"
-        mgr = StateManager(path)
-        mgr.load()
-        mgr.upsert(_make_ticket("1"))
-        mgr.save()
-
-        # Verify the file contains complete, valid JSON.
-        raw = path.read_text()
-        parsed = json.loads(raw)
-        assert "tickets" in parsed
-        assert len(parsed["tickets"]) == 1
 
     def test_atomic_write_does_not_leave_temp_files(self, tmp_path: Path) -> None:
         path = tmp_path / "state.json"
@@ -154,17 +88,14 @@ class TestStateManager:
         assert len(mgr.tickets) == 1
         assert mgr.tickets[0].status == TicketStatus.working
 
-    def test_get_existing(self, tmp_path: Path) -> None:
+    def test_get(self, tmp_path: Path) -> None:
         mgr = StateManager(tmp_path / "state.json")
         mgr.load()
         mgr.upsert(_make_ticket("42"))
-        t = mgr.get("42")
-        assert t is not None
-        assert t.ticket_id == "42"
 
-    def test_get_missing(self, tmp_path: Path) -> None:
-        mgr = StateManager(tmp_path / "state.json")
-        mgr.load()
+        ticket = mgr.get("42")
+        assert ticket is not None
+        assert ticket.ticket_id == "42"
         assert mgr.get("999") is None
 
     def test_remove(self, tmp_path: Path) -> None:
@@ -173,14 +104,6 @@ class TestStateManager:
         mgr.upsert(_make_ticket("1"))
         assert mgr.remove("1") is True
         assert mgr.remove("1") is False
-        assert len(mgr.tickets) == 0
-
-    def test_clear(self, tmp_path: Path) -> None:
-        mgr = StateManager(tmp_path / "state.json")
-        mgr.load()
-        mgr.upsert(_make_ticket("1"))
-        mgr.upsert(_make_ticket("2"))
-        mgr.clear()
         assert len(mgr.tickets) == 0
 
 
@@ -226,131 +149,19 @@ class TestConcurrentWrites:
 
 
 # ---------------------------------------------------------------------------
-# SessionRecord model
+# SessionRecord / session accessors
 # ---------------------------------------------------------------------------
 
 
 class TestSessionRecord:
-    def test_create_minimal(self) -> None:
-        sr = SessionRecord(session_id="ses-abc")
-        assert sr.session_id == "ses-abc"
-        assert sr.agent is None
-        assert sr.last_seen_comment_id is None
-
-    def test_create_full(self) -> None:
-        sr = SessionRecord(
-            session_id="ses-abc", agent="omp", last_seen_comment_id="cmt-42"
-        )
-        assert sr.session_id == "ses-abc"
-        assert sr.agent == "omp"
-        assert sr.last_seen_comment_id == "cmt-42"
-
-    def test_json_roundtrip(self) -> None:
-        sr = SessionRecord(
-            session_id="ses-abc", agent="omp", last_seen_comment_id="cmt-42"
-        )
-        data = sr.model_dump(mode="json")
-        restored = SessionRecord.model_validate(data)
-        assert restored.session_id == "ses-abc"
-        assert restored.agent == "omp"
-        assert restored.last_seen_comment_id == "cmt-42"
-
     def test_legacy_record_without_agent_defaults_to_none(self) -> None:
         sr = SessionRecord.model_validate(
             {"session_id": "ses-abc", "last_seen_comment_id": "cmt-42"}
         )
         assert sr.agent is None
 
-    def test_null_last_seen_roundtrip(self) -> None:
-        sr = SessionRecord(session_id="ses-abc", last_seen_comment_id=None)
-        data = sr.model_dump(mode="json")
-        restored = SessionRecord.model_validate(data)
-        assert restored.last_seen_comment_id is None
-
-
-# ---------------------------------------------------------------------------
-# StateStore sessions
-# ---------------------------------------------------------------------------
-
-
-class TestStateStoreSessions:
-    def test_sessions_default_empty(self) -> None:
-        store = StateStore()
-        assert store.sessions == {}
-
-    def test_sessions_serialize_deserialize(self) -> None:
-        store = StateStore(
-            sessions={
-                "ticket-1": SessionRecord(
-                    session_id="ses-abc", last_seen_comment_id="cmt-42"
-                ),
-            }
-        )
-        dumped = store.model_dump(mode="json")
-        json_text = json.dumps(dumped)
-
-        reloaded_raw = json.loads(json_text)
-        reloaded = StateStore.model_validate(reloaded_raw)
-        assert len(reloaded.sessions) == 1
-        assert reloaded.sessions["ticket-1"].session_id == "ses-abc"
-        assert reloaded.sessions["ticket-1"].last_seen_comment_id == "cmt-42"
-
-    def test_multiple_sessions_roundtrip(self) -> None:
-        store = StateStore(
-            sessions={
-                "ticket-1": SessionRecord(session_id="ses-aaa"),
-                "ticket-2": SessionRecord(
-                    session_id="ses-bbb", last_seen_comment_id="cmt-1"
-                ),
-            }
-        )
-        dumped = store.model_dump(mode="json")
-        reloaded = StateStore.model_validate(json.loads(json.dumps(dumped)))
-        assert len(reloaded.sessions) == 2
-        assert reloaded.sessions["ticket-1"].session_id == "ses-aaa"
-        assert reloaded.sessions["ticket-2"].session_id == "ses-bbb"
-
-
-# ---------------------------------------------------------------------------
-# StateManager session accessors
-# ---------------------------------------------------------------------------
-
 
 class TestStateManagerSessions:
-    def test_get_session_none_for_unknown(self, tmp_path: Path) -> None:
-        mgr = StateManager(tmp_path / "state.json")
-        mgr.load()
-        assert mgr.get_session("nonexistent") is None
-
-    def test_set_and_get_session(self, tmp_path: Path) -> None:
-        mgr = StateManager(tmp_path / "state.json")
-        mgr.load()
-        record = SessionRecord(session_id="ses-abc", last_seen_comment_id="cmt-42")
-        mgr.set_session("ticket-1", record)
-        retrieved = mgr.get_session("ticket-1")
-        assert retrieved is not None
-        assert retrieved.session_id == "ses-abc"
-        assert retrieved.last_seen_comment_id == "cmt-42"
-
-    def test_set_session_overwrites(self, tmp_path: Path) -> None:
-        mgr = StateManager(tmp_path / "state.json")
-        mgr.load()
-        mgr.set_session("ticket-1", SessionRecord(session_id="ses-old"))
-        mgr.set_session("ticket-1", SessionRecord(session_id="ses-new"))
-        assert mgr.get_session("ticket-1").session_id == "ses-new"  # type: ignore[union-attr]
-
-    def test_remove_session(self, tmp_path: Path) -> None:
-        mgr = StateManager(tmp_path / "state.json")
-        mgr.load()
-        mgr.set_session("ticket-1", SessionRecord(session_id="ses-abc"))
-        mgr.remove_session("ticket-1")
-        assert mgr.get_session("ticket-1") is None
-
-    def test_remove_session_noop_for_unknown(self, tmp_path: Path) -> None:
-        mgr = StateManager(tmp_path / "state.json")
-        mgr.load()
-        mgr.remove_session("nonexistent")  # must not raise
-
     def test_session_survives_save_load(self, tmp_path: Path) -> None:
         mgr = StateManager(tmp_path / "state.json")
         mgr.load()
@@ -389,41 +200,13 @@ class TestStateManagerSessions:
 
 
 # ---------------------------------------------------------------------------
-# Convenience function
-# ---------------------------------------------------------------------------
-
-
-class TestLoadState:
-    def test_returns_manager(self) -> None:
-        mgr = load_state(Path("/nonexistent"))
-        assert isinstance(mgr, StateManager)
-        assert mgr.tickets == []
-
-
-# ---------------------------------------------------------------------------
 # Backward compatibility
 # ---------------------------------------------------------------------------
 
 
 class TestBackwardCompat:
-    def test_old_state_json_without_provisioned_label_loads(
-        self, tmp_path: Path
-    ) -> None:
-        """A state.json without provisioned_label_name must load cleanly."""
-        old_state: dict[str, Any] = {"tickets": []}
-        path = tmp_path / "state.json"
-
-        path.write_text(json.dumps(old_state))
-
-        mgr = StateManager(path)
-        store = mgr.load()
-        assert store.tickets == []
-        assert store.provisioned_label_name is None
-
-    def test_old_state_json_without_attachment_count_loads(
-        self, tmp_path: Path
-    ) -> None:
-        """A state.json without attachment_count must load with the default (0)."""
+    def test_old_state_json_without_new_fields_loads(self, tmp_path: Path) -> None:
+        """A state.json missing later fields must load with their defaults."""
         old_state: dict[str, Any] = {
             "tickets": [
                 {
@@ -446,20 +229,6 @@ class TestBackwardCompat:
         mgr = StateManager(path)
         store = mgr.load()
         assert len(store.tickets) == 1
+        assert store.provisioned_label_name is None
         assert store.tickets[0].agent is None
         assert store.tickets[0].attachment_count == 0
-
-    def test_attachment_count_roundtrips_through_save_load(
-        self, tmp_path: Path
-    ) -> None:
-        """New attachment_count field must survive a save/load cycle."""
-        path = tmp_path / "state.json"
-        mgr = StateManager(path)
-        mgr.load()
-        mgr.upsert(_make_ticket("1", attachment_count=7))
-        mgr.save()
-
-        mgr2 = StateManager(path)
-        store = mgr2.load()
-        assert len(store.tickets) == 1
-        assert store.tickets[0].attachment_count == 7

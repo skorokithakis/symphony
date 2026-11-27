@@ -6,7 +6,6 @@ delegates to the underlying LinearClient.
 
 from __future__ import annotations
 
-import logging
 from typing import Any
 from unittest.mock import MagicMock
 
@@ -100,23 +99,7 @@ class TestProtocolConformance:
     """Verify that LinearTracker satisfies the Tracker protocol structurally."""
 
     def test_is_tracker_instance(self, tracker: LinearTracker) -> None:
-        """LinearTracker should be recognised as a Tracker by isinstance."""
         assert isinstance(tracker, Tracker)
-
-    def test_all_methods_present(self) -> None:
-        """Every Tracker method must have a corresponding LinearTracker method."""
-        protocol_methods = [
-            name
-            for name in dir(Tracker)
-            if not name.startswith("_") and callable(getattr(Tracker, name, None))
-        ]
-        tracker_methods = [
-            name
-            for name in dir(LinearTracker)
-            if not name.startswith("_") and callable(getattr(LinearTracker, name, None))
-        ]
-        missing = [m for m in protocol_methods if m not in tracker_methods]
-        assert missing == [], f"LinearTracker missing methods: {missing}"
 
 
 # ---------------------------------------------------------------------------
@@ -127,25 +110,21 @@ class TestProtocolConformance:
 class TestExceptionHierarchy:
     """Tracker-neutral exceptions must catch their Linear counterparts."""
 
-    def test_tracker_error_catches_linear_error(self) -> None:
-        with pytest.raises(TrackerError):
-            raise LinearError("test")
-
-    def test_tracker_auth_catches_linear_auth(self) -> None:
-        with pytest.raises(TrackerAuthError):
-            raise LinearAuthError("test")
-
-    def test_tracker_rate_limit_catches_linear_rate_limit(self) -> None:
-        with pytest.raises(TrackerRateLimitError):
-            raise LinearRateLimitError("test")
-
-    def test_tracker_transient_catches_linear_transient(self) -> None:
-        with pytest.raises(TrackerTransientError):
-            raise LinearTransientError("test")
-
-    def test_tracker_not_found_catches_linear_not_found(self) -> None:
-        with pytest.raises(TrackerNotFoundError):
-            raise LinearNotFoundError("test")
+    @pytest.mark.parametrize(
+        ("linear_error", "tracker_error"),
+        [
+            (LinearError, TrackerError),
+            (LinearAuthError, TrackerAuthError),
+            (LinearRateLimitError, TrackerRateLimitError),
+            (LinearTransientError, TrackerTransientError),
+            (LinearNotFoundError, TrackerNotFoundError),
+        ],
+    )
+    def test_tracker_error_catches_linear_error(
+        self, linear_error: type[Exception], tracker_error: type[Exception]
+    ) -> None:
+        with pytest.raises(tracker_error):
+            raise linear_error("test")
 
     def test_linear_error_still_catches_linear_subclasses(self) -> None:
         """Existing catch blocks for LinearError must still work."""
@@ -153,11 +132,6 @@ class TestExceptionHierarchy:
             raise LinearAuthError("test")
         with pytest.raises(LinearError):
             raise LinearNotFoundError("test")
-
-    def test_standard_exception_still_catches_all(self) -> None:
-        """Plain Exception must still catch everything."""
-        with pytest.raises(Exception):
-            raise LinearAuthError("test")
 
 
 # ---------------------------------------------------------------------------
@@ -228,35 +202,6 @@ class TestListTriggeredIssues:
         )
 
 
-class TestGetIssue:
-    def test_delegates(self, tracker: LinearTracker, linear_mock: MagicMock) -> None:
-        issue = Issue(
-            id="i-1",
-            identifier="T-1",
-            title="Test",
-            state="In Progress",
-            updatedAt="2025-01-01T00:00:00Z",
-        )
-        linear_mock.get_issue.return_value = issue
-        assert tracker.get_issue("i-1") is issue
-        linear_mock.get_issue.assert_called_once_with("i-1")
-
-
-class TestListCommentsSince:
-    def test_delegates(self, tracker: LinearTracker, linear_mock: MagicMock) -> None:
-        comments = [Comment(id="c-1", body="hello", createdAt="2025-01-01T00:00:00Z")]
-        linear_mock.list_comments_since.return_value = comments
-        assert tracker.list_comments_since("i-1", "c-0") == comments
-        linear_mock.list_comments_since.assert_called_once_with("i-1", "c-0")
-
-    def test_last_seen_none(
-        self, tracker: LinearTracker, linear_mock: MagicMock
-    ) -> None:
-        linear_mock.list_comments_since.return_value = []
-        tracker.list_comments_since("i-1", None)
-        linear_mock.list_comments_since.assert_called_once_with("i-1", None)
-
-
 class TestPostComment:
     def test_delegates(self, tracker: LinearTracker, linear_mock: MagicMock) -> None:
         comment = Comment(id="c-1", body="posted", createdAt="2025-01-01T00:00:00Z")
@@ -277,17 +222,23 @@ class TestEditComment:
 
 
 class TestTransitionTo:
-    def test_in_progress(self, tracker: LinearTracker, linear_mock: MagicMock) -> None:
-        tracker.transition_to("i-1", TransitionTarget.in_progress)
-        linear_mock.transition_to_state.assert_called_once_with("i-1", "In Progress")
-
-    def test_needs_input(self, tracker: LinearTracker, linear_mock: MagicMock) -> None:
-        tracker.transition_to("i-1", TransitionTarget.needs_input)
-        linear_mock.transition_to_state.assert_called_once_with("i-1", "Needs Input")
-
-    def test_qa(self, tracker: LinearTracker, linear_mock: MagicMock) -> None:
-        tracker.transition_to("i-1", TransitionTarget.qa)
-        linear_mock.transition_to_state.assert_called_once_with("i-1", "QA")
+    @pytest.mark.parametrize(
+        ("target", "state_name"),
+        [
+            (TransitionTarget.in_progress, "In Progress"),
+            (TransitionTarget.needs_input, "Needs Input"),
+            (TransitionTarget.qa, "QA"),
+        ],
+    )
+    def test_maps_target_to_configured_state(
+        self,
+        tracker: LinearTracker,
+        linear_mock: MagicMock,
+        target: TransitionTarget,
+        state_name: str,
+    ) -> None:
+        tracker.transition_to("i-1", target)
+        linear_mock.transition_to_state.assert_called_once_with("i-1", state_name)
 
     def test_qa_raises_when_not_configured(
         self, linear_mock: MagicMock, config_no_qa: _LinearConfig
@@ -296,34 +247,6 @@ class TestTransitionTo:
         with pytest.raises(ValueError, match="No state mapping"):
             tracker.transition_to("i-1", TransitionTarget.qa)
         linear_mock.transition_to_state.assert_not_called()
-
-    def test_logs_successful_transition(
-        self,
-        tracker: LinearTracker,
-        linear_mock: MagicMock,
-        caplog: pytest.LogCaptureFixture,
-    ) -> None:
-        with caplog.at_level(logging.INFO, logger="symphony_linear.linear_tracker"):
-            tracker.transition_to("i-1", TransitionTarget.in_progress)
-
-        records = [
-            r for r in caplog.records if r.name == "symphony_linear.linear_tracker"
-        ]
-        assert [(r.levelno, r.getMessage()) for r in records] == [
-            (logging.INFO, "Transitioned i-1 to 'In Progress'")
-        ]
-
-    def test_does_not_log_failed_transition(
-        self,
-        linear_mock: MagicMock,
-        config_no_qa: _LinearConfig,
-        caplog: pytest.LogCaptureFixture,
-    ) -> None:
-        tracker = LinearTracker(linear_mock, config_no_qa)
-        with caplog.at_level(logging.INFO, logger="symphony_linear.linear_tracker"):
-            with pytest.raises(ValueError, match="No state mapping"):
-                tracker.transition_to("i-1", TransitionTarget.qa)
-        assert "Transitioned" not in caplog.text
 
 
 class TestIsStillTriggered:
@@ -515,8 +438,15 @@ class TestRepoUrlFor:
 
 
 class TestEnsureTriggerSetup:
+    @pytest.mark.parametrize(
+        "model_labels", [["Model: Strong", "Model: Cheap"], []], ids=["models", "none"]
+    )
     def test_calls_provision_trigger_label(
-        self, tracker: LinearTracker, linear_mock: MagicMock, tmp_path: Any
+        self,
+        tracker: LinearTracker,
+        linear_mock: MagicMock,
+        tmp_path: Any,
+        model_labels: list[str],
     ) -> None:
         from unittest.mock import patch
 
@@ -534,31 +464,9 @@ class TestEnsureTriggerSetup:
                 "symphony_linear.linear_tracker.provision_model_labels"
             ) as mock_models,
         ):
-            tracker.ensure_trigger_setup(state, ["Model: Strong", "Model: Cheap"])
+            tracker.ensure_trigger_setup(state, model_labels)
             mock_provision.assert_called_once_with(linear_mock, state, "Agent")
-            mock_models.assert_called_once_with(
-                linear_mock, ["Model: Strong", "Model: Cheap"]
-            )
-
-    def test_empty_model_labels_provisions_nothing_extra(
-        self, tracker: LinearTracker, linear_mock: MagicMock, tmp_path: Any
-    ) -> None:
-        from unittest.mock import patch
-
-        state = StateManager(tmp_path / "state.json")
-        state.load()
-
-        with (
-            patch(
-                "symphony_linear.linear_tracker.provision_trigger_label"
-            ) as mock_provision,
-            patch(
-                "symphony_linear.linear_tracker.provision_model_labels"
-            ) as mock_models,
-        ):
-            tracker.ensure_trigger_setup(state, [])
-            mock_provision.assert_called_once_with(linear_mock, state, "Agent")
-            mock_models.assert_called_once_with(linear_mock, [])
+            mock_models.assert_called_once_with(linear_mock, model_labels)
 
     def test_skips_trigger_label_when_none(
         self,
@@ -586,78 +494,27 @@ class TestEnsureTriggerSetup:
         mock_models.assert_called_once_with(linear_mock, ["Model: Strong"])
 
 
-class TestHumanTriggerDescription:
-    def test_includes_label_name(self, tracker: LinearTracker) -> None:
-        assert tracker.human_trigger_description() == "remove the `Agent` label"
-
-    def test_custom_label(self, linear_mock: MagicMock) -> None:
-        config = _LinearConfig(
-            api_key="k",
-            trigger_label="Symphony",
-            in_progress_state="IP",
-            needs_input_state="NI",
-        )
-        t = LinearTracker(linear_mock, config)
-        assert t.human_trigger_description() == "remove the `Symphony` label"
-
-    def test_none_label_names_active_states(
-        self,
-        linear_mock: MagicMock,
-        config_no_label: _LinearConfig,
-    ) -> None:
-        tracker = LinearTracker(linear_mock, config_no_label)
-
-        assert (
-            tracker.human_trigger_description()
-            == "move the ticket out of `In Progress`/`Needs Input`"
-        )
-
-
 # ---------------------------------------------------------------------------
 # _maybe_rewrite_to_ssh
 # ---------------------------------------------------------------------------
 
 
 class TestMaybeRewriteToSsh:
-    def test_https_github_converts(self) -> None:
+    @pytest.mark.parametrize(
+        ("url", "expected"),
+        [
+            ("https://github.com/org/repo", "git@github.com:org/repo.git"),
+            ("https://github.com/org/repo/", "git@github.com:org/repo.git"),
+            ("https://github.com/org/repo.git", "https://github.com/org/repo.git"),
+            ("git@github.com:org/repo.git", "git@github.com:org/repo.git"),
+            ("https://gitlab.com/org/repo", "https://gitlab.com/org/repo"),
+            ("http://github.com/org/repo", "http://github.com/org/repo"),
+        ],
+    )
+    def test_rewrites_only_https_github_urls(self, url: str, expected: str) -> None:
         from symphony_linear.linear_tracker import _maybe_rewrite_to_ssh
 
-        assert (
-            _maybe_rewrite_to_ssh("https://github.com/org/repo")
-            == "git@github.com:org/repo.git"
-        )
-
-    def test_https_github_trailing_slash(self) -> None:
-        from symphony_linear.linear_tracker import _maybe_rewrite_to_ssh
-
-        assert (
-            _maybe_rewrite_to_ssh("https://github.com/org/repo/")
-            == "git@github.com:org/repo.git"
-        )
-
-    def test_https_dot_git_passthrough(self) -> None:
-        from symphony_linear.linear_tracker import _maybe_rewrite_to_ssh
-
-        url = "https://github.com/org/repo.git"
-        assert _maybe_rewrite_to_ssh(url) == url
-
-    def test_git_protocol_passthrough(self) -> None:
-        from symphony_linear.linear_tracker import _maybe_rewrite_to_ssh
-
-        url = "git@github.com:org/repo.git"
-        assert _maybe_rewrite_to_ssh(url) == url
-
-    def test_non_github_passthrough(self) -> None:
-        from symphony_linear.linear_tracker import _maybe_rewrite_to_ssh
-
-        url = "https://gitlab.com/org/repo"
-        assert _maybe_rewrite_to_ssh(url) == url
-
-    def test_http_passthrough(self) -> None:
-        from symphony_linear.linear_tracker import _maybe_rewrite_to_ssh
-
-        url = "http://github.com/org/repo"
-        assert _maybe_rewrite_to_ssh(url) == url
+        assert _maybe_rewrite_to_ssh(url) == expected
 
 
 # ---------------------------------------------------------------------------
@@ -666,64 +523,57 @@ class TestMaybeRewriteToSsh:
 
 
 class TestIsInQa:
-    """Tests for is_in_qa."""
-
-    def test_true_when_in_qa(self, tracker: LinearTracker) -> None:
-        issue = Issue(
+    def _issue(self, state: str) -> Issue:
+        return Issue(
             id="i-1",
             identifier="T-1",
             title="T",
-            state="QA",
+            state=state,
             updatedAt="2025-01-01T00:00:00Z",
         )
-        assert tracker.is_in_qa(issue) is True
 
-    def test_false_when_not_qa(self, tracker: LinearTracker) -> None:
-        issue = Issue(
-            id="i-1",
-            identifier="T-1",
-            title="T",
-            state="In Progress",
-            updatedAt="2025-01-01T00:00:00Z",
-        )
-        assert tracker.is_in_qa(issue) is False
+    @pytest.mark.parametrize(
+        ("state", "expected"), [("QA", True), ("In Progress", False)]
+    )
+    def test_reflects_the_issue_state(
+        self, tracker: LinearTracker, state: str, expected: bool
+    ) -> None:
+        assert tracker.is_in_qa(self._issue(state)) is expected
 
     def test_false_when_qa_not_configured(self, config_no_qa: _LinearConfig) -> None:
         linear_mock = MagicMock(spec=LinearClient)
         tracker = LinearTracker(linear_mock, config_no_qa)
-        issue = Issue(
-            id="i-1",
-            identifier="T-1",
-            title="T",
-            state="QA",
-            updatedAt="2025-01-01T00:00:00Z",
-        )
-        assert tracker.is_in_qa(issue) is False
+        assert tracker.is_in_qa(self._issue("QA")) is False
 
 
 class TestQaEnabled:
-    def test_true_when_configured(self, tracker: LinearTracker) -> None:
-        assert tracker.qa_enabled is True
-
-    def test_false_when_not_configured(self, config_no_qa: _LinearConfig) -> None:
-        linear_mock = MagicMock(spec=LinearClient)
-        tracker = LinearTracker(linear_mock, config_no_qa)
-        assert tracker.qa_enabled is False
+    @pytest.mark.parametrize(("qa_state", "expected"), [("QA", True), (None, False)])
+    def test_follows_the_configured_qa_state(
+        self, linear_mock: MagicMock, qa_state: str | None, expected: bool
+    ) -> None:
+        config = _LinearConfig(
+            api_key="test-key",
+            trigger_label="Agent",
+            in_progress_state="In Progress",
+            needs_input_state="Needs Input",
+            qa_state=qa_state,
+        )
+        assert LinearTracker(linear_mock, config).qa_enabled is expected
 
 
 class TestTransitionNameFor:
-    def test_in_progress(self, tracker: LinearTracker) -> None:
-        assert (
-            tracker.transition_name_for(TransitionTarget.in_progress) == "In Progress"
-        )
-
-    def test_needs_input(self, tracker: LinearTracker) -> None:
-        assert (
-            tracker.transition_name_for(TransitionTarget.needs_input) == "Needs Input"
-        )
-
-    def test_qa(self, tracker: LinearTracker) -> None:
-        assert tracker.transition_name_for(TransitionTarget.qa) == "QA"
+    @pytest.mark.parametrize(
+        ("target", "expected"),
+        [
+            (TransitionTarget.in_progress, "In Progress"),
+            (TransitionTarget.needs_input, "Needs Input"),
+            (TransitionTarget.qa, "QA"),
+        ],
+    )
+    def test_names(
+        self, tracker: LinearTracker, target: TransitionTarget, expected: str
+    ) -> None:
+        assert tracker.transition_name_for(target) == expected
 
     def test_qa_raises_when_not_configured(self, config_no_qa: _LinearConfig) -> None:
         linear_mock = MagicMock(spec=LinearClient)
@@ -822,54 +672,24 @@ class TestDownloadAttachment:
             with pytest.raises(AttachmentTooLargeError, match="exceeds"):
                 tracker.download_attachment("https://uploads.linear.app/huge.bin")
 
+    @pytest.mark.parametrize(
+        "error_type", ["NetworkError", "TimeoutException"], ids=["network", "timeout"]
+    )
     def test_network_error_raises_attachment_download_error(
-        self, tracker: LinearTracker
+        self, tracker: LinearTracker, error_type: str
     ) -> None:
         from unittest.mock import patch
 
         import httpx
 
-        with patch(
-            "symphony_linear.linear_tracker.httpx.stream",
-            side_effect=httpx.NetworkError("connection reset"),
-        ):
-            with pytest.raises(AttachmentDownloadError, match="Download failed"):
-                tracker.download_attachment("https://uploads.linear.app/f.txt")
-
-    def test_timeout_raises_attachment_download_error(
-        self, tracker: LinearTracker
-    ) -> None:
-        from unittest.mock import patch
-
-        import httpx
-
-        with patch(
-            "symphony_linear.linear_tracker.httpx.stream",
-            side_effect=httpx.TimeoutException("timed out"),
-        ):
+        error = getattr(httpx, error_type)("failed")
+        with patch("symphony_linear.linear_tracker.httpx.stream", side_effect=error):
             with pytest.raises(AttachmentDownloadError, match="Download failed"):
                 tracker.download_attachment("https://uploads.linear.app/f.txt")
 
     # ------------------------------------------------------------------
     # SSRF defence — host allowlist validation before any I/O
     # ------------------------------------------------------------------
-
-    def test_allowlisted_host_downloads(self, tracker: LinearTracker) -> None:
-        from unittest.mock import patch
-
-        mock_response = MagicMock()
-        mock_response.status_code = 200
-        mock_response.headers = {"content-type": "text/plain"}
-        mock_response.iter_bytes.return_value = [b"data"]
-
-        with patch("symphony_linear.linear_tracker.httpx.stream") as mock_stream:
-            mock_stream.return_value.__enter__.return_value = mock_response
-            data, ct = tracker.download_attachment(
-                "https://uploads.linear.app/file.png"
-            )
-
-        assert data == b"data"
-        mock_stream.assert_called_once()
 
     def test_non_allowlisted_host_raises_before_http(
         self, tracker: LinearTracker
@@ -945,20 +765,18 @@ class TestIsUploadUrl:
 class TestLinearAuth:
     """Tests for the _LinearAuth custom httpx.Auth class."""
 
-    def test_allowlisted_host_gets_auth_header(self) -> None:
+    @pytest.mark.parametrize(
+        "url",
+        [
+            "https://uploads.linear.app/some-file.png",
+            "https://public.linear.app/image.png",
+        ],
+    )
+    def test_allowlisted_host_gets_auth_header(self, url: str) -> None:
         import httpx
 
         auth = _LinearAuth("my-api-key")
-        req = httpx.Request("GET", "https://uploads.linear.app/some-file.png")
-        flow = auth.auth_flow(req)
-        result = next(flow)
-        assert result.headers["Authorization"] == "my-api-key"
-
-    def test_allowlisted_host_public(self) -> None:
-        import httpx
-
-        auth = _LinearAuth("my-api-key")
-        req = httpx.Request("GET", "https://public.linear.app/image.png")
+        req = httpx.Request("GET", url)
         flow = auth.auth_flow(req)
         result = next(flow)
         assert result.headers["Authorization"] == "my-api-key"

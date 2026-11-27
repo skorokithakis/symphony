@@ -95,61 +95,54 @@ def _extract_path_value(bwrap_args: list[str]) -> str | None:
 class TestPathResolution:
     """Verify the three-tier PATH resolution in run_in_sandbox()."""
 
-    def test_caller_supplied_path_is_used_verbatim(
-        self, monkeypatch: pytest.MonkeyPatch, tmp_path: Path
+    @pytest.mark.parametrize(
+        ("env", "symphony_sandbox_path", "daemon_path", "expected"),
+        [
+            # A caller-supplied PATH wins over both other tiers.
+            (
+                {"HOME": "/home/user", "PATH": "/caller/bin:/usr/bin"},
+                "/override/bin",
+                "/daemon/bin",
+                "/caller/bin:/usr/bin",
+            ),
+            # SYMPHONY_SANDBOX_PATH wins over the daemon's own PATH.
+            (
+                {"HOME": "/home/user"},
+                "/custom/sandbox/bin:/usr/bin",
+                "/daemon/bin:/usr/local/bin",
+                "/custom/sandbox/bin:/usr/bin",
+            ),
+            # With no override, the daemon's PATH is inherited.
+            (
+                {"HOME": "/home/user"},
+                None,
+                "/home/user/.local/bin:/usr/local/bin:/usr/bin:/bin",
+                "/home/user/.local/bin:/usr/local/bin:/usr/bin:/bin",
+            ),
+            # With neither set, the hard-coded fallback is used.
+            (
+                {"HOME": "/home/user"},
+                None,
+                None,
+                "/usr/local/bin:/usr/bin:/bin",
+            ),
+        ],
+        ids=["caller", "symphony_sandbox_path", "daemon", "fallback"],
+    )
+    def test_path_resolution(
+        self,
+        monkeypatch: pytest.MonkeyPatch,
+        tmp_path: Path,
+        env: dict[str, str],
+        symphony_sandbox_path: str | None,
+        daemon_path: str | None,
+        expected: str,
     ) -> None:
-        """When the caller passes PATH in env, it is used as-is regardless of
-        SYMPHONY_SANDBOX_PATH or the daemon's own PATH."""
-        caller_path = "/caller/bin:/usr/bin"
         args = _capture_bwrap_args(
-            env={"HOME": "/home/user", "PATH": caller_path},
+            env=env,
             monkeypatch=monkeypatch,
-            symphony_sandbox_path="/override/bin",
-            daemon_path="/daemon/bin",
-            tmp_path=tmp_path,
-        )
-        assert _extract_path_value(args) == caller_path
-
-    def test_symphony_sandbox_path_wins_over_daemon_path(
-        self, monkeypatch: pytest.MonkeyPatch, tmp_path: Path
-    ) -> None:
-        """When SYMPHONY_SANDBOX_PATH is set and the caller does not supply
-        PATH, SYMPHONY_SANDBOX_PATH is used."""
-        override_path = "/custom/sandbox/bin:/usr/bin"
-        args = _capture_bwrap_args(
-            env={"HOME": "/home/user"},
-            monkeypatch=monkeypatch,
-            symphony_sandbox_path=override_path,
-            daemon_path="/daemon/bin:/usr/local/bin",
-            tmp_path=tmp_path,
-        )
-        assert _extract_path_value(args) == override_path
-
-    def test_daemon_path_used_when_symphony_sandbox_path_unset(
-        self, monkeypatch: pytest.MonkeyPatch, tmp_path: Path
-    ) -> None:
-        """When SYMPHONY_SANDBOX_PATH is not set and the caller does not supply
-        PATH, the daemon's own os.environ['PATH'] is inherited."""
-        daemon_path = "/home/user/.local/bin:/usr/local/bin:/usr/bin:/bin"
-        args = _capture_bwrap_args(
-            env={"HOME": "/home/user"},
-            monkeypatch=monkeypatch,
-            symphony_sandbox_path=None,
+            symphony_sandbox_path=symphony_sandbox_path,
             daemon_path=daemon_path,
             tmp_path=tmp_path,
         )
-        assert _extract_path_value(args) == daemon_path
-
-    def test_fallback_path_when_neither_set(
-        self, monkeypatch: pytest.MonkeyPatch, tmp_path: Path
-    ) -> None:
-        """When neither SYMPHONY_SANDBOX_PATH nor the daemon's PATH is set,
-        the hard-coded fallback '/usr/local/bin:/usr/bin:/bin' is used."""
-        args = _capture_bwrap_args(
-            env={"HOME": "/home/user"},
-            monkeypatch=monkeypatch,
-            symphony_sandbox_path=None,
-            daemon_path=None,
-            tmp_path=tmp_path,
-        )
-        assert _extract_path_value(args) == "/usr/local/bin:/usr/bin:/bin"
+        assert _extract_path_value(args) == expected

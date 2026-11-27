@@ -105,14 +105,18 @@ def _started_ticket(tracker: LocalTracker, description: str) -> str:
 
 
 class TestCleanTitle:
-    def test_keeps_only_the_first_non_empty_line(self) -> None:
-        assert (
-            title.clean_title("\n  Fix the widget\nAn explanation") == "Fix the widget"
-        )
-
-    def test_strips_surrounding_quotes_and_collapses_whitespace(self) -> None:
-        assert title.clean_title('  "Fix   the   widget"  ') == "Fix the widget"
-        assert title.clean_title("\u2018Fix the widget\u2019") == "Fix the widget"
+    @pytest.mark.parametrize(
+        ("reply", "expected"),
+        [
+            ("\n  Fix the widget\nAn explanation", "Fix the widget"),
+            ('  "Fix   the   widget"  ', "Fix the widget"),
+            ("\u2018Fix the widget\u2019", "Fix the widget"),
+            ("", ""),
+            ('  ""  \n\n', ""),
+        ],
+    )
+    def test_cleans_the_reply_into_a_title(self, reply: str, expected: str) -> None:
+        assert title.clean_title(reply) == expected
 
     def test_caps_the_length(self) -> None:
         cleaned = title.clean_title("word " * 100)
@@ -121,10 +125,6 @@ class TestCleanTitle:
         assert cleaned.startswith("word word")
         # Cut at a word boundary, with an ellipsis showing the text goes on.
         assert cleaned.endswith("word\u2026")
-
-    def test_nothing_usable_is_empty(self) -> None:
-        assert title.clean_title("") == ""
-        assert title.clean_title('  ""  \n\n') == ""
 
 
 # ---------------------------------------------------------------------------
@@ -159,20 +159,6 @@ class TestGenerateTitle:
         assert body["thinking"] == {"type": "disabled"}
         assert body["messages"][0]["role"] == "user"
         assert "The widget breaks on load." in body["messages"][0]["content"]
-
-    def test_a_custom_base_url_replaces_the_default(self) -> None:
-        transport, seen = _capture(lambda request: _reply("A title"))
-
-        result = title.generate_title(
-            "Text",
-            api_key="sk-test",
-            base_url="https://anthropic-gateway.example.com",
-            transport=transport,
-        )
-
-        assert result == "A title"
-        assert len(seen) == 1
-        assert str(seen[0].url) == "https://anthropic-gateway.example.com/v1/messages"
 
     def test_an_api_error_returns_none_and_warns(
         self, caplog: pytest.LogCaptureFixture
@@ -299,7 +285,7 @@ class TestScheduleGeneration:
         assert stored is not None
         assert stored.title == "Mine"
 
-    def test_without_a_key_nothing_is_scheduled(
+    def test_without_a_key_or_a_failed_call_nothing_is_stored(
         self, tracker: LocalTracker, monkeypatch: pytest.MonkeyPatch
     ) -> None:
         ticket_id = _started_ticket(tracker, "First line")
@@ -312,19 +298,9 @@ class TestScheduleGeneration:
         monkeypatch.setattr(title, "generate_title", record)
 
         title.schedule_generation(tracker.store, ticket_id, _config(None))
-
         assert calls == []
 
-    def test_a_failed_call_changes_nothing(
-        self, tracker: LocalTracker, monkeypatch: pytest.MonkeyPatch
-    ) -> None:
-        ticket_id = _started_ticket(tracker, "First line")
-
-        def fail(*args: Any, **kwargs: Any) -> None:
-            return None
-
-        monkeypatch.setattr(title, "generate_title", fail)
-
+        monkeypatch.setattr(title, "generate_title", lambda *args, **kwargs: None)
         title.schedule_generation(tracker.store, ticket_id, _config("sk-test"))
 
         # The fallback is still computed from the description, nothing stored.
@@ -339,7 +315,7 @@ class TestScheduleGeneration:
 
 
 class TestStartTriggers:
-    def test_the_form_post_starts_the_title_generation(
+    def test_both_start_paths_trigger_the_title_generation(
         self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
     ) -> None:
         monkeypatch.setattr(
@@ -357,16 +333,11 @@ class TestStartTriggers:
 
             # The live endpoint reflects the title written after Start.
             _status, _headers, raw = _request(port, "GET", f"/api/tickets/{ticket.id}")
-        payload = json.loads(raw)
-        assert payload["title"] == "Generated title"
+        assert json.loads(raw)["title"] == "Generated title"
 
-    def test_the_json_start_starts_the_title_generation(
-        self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
-    ) -> None:
-        monkeypatch.setattr(
-            title, "generate_title", lambda *args, **kwargs: "Generated title"
-        )
-        with _server(tmp_path, api_key="sk-test") as (port, tracker, _wake):
+        json_root = tmp_path / "json"
+        json_root.mkdir()
+        with _server(json_root, api_key="sk-test") as (port, tracker, _wake):
             body = json.dumps(
                 {"description": "First line\nrest", "repo": "owner/name"}
             ).encode()

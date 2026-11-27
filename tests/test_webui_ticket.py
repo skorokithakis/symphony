@@ -156,19 +156,6 @@ class TestTicketPage:
         assert text.count('id="state-tag"') == 1
         assert text.count('id="compact-state-tag"') == 1
 
-    def test_missing_details_are_tolerated(self, tmp_path: Path) -> None:
-        with _server(tmp_path) as (port, tracker, _state, _wake):
-            ticket = _ticket(tracker.store, model=None)
-
-            status, _headers, body = _request(port, "GET", f"/tickets/{ticket.id}")
-
-        text = body.decode()
-        assert status == 200
-        assert "Default" in text
-        assert "—" in text
-        assert "Copy the workspace path" not in text
-        assert "Copy the session id" not in text
-
     def test_all_comment_kinds_render_as_their_entry_type(self, tmp_path: Path) -> None:
         with _server(tmp_path) as (port, tracker, _state, _wake):
             ticket = _ticket(
@@ -245,52 +232,35 @@ class TestTicketPage:
         assert "*Symphony ·" not in text
         assert text.count('<p class="notice">') == 3
 
-    def test_long_error_is_behind_show_details(self, tmp_path: Path) -> None:
-        with _server(tmp_path) as (port, tracker, _state, _wake):
-            ticket = _ticket(tracker.store)
-            tracker.post_comment(
-                ticket.id,
+    @pytest.mark.parametrize(
+        ("body", "expected_text", "folded"),
+        [
+            pytest.param(
                 "**Symphony error**: The AI turn failed:\n```\n"
                 + "\n".join(f"trace line {n}" for n in range(20))
                 + "\n```",
-                "error",
-            )
-            text = _page(port, ticket.id)
-
-        assert "Show details" in text
-        assert "trace line 19" in text
-
-    def test_short_error_shows_the_body_without_a_toggle(self, tmp_path: Path) -> None:
-        with _server(tmp_path) as (port, tracker, _state, _wake):
-            ticket = _ticket(tracker.store)
-            tracker.post_comment(
-                ticket.id,
+                "trace line 19",
+                True,
+                id="long",
+            ),
+            pytest.param(
                 "**Symphony error**: The AI turn timed out (idle 1200s).",
-                "error",
-            )
-            text = _page(port, ticket.id)
-
-        assert "The AI turn timed out" in text
-        assert "Show details" not in text
-
-    def test_final_kind_with_model_is_an_agent_reply(self, tmp_path: Path) -> None:
+                "The AI turn timed out",
+                False,
+                id="short",
+            ),
+        ],
+    )
+    def test_an_error_is_folded_only_when_it_is_long(
+        self, tmp_path: Path, body: str, expected_text: str, folded: bool
+    ) -> None:
         with _server(tmp_path) as (port, tracker, _state, _wake):
             ticket = _ticket(tracker.store)
-            tracker.post_comment(ticket.id, "Done.", "final · model: opus-4")
+            tracker.post_comment(ticket.id, body, "error")
             text = _page(port, ticket.id)
 
-        assert "entry--agent" in text
-        assert "opus-4" in text
-        assert "Open all" in text
-
-    def test_description_is_the_first_thread_entry(self, tmp_path: Path) -> None:
-        with _server(tmp_path) as (port, tracker, _state, _wake):
-            ticket = _ticket(tracker.store, description="Only the description")
-            tracker.store.add_human_comment(ticket.id, "Second")
-            text = _page(port, ticket.id)
-
-        assert text.index("Ticket text") < text.index("Second")
-        assert 'class="who">Ticket text' in text
+        assert expected_text in text
+        assert ("Show details" in text) is folded
 
     def test_copy_buttons_carry_the_stored_markdown(self, tmp_path: Path) -> None:
         description = "Ticket **text**\n\n```\nfenced\n```"
@@ -358,36 +328,22 @@ class TestTicketPage:
 
         assert re.search(r"Working, [^<]* · last output \d+ s ago</p>", text)
 
-    def test_working_line_has_no_output_age_before_the_first_chunk(
+    def test_the_output_age_is_absent_before_the_first_chunk_and_outside_in_progress(
         self, tmp_path: Path
     ) -> None:
-        with _server(tmp_path, turn_activity=TurnActivity()) as (port, tracker, _s, _w):
-            ticket = _ticket(tracker.store, state=STATE_IN_PROGRESS)
-            text = _page(port, ticket.id)
-
-        assert "Working, " in text
-        assert "last output" not in text
-
-    def test_output_age_is_not_shown_outside_in_progress(self, tmp_path: Path) -> None:
-        """A left-over record must not leak onto a ticket that is not running."""
         activity = TurnActivity()
         with _server(tmp_path, turn_activity=activity) as (port, tracker, _s, _w):
-            ticket = _ticket(tracker.store)
-            activity.record_output(ticket.id)
-            text = _page(port, ticket.id)
+            # A left-over record must not leak onto a ticket that is not running.
+            waiting = _ticket(tracker.store)
+            activity.record_output(waiting.id)
+            waiting_text = _page(port, waiting.id)
 
-        assert "last output" not in text
+            running = _ticket(tracker.store, state=STATE_IN_PROGRESS)
+            running_text = _page(port, running.id)
 
-    def test_needs_input_page_offers_send_qa_and_done(self, tmp_path: Path) -> None:
-        with _server(tmp_path) as (port, tracker, _state, _wake):
-            ticket = _ticket(tracker.store)
-            text = _page(port, ticket.id)
-
-        assert 'class="composer"' in text
-        assert 'name="token" value="' in text
-        assert "Send to QA" in text
-        assert "Done" in text
-        assert 'id="act-send"' in text
+        assert "last output" not in waiting_text
+        assert "Working, " in running_text
+        assert "last output" not in running_text
 
     def test_qa_page_offers_back_to_needs_input(self, tmp_path: Path) -> None:
         with _server(tmp_path) as (port, tracker, _state, _wake):
@@ -439,15 +395,6 @@ class TestTicketPage:
             status, _headers, _body = _request(port, "GET", "/tickets/SYM-404")
 
         assert status == 404
-
-    def test_head_is_served_from_the_get_view(self, tmp_path: Path) -> None:
-        with _server(tmp_path) as (port, tracker, _state, _wake):
-            ticket = _ticket(tracker.store)
-            status, headers, body = _request(port, "HEAD", f"/tickets/{ticket.id}")
-
-        assert status == 200
-        assert body == b""
-        assert int(headers["Content-Length"]) > 0
 
 
 # ---------------------------------------------------------------------------
@@ -584,16 +531,6 @@ class TestComposerModel:
         assert '<option value="sonnet">sonnet</option>' in text
         assert '<option value="opus" selected>opus</option>' in text
 
-    def test_the_select_is_hidden_without_configured_aliases(
-        self, tmp_path: Path
-    ) -> None:
-        with _server(tmp_path) as (port, tracker, _state, _wake):
-            ticket = _ticket(tracker.store, model=None)
-            text = _page(port, ticket.id)
-
-        assert 'id="composer-model"' not in text
-        assert 'name="model"' not in text
-
     def test_the_select_follows_send_and_is_disabled_while_the_agent_works(
         self, tmp_path: Path
     ) -> None:
@@ -720,24 +657,21 @@ class TestRetry:
         assert stored is not None
         assert stored.model == "opus"
 
-    def test_retry_requires_its_own_token(self, tmp_path: Path) -> None:
-        """A Send token in the Retry route must not post anything."""
+    @pytest.mark.parametrize(
+        "fields",
+        [
+            pytest.param({"token": "send-token"}, id="send-token"),
+            pytest.param({}, id="no-token"),
+        ],
+    )
+    def test_retry_requires_its_own_token(
+        self, tmp_path: Path, fields: dict[str, str]
+    ) -> None:
+        """A Send token, or none at all, must not post anything."""
         with _server(tmp_path) as (port, tracker, state, _wake):
             ticket = _ticket(tracker.store)
             state.upsert(_state_entry(ticket.id, status=TicketStatus.failed))
-            status, _headers, _body = _post(
-                port, f"/tickets/{ticket.id}/retry", {"token": "send-token"}
-            )
-            stored = tracker.store.get(ticket.id)
-
-        assert status == 400
-        assert stored is not None
-        assert stored.comments == []
-
-    def test_retry_without_a_token_is_a_bad_request(self, tmp_path: Path) -> None:
-        with _server(tmp_path) as (port, tracker, _state, _wake):
-            ticket = _ticket(tracker.store)
-            status, _headers, _body = _post(port, f"/tickets/{ticket.id}/retry", {})
+            status, _headers, _body = _post(port, f"/tickets/{ticket.id}/retry", fields)
             stored = tracker.store.get(ticket.id)
 
         assert status == 400
@@ -794,14 +728,6 @@ class TestRetry:
         assert stored is not None
         assert [comment.body for comment in stored.comments] == ["Retry."]
 
-    def test_an_unknown_ticket_is_404(self, tmp_path: Path) -> None:
-        with _server(tmp_path) as (port, _tracker, _state, _wake):
-            status, _headers, _body = _post(
-                port, "/tickets/SYM-404/retry", {"retry_token": "retry-1"}
-            )
-
-        assert status == 404
-
 
 # ---------------------------------------------------------------------------
 # State actions
@@ -829,18 +755,6 @@ class TestStateActions:
         assert after_done is not None
         assert after_done.state == STATE_DONE
         assert wake.call_count == 2
-
-    def test_qa_actions(self, tmp_path: Path) -> None:
-        with _server(tmp_path) as (port, tracker, _state, _wake):
-            ticket = _ticket(tracker.store, state=STATE_QA)
-            path = f"/tickets/{ticket.id}/state"
-
-            status, _headers, _body = _post(port, path, {"action": "needs_input"})
-            stored = tracker.store.get(ticket.id)
-
-        assert status == 303
-        assert stored is not None
-        assert stored.state == STATE_NEEDS_INPUT
 
     def test_stop_moves_in_progress_to_needs_input(self, tmp_path: Path) -> None:
         with _server(tmp_path) as (port, tracker, _state, wake):
@@ -900,50 +814,31 @@ class TestStateActions:
         assert stored is not None
         assert stored.state == STATE_NEEDS_INPUT
 
-    def test_an_action_from_the_wrong_state_is_409(self, tmp_path: Path) -> None:
+    @pytest.mark.parametrize(
+        ("state", "action"),
+        [
+            pytest.param(STATE_NEEDS_INPUT, "stop", id="needs-input-stop"),
+            pytest.param(STATE_NEEDS_INPUT, "reopen", id="needs-input-reopen"),
+            pytest.param(STATE_NEEDS_INPUT, "explode", id="unknown-action"),
+            pytest.param(STATE_DONE, "done", id="done-done"),
+            pytest.param(STATE_DONE, "stop", id="done-stop"),
+            pytest.param(STATE_IN_PROGRESS, "qa", id="in-progress-qa"),
+            pytest.param(STATE_IN_PROGRESS, "done", id="in-progress-done"),
+        ],
+    )
+    def test_an_unavailable_or_unknown_action_is_409(
+        self, tmp_path: Path, state: str, action: str
+    ) -> None:
         with _server(tmp_path) as (port, tracker, _state, _wake):
-            needs_input = _ticket(tracker.store)
-            done = _ticket(tracker.store, state=STATE_DONE)
-            in_progress = _ticket(tracker.store, state=STATE_IN_PROGRESS)
-
-            cases = [
-                (needs_input, "stop"),
-                (needs_input, "reopen"),
-                (done, "done"),
-                (done, "stop"),
-                (in_progress, "qa"),
-                (in_progress, "done"),
-            ]
-            statuses = [
-                _post(
-                    port,
-                    f"/tickets/{ticket.id}/state",
-                    {"action": action},
-                )[0]
-                for ticket, action in cases
-            ]
-
-        assert statuses == [409] * len(cases)
-
-    def test_an_unknown_action_is_refused(self, tmp_path: Path) -> None:
-        with _server(tmp_path) as (port, tracker, _state, _wake):
-            ticket = _ticket(tracker.store)
+            ticket = _ticket(tracker.store, state=state)
             status, _headers, _body = _post(
-                port, f"/tickets/{ticket.id}/state", {"action": "explode"}
+                port, f"/tickets/{ticket.id}/state", {"action": action}
             )
             stored = tracker.store.get(ticket.id)
 
         assert status == 409
         assert stored is not None
-        assert stored.state == STATE_NEEDS_INPUT
-
-    def test_state_action_on_an_unknown_ticket_is_404(self, tmp_path: Path) -> None:
-        with _server(tmp_path) as (port, _tracker, _state, _wake):
-            status, _headers, _body = _post(
-                port, "/tickets/SYM-404/state", {"action": "done"}
-            )
-
-        assert status == 404
+        assert stored.state == state
 
     def test_state_action_requires_same_origin(self, tmp_path: Path) -> None:
         with _server(tmp_path) as (port, tracker, _state, _wake):

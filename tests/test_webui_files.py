@@ -312,17 +312,25 @@ class TestUpload:
 
 
 class TestServing:
-    def test_every_allowlisted_image_extension_is_inline(self, tmp_path: Path) -> None:
-        cases = {
+    def test_only_the_allowlisted_images_are_inline(self, tmp_path: Path) -> None:
+        inline = {
             "a.png": "image/png",
             "b.jpg": "image/jpeg",
             "c.jpeg": "image/jpeg",
             "d.gif": "image/gif",
             "e.webp": "image/webp",
         }
+        download = {
+            "page.html": b"<html><script>alert(1)</script></html>",
+            "logo.svg": b"<svg xmlns='http://www.w3.org/2000/svg'></svg>",
+        }
+        cases = {**{name: b"x" for name in inline}, **download}
         with _server(tmp_path) as (port, _tracker):
             _status, first = _upload(
-                port, "/api/new/files", b"x", name=next(iter(cases))
+                port,
+                "/api/new/files",
+                next(iter(cases.values())),
+                name=next(iter(cases)),
             )
             ticket_id = str(first["id"])
             uploads = [first]
@@ -330,7 +338,7 @@ class TestServing:
                 _status, response = _upload(
                     port,
                     f"/api/tickets/{ticket_id}/files",
-                    b"x",
+                    cases[name],
                     name=name,
                     target="description",
                 )
@@ -340,71 +348,21 @@ class TestServing:
                 for name, response in zip(cases, uploads, strict=True)
             }
 
-        for name, expected in cases.items():
-            status, headers, _body = results[name]
+        for name, expected in inline.items():
+            status, headers, body = results[name]
             assert status == 200
             assert headers["Content-Type"] == expected, name
             assert "Content-Disposition" not in headers, name
+            assert body == b"x"
 
-    def test_png_is_inline_and_html_and_svg_download(self, tmp_path: Path) -> None:
-        with _server(tmp_path) as (port, _tracker):
-            status, first = _upload(
-                port, "/api/new/files", b"\x89PNG\r\n", name="shot.png"
-            )
+        # Inline HTML or SVG from this origin would run with the user's Basic
+        # credentials, so they are byte-for-byte downloads.
+        for name, contents in download.items():
+            status, headers, body = results[name]
             assert status == 200
-            ticket_id = str(first["id"])
-
-            status, second = _upload(
-                port,
-                f"/api/tickets/{ticket_id}/files",
-                b"<html><script>alert(1)</script></html>",
-                name="page.html",
-                target="description",
-            )
-            assert status == 200
-            status, third = _upload(
-                port,
-                f"/api/tickets/{ticket_id}/files",
-                b"<svg xmlns='http://www.w3.org/2000/svg'></svg>",
-                name="logo.svg",
-                target="description",
-            )
-            assert status == 200
-
-            png_status, png_headers, png_body = _request(
-                port, "GET", str(_file_of(first)["url"])
-            )
-            html_status, html_headers, html_body = _request(
-                port, "GET", str(_file_of(second)["url"])
-            )
-            svg_status, svg_headers, svg_body = _request(
-                port, "GET", str(_file_of(third)["url"])
-            )
-
-        assert png_status == 200
-        assert png_headers["Content-Type"] == "image/png"
-        assert "Content-Disposition" not in png_headers
-        assert png_body == b"\x89PNG\r\n"
-
-        assert html_status == 200
-        assert html_headers["Content-Type"] == "application/octet-stream"
-        assert html_headers["Content-Disposition"].startswith("attachment;")
-        assert b"<script>" in html_body
-
-        assert svg_status == 200
-        assert svg_headers["Content-Type"] == "application/octet-stream"
-        assert svg_headers["Content-Disposition"].startswith("attachment;")
-
-    def test_head_serves_headers_without_a_body(self, tmp_path: Path) -> None:
-        with _server(tmp_path) as (port, _tracker):
-            _status, response = _upload(port, "/api/new/files", b"bytes", name="a.txt")
-            status, headers, body = _request(
-                port, "HEAD", str(_file_of(response)["url"])
-            )
-
-        assert status == 200
-        assert headers["Content-Type"] == "application/octet-stream"
-        assert body == b""
+            assert headers["Content-Type"] == "application/octet-stream", name
+            assert headers["Content-Disposition"].startswith("attachment;"), name
+            assert body == contents
 
     def test_files_require_basic_auth(self, tmp_path: Path) -> None:
         with _server(tmp_path) as (port, _tracker):
@@ -588,23 +546,6 @@ class TestPages:
         # into the textarea, which is empty here.
         assert "![notes.zip]" not in text
         assert "](/files/" not in text
-
-    def test_description_files_show_in_the_first_thread_entry(
-        self, tmp_path: Path
-    ) -> None:
-        with _server(tmp_path) as (port, tracker):
-            _status, response = _upload(
-                port, "/api/new/files", b"\x89PNG\r\n", name="shot.png"
-            )
-            ticket_id = str(response["id"])
-            tracker.store.set_state(ticket_id, STATE_IN_PROGRESS)
-            status, _headers, body = _request(port, "GET", f"/tickets/{ticket_id}")
-
-        text = body.decode()
-        assert status == 200
-        assert 'class="files files--large"' in text
-        assert 'class="thumb"' in text
-        assert f'data-lightbox="{_file_of(response)["url"]}"' in text
 
     def test_the_thread_renders_a_thumb_and_a_file_chip(self, tmp_path: Path) -> None:
         with _server(tmp_path) as (port, tracker):

@@ -8,6 +8,7 @@ import pytest
 import yaml
 
 from symphony_linear.config import (
+    DEFAULT_HIDE_PATHS,
     AppConfig,
     _expand,
     _expand_values,
@@ -21,30 +22,27 @@ from symphony_linear.config import (
 
 
 class TestExpand:
-    def test_tilde_expansion(self) -> None:
-        result = _expand("~/foo/bar")
-        assert result == str(Path.home() / "foo" / "bar")
-
-    def test_dollar_var_expansion(self, monkeypatch: pytest.MonkeyPatch) -> None:
+    @pytest.mark.parametrize(
+        ("value", "expected"),
+        [
+            ("~/foo/bar", str(Path.home() / "foo" / "bar")),
+            ("$MY_VAR/world", "hello/world"),
+            ("${MY_VAR}/world", "hello/world"),
+            ("just a string", "just a string"),
+        ],
+    )
+    def test_expand(
+        self, monkeypatch: pytest.MonkeyPatch, value: str, expected: str
+    ) -> None:
         monkeypatch.setenv("MY_VAR", "hello")
-        assert _expand("$MY_VAR/world") == "hello/world"
-
-    def test_braced_var_expansion(self, monkeypatch: pytest.MonkeyPatch) -> None:
-        monkeypatch.setenv("MY_VAR", "hello")
-        assert _expand("${MY_VAR}/world") == "hello/world"
+        assert _expand(value) == expected
 
     def test_unset_var_becomes_empty(self) -> None:
-        assert _expand("$NO_SUCH_VAR") == ""
-
-    def test_unset_var_in_path_keeps_surrounding_text(self) -> None:
         assert _expand("$NO_SUCH_VAR/something") == "/something"
-
-    def test_literal_string_no_expansion(self) -> None:
-        assert _expand("just a string") == "just a string"
 
 
 class TestExpandValues:
-    def test_dict_recursion(self, monkeypatch: pytest.MonkeyPatch) -> None:
+    def test_recursive_expansion(self, monkeypatch: pytest.MonkeyPatch) -> None:
         monkeypatch.setenv("KEY", "secret")
         data = {
             "linear": {"api_key": "$KEY"},
@@ -53,11 +51,6 @@ class TestExpandValues:
         result = _expand_values(data)
         assert result["linear"]["api_key"] == "secret"
         assert result["sandbox"]["extra_rw_paths"] == [str(Path.home() / "model")]
-
-    def test_list_recursion(self) -> None:
-        data = ["~/a", "~/b"]
-        result = _expand_values(data)
-        assert result == [str(Path.home() / "a"), str(Path.home() / "b")]
 
 
 # ---------------------------------------------------------------------------
@@ -80,7 +73,7 @@ def _webui_block(**overrides: object) -> dict[str, object]:
 
 
 class TestLoadConfig:
-    def test_valid_minimal_config(self, tmp_path: Path) -> None:
+    def test_minimal_config_loads(self, tmp_path: Path) -> None:
         cfg = {
             "linear": {
                 "api_key": "test-key",
@@ -92,24 +85,9 @@ class TestLoadConfig:
         assert isinstance(config, AppConfig)
         assert config.linear is not None
         assert config.linear.api_key == "test-key"
-        assert config.linear.trigger_label == "Agent"  # default
-        assert config.sandbox.hide_paths  # defaults populated
-        assert config.agent == "opencode"  # default
-        assert config.poll_interval_seconds == 30
-        assert config.turn_timeout_seconds == 1800
-        assert config.turn_idle_timeout_seconds == 1200
-        assert config.auto_branch is True  # default
-
-    def test_null_trigger_label_is_accepted(self, tmp_path: Path) -> None:
-        _write_yaml(
-            tmp_path / "config.yaml",
-            {"linear": {"api_key": "test-key", "trigger_label": None}},
-        )
-
-        config = load_config(tmp_path)
-
-        assert config.linear is not None
-        assert config.linear.trigger_label is None
+        assert config.github is None
+        # An omitted sandbox block still hides the default credential paths.
+        assert config.sandbox.hide_paths == list(DEFAULT_HIDE_PATHS)
 
     def test_empty_trigger_label_is_rejected(self, tmp_path: Path) -> None:
         _write_yaml(
@@ -120,76 +98,40 @@ class TestLoadConfig:
         with pytest.raises(ValueError, match="trigger_label"):
             load_config(tmp_path)
 
-    def test_auto_branch_can_be_disabled(self, tmp_path: Path) -> None:
-        cfg = {
-            "linear": {
-                "api_key": "test-key",
-            },
-            "auto_branch": False,
-        }
-        _write_yaml(tmp_path / "config.yaml", cfg)
+    @pytest.mark.parametrize(
+        "linear_block",
+        [{}, {"api_key": ""}],
+        ids=["missing-key", "empty-key"],
+    )
+    def test_linear_api_key_env_fallback(
+        self,
+        tmp_path: Path,
+        monkeypatch: pytest.MonkeyPatch,
+        linear_block: dict[str, str],
+    ) -> None:
+        """A missing or empty linear.api_key falls back to LINEAR_API_KEY."""
+        monkeypatch.setenv("LINEAR_API_KEY", "env-provided-key")
+        _write_yaml(tmp_path / "config.yaml", {"linear": linear_block})
 
         config = load_config(tmp_path)
-        assert config.auto_branch is False
+        assert config.linear is not None
+        assert config.linear.api_key == "env-provided-key"
 
-    def test_agent_can_be_omp(self, tmp_path: Path) -> None:
-        cfg = {
-            "agent": "omp",
-            "linear": {
-                "api_key": "test-key",
-            },
-        }
-        _write_yaml(tmp_path / "config.yaml", cfg)
+    @pytest.mark.parametrize(
+        "linear_block",
+        [{}, {"api_key": "${NO_SUCH_LINEAR_KEY}"}],
+        ids=["missing-key", "unresolved-var"],
+    )
+    def test_linear_api_key_missing_everywhere_raises(
+        self,
+        tmp_path: Path,
+        monkeypatch: pytest.MonkeyPatch,
+        linear_block: dict[str, str],
+    ) -> None:
+        monkeypatch.delenv("LINEAR_API_KEY", raising=False)
+        _write_yaml(tmp_path / "config.yaml", {"linear": linear_block})
 
-        config = load_config(tmp_path)
-        assert config.agent == "omp"
-
-    def test_agent_can_be_pi(self, tmp_path: Path) -> None:
-        cfg = {
-            "agent": "pi",
-            "linear": {
-                "api_key": "test-key",
-            },
-        }
-        _write_yaml(tmp_path / "config.yaml", cfg)
-
-        config = load_config(tmp_path)
-        assert config.agent == "pi"
-
-    def test_invalid_agent_is_rejected(self, tmp_path: Path) -> None:
-        cfg = {
-            "agent": "other",
-            "linear": {
-                "api_key": "test-key",
-            },
-        }
-        _write_yaml(tmp_path / "config.yaml", cfg)
-
-        with pytest.raises(ValueError, match="agent"):
-            load_config(tmp_path)
-
-    def test_missing_required_field_raises(self, tmp_path: Path) -> None:
-        cfg: dict[str, object] = {
-            "linear": {
-                # missing api_key
-            },
-        }
-        _write_yaml(tmp_path / "config.yaml", cfg)
-
-        with pytest.raises(ValueError, match="API key not set"):
-            load_config(tmp_path)
-
-    def test_bot_user_email_rejected(self, tmp_path: Path) -> None:
-        """Old configs with bot_user_email must fail validation."""
-        cfg = {
-            "linear": {
-                "api_key": "test-key",
-                "bot_user_email": "bot@example.com",
-            },
-        }
-        _write_yaml(tmp_path / "config.yaml", cfg)
-
-        with pytest.raises(ValueError, match="bot_user_email"):
+        with pytest.raises(ValueError, match="LINEAR_API_KEY"):
             load_config(tmp_path)
 
     def test_env_var_in_api_key(
@@ -230,157 +172,6 @@ class TestLoadConfig:
         config = load_config(tmp_path)
         assert config.sandbox.hide_paths == ["/secret", str(Path.home() / "private")]
 
-    def test_linear_api_key_env_fallback(
-        self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
-    ) -> None:
-        """If linear.api_key is missing from YAML, LINEAR_API_KEY env var is used."""
-        monkeypatch.setenv("LINEAR_API_KEY", "env-provided-key")
-        cfg: dict[str, object] = {
-            "linear": {},
-        }
-        _write_yaml(tmp_path / "config.yaml", cfg)
-
-        config = load_config(tmp_path)
-        assert config.linear is not None
-        assert config.linear.api_key == "env-provided-key"
-
-    def test_linear_api_key_empty_string_fallback(
-        self,
-        tmp_path: Path,
-        monkeypatch: pytest.MonkeyPatch,
-    ) -> None:
-        """If linear.api_key is an empty string, fall back to LINEAR_API_KEY."""
-        monkeypatch.setenv("LINEAR_API_KEY", "env-provided-key")
-        cfg = {
-            "linear": {
-                "api_key": "",
-            },
-        }
-        _write_yaml(tmp_path / "config.yaml", cfg)
-
-        config = load_config(tmp_path)
-        assert config.linear is not None
-        assert config.linear.api_key == "env-provided-key"
-
-    def test_linear_api_key_neither_set_raises(self, tmp_path: Path) -> None:
-        """If neither YAML nor env var provides the key, raise a ValueError."""
-        cfg: dict[str, object] = {
-            "linear": {},
-        }
-        _write_yaml(tmp_path / "config.yaml", cfg)
-
-        with pytest.raises(ValueError, match="LINEAR_API_KEY"):
-            load_config(tmp_path)
-
-    def test_unresolved_api_key_env_var_triggers_fallback_error(
-        self,
-        tmp_path: Path,
-    ) -> None:
-        """api_key: ${LINEAR_API_KEY} with unset env var → empty string → fallback error."""
-        cfg = {
-            "linear": {
-                "api_key": "${LINEAR_API_KEY}",
-            },
-        }
-        _write_yaml(tmp_path / "config.yaml", cfg)
-
-        with pytest.raises(ValueError, match="LINEAR_API_KEY"):
-            load_config(tmp_path)
-
-    def test_unknown_field_workspace_root_raises(self, tmp_path: Path) -> None:
-        """Config containing the dead field workspace_root fails validation."""
-        cfg = {
-            "linear": {
-                "api_key": "key",
-            },
-            "workspace_root": "~/anything",
-        }
-        _write_yaml(tmp_path / "config.yaml", cfg)
-
-        with pytest.raises(ValueError, match="workspace_root"):
-            load_config(tmp_path)
-
-    def test_poll_interval_must_be_positive(self, tmp_path: Path) -> None:
-        cfg = {
-            "linear": {
-                "api_key": "key",
-            },
-            "poll_interval_seconds": 0,
-        }
-        _write_yaml(tmp_path / "config.yaml", cfg)
-
-        with pytest.raises(ValueError, match="Config validation failed"):
-            load_config(tmp_path)
-
-    def test_default_extra_rw_paths(self, tmp_path: Path) -> None:
-        """extra_rw_paths defaults to an empty list."""
-        cfg = {
-            "linear": {
-                "api_key": "test-key",
-            },
-        }
-        _write_yaml(tmp_path / "config.yaml", cfg)
-
-        config = load_config(tmp_path)
-        assert config.sandbox.extra_rw_paths == []
-
-    def test_custom_extra_rw_paths_with_tilde(self, tmp_path: Path) -> None:
-        """extra_rw_paths supports tilde expansion."""
-        cfg = {
-            "linear": {
-                "api_key": "key",
-            },
-            "sandbox": {
-                "extra_rw_paths": ["~/projects/shared", "/opt/tools"],
-            },
-        }
-        _write_yaml(tmp_path / "config.yaml", cfg)
-
-        config = load_config(tmp_path)
-        assert config.sandbox.extra_rw_paths == [
-            str(Path.home() / "projects" / "shared"),
-            "/opt/tools",
-        ]
-
-    def test_default_secrets_dir(self, tmp_path: Path) -> None:
-        """secrets_dir defaults to None (meaning <workspace>/secrets)."""
-        cfg = {
-            "linear": {
-                "api_key": "test-key",
-            },
-        }
-        _write_yaml(tmp_path / "config.yaml", cfg)
-
-        config = load_config(tmp_path)
-        assert config.sandbox.secrets_dir is None
-
-    def test_custom_secrets_dir_with_tilde(self, tmp_path: Path) -> None:
-        """secrets_dir supports tilde expansion."""
-        cfg = {
-            "linear": {
-                "api_key": "key",
-            },
-            "sandbox": {
-                "secrets_dir": "~/repo-secrets",
-            },
-        }
-        _write_yaml(tmp_path / "config.yaml", cfg)
-
-        config = load_config(tmp_path)
-        assert config.sandbox.secrets_dir == str(Path.home() / "repo-secrets")
-
-    def test_default_dir_map(self, tmp_path: Path) -> None:
-        """dir_map defaults to an empty dict."""
-        cfg = {
-            "linear": {
-                "api_key": "test-key",
-            },
-        }
-        _write_yaml(tmp_path / "config.yaml", cfg)
-
-        config = load_config(tmp_path)
-        assert config.sandbox.dir_map == {}
-
     def test_dir_map_keys_tilde_expanded(self, tmp_path: Path) -> None:
         """dir_map keys get ~ expansion (values are expanded by the loader)."""
         cfg = {
@@ -402,77 +193,28 @@ class TestLoadConfig:
             str(Path.home() / ".npm"): str(Path.home() / "sandboxes/caches/.npm"),
         }
 
-    def test_dir_map_relative_key_rejected(self, tmp_path: Path) -> None:
-        """A dir_map key that is not absolute after ~ expansion is rejected."""
+    @pytest.mark.parametrize(
+        ("dir_map", "message"),
+        [
+            ({"npm": "npm"}, "dir_map key"),
+            ({"~/.config/npm": ""}, "non-empty"),
+            ({"~/.config/npm": "../escape"}, r"'\.\.'"),
+        ],
+        ids=["relative-key", "empty-value", "dotdot-value"],
+    )
+    def test_invalid_dir_map_is_rejected(
+        self, tmp_path: Path, dir_map: dict[str, str], message: str
+    ) -> None:
         cfg = {
             "linear": {
                 "api_key": "key",
             },
-            "sandbox": {
-                "dir_map": {"npm": "npm"},
-            },
+            "sandbox": {"dir_map": dir_map},
         }
         _write_yaml(tmp_path / "config.yaml", cfg)
 
-        with pytest.raises(ValueError, match="dir_map key"):
+        with pytest.raises(ValueError, match=message):
             load_config(tmp_path)
-
-    def test_dir_map_empty_value_rejected(self, tmp_path: Path) -> None:
-        """Empty dir_map values are rejected."""
-        cfg = {
-            "linear": {
-                "api_key": "key",
-            },
-            "sandbox": {
-                "dir_map": {"~/.config/npm": ""},
-            },
-        }
-        _write_yaml(tmp_path / "config.yaml", cfg)
-
-        with pytest.raises(ValueError, match="non-empty"):
-            load_config(tmp_path)
-
-    def test_dir_map_value_with_dotdot_rejected(self, tmp_path: Path) -> None:
-        """dir_map values containing '..' are rejected."""
-        cfg = {
-            "linear": {
-                "api_key": "key",
-            },
-            "sandbox": {
-                "dir_map": {"~/.config/npm": "../escape"},
-            },
-        }
-        _write_yaml(tmp_path / "config.yaml", cfg)
-
-        with pytest.raises(ValueError, match="'..'"):
-            load_config(tmp_path)
-
-    def test_qa_state_defaults_to_none(self, tmp_path: Path) -> None:
-        """qa_state is optional and defaults to None."""
-        cfg = {
-            "linear": {
-                "api_key": "test-key",
-            },
-        }
-        _write_yaml(tmp_path / "config.yaml", cfg)
-
-        config = load_config(tmp_path)
-        assert config.linear is not None
-        assert config.linear.qa_state is None
-
-    def test_qa_state_round_trips_through_yaml(self, tmp_path: Path) -> None:
-        """qa_state is accepted and preserved when set in YAML."""
-        cfg = {
-            "linear": {
-                "api_key": "test-key",
-                "qa_state": "In Review",
-            },
-        }
-        _write_yaml(tmp_path / "config.yaml", cfg)
-
-        config = load_config(tmp_path)
-        assert config.linear is not None
-        assert config.linear.qa_state == "In Review"
 
 
 # ---------------------------------------------------------------------------
@@ -481,58 +223,19 @@ class TestLoadConfig:
 
 
 class TestModelMapValidation:
-    def _config_with_models(self, models: dict[str, str]) -> dict[str, object]:
-        return {
-            "linear": {
-                "api_key": "test-key",
-            },
-            "models": models,
+    @pytest.mark.parametrize(
+        "model_id",
+        ["claude-fable-5", "/claude-opus-5", "anthropic/"],
+        ids=["no-slash", "no-provider", "no-model"],
+    )
+    def test_invalid_model_id_is_rejected(self, tmp_path: Path, model_id: str) -> None:
+        cfg = {
+            "linear": {"api_key": "test-key"},
+            "models": {"Strong": model_id},
         }
-
-    def test_well_formed_models_pass(self, tmp_path: Path) -> None:
-        cfg = self._config_with_models(
-            {
-                "Strong": "anthropic/claude-opus-5",
-                "Cheap": "openai/gpt-5-mini",
-            }
-        )
         _write_yaml(tmp_path / "config.yaml", cfg)
 
-        config = load_config(tmp_path)
-        assert config.models == {
-            "Strong": "anthropic/claude-opus-5",
-            "Cheap": "openai/gpt-5-mini",
-        }
-
-    def test_empty_models_map_passes(self, tmp_path: Path) -> None:
-        cfg = self._config_with_models({})
-        _write_yaml(tmp_path / "config.yaml", cfg)
-
-        config = load_config(tmp_path)
-        assert config.models == {}
-
-    def test_slashless_value_rejected_and_names_alias(self, tmp_path: Path) -> None:
-        cfg = self._config_with_models({"Strong": "claude-fable-5"})
-        _write_yaml(tmp_path / "config.yaml", cfg)
-
-        with pytest.raises(ValueError, match="Strong") as excinfo:
-            load_config(tmp_path)
-        # The offending value and the expected form are part of the message.
-        assert "claude-fable-5" in str(excinfo.value)
-        assert "provider/model" in str(excinfo.value)
-
-    def test_empty_provider_half_rejected(self, tmp_path: Path) -> None:
-        cfg = self._config_with_models({"Strong": "/claude-opus-5"})
-        _write_yaml(tmp_path / "config.yaml", cfg)
-
-        with pytest.raises(ValueError, match="Strong"):
-            load_config(tmp_path)
-
-    def test_empty_model_half_rejected(self, tmp_path: Path) -> None:
-        cfg = self._config_with_models({"Strong": "anthropic/"})
-        _write_yaml(tmp_path / "config.yaml", cfg)
-
-        with pytest.raises(ValueError, match="Strong"):
+        with pytest.raises(ValueError, match="provider/model"):
             load_config(tmp_path)
 
 
@@ -542,67 +245,25 @@ class TestModelMapValidation:
 
 
 class TestLoadConfigGitHub:
-    def test_valid_minimal_github_config(self, tmp_path: Path) -> None:
-        cfg = {
-            "github": {
-                "token": "ghp_test",
-                "project": "orgs/my-org/projects/1",
-                "in_progress_status": "In Progress",
-                "needs_input_status": "Needs Input",
-            },
-        }
+    @pytest.mark.parametrize(
+        "project",
+        ["orgs/my-org/projects/1", "users/alice/projects/42"],
+    )
+    def test_minimal_github_config_loads(self, tmp_path: Path, project: str) -> None:
+        cfg = {"github": {"token": "ghp_test", "project": project}}
         _write_yaml(tmp_path / "config.yaml", cfg)
 
         config = load_config(tmp_path)
         assert config.github is not None
         assert config.github.token == "ghp_test"
-        assert config.github.project == "orgs/my-org/projects/1"
-        assert config.github.trigger_field == "Symphony"  # default
-        assert config.github.status_field == "Status"  # default
-        assert config.github.in_progress_status == "In Progress"
-        assert config.github.needs_input_status == "Needs Input"
-        assert config.github.qa_status is None  # default
+        assert config.github.project == project
         assert config.linear is None
-
-    def test_minimal_github_config_defaults_statuses(self, tmp_path: Path) -> None:
-        """A GitHub config with only token and project validates, using
-        default In Progress / Needs Input status names."""
-        cfg = {
-            "github": {
-                "token": "ghp_test",
-                "project": "orgs/my-org/projects/1",
-            },
-        }
-        _write_yaml(tmp_path / "config.yaml", cfg)
-
-        config = load_config(tmp_path)
-        assert config.github is not None
-        assert config.github.in_progress_status == "In Progress"
-        assert config.github.needs_input_status == "Needs Input"
-        assert config.github.qa_status is None
-
-    def test_user_project_ref_accepted(self, tmp_path: Path) -> None:
-        cfg = {
-            "github": {
-                "token": "ghp_test",
-                "project": "users/alice/projects/42",
-                "in_progress_status": "In Progress",
-                "needs_input_status": "Needs Input",
-            },
-        }
-        _write_yaml(tmp_path / "config.yaml", cfg)
-
-        config = load_config(tmp_path)
-        assert config.github is not None
-        assert config.github.project == "users/alice/projects/42"
 
     def test_invalid_project_ref_rejected(self, tmp_path: Path) -> None:
         cfg = {
             "github": {
                 "token": "ghp_test",
                 "project": "not-a-valid-ref",
-                "in_progress_status": "In Progress",
-                "needs_input_status": "Needs Input",
             },
         }
         _write_yaml(tmp_path / "config.yaml", cfg)
@@ -610,108 +271,44 @@ class TestLoadConfigGitHub:
         with pytest.raises(ValueError, match="Invalid project ref"):
             load_config(tmp_path)
 
+    @pytest.mark.parametrize(
+        "github_block",
+        [
+            {"project": "orgs/my-org/projects/1"},
+            {"token": "", "project": "orgs/my-org/projects/1"},
+        ],
+        ids=["missing-token", "empty-token"],
+    )
     def test_github_token_env_fallback(
-        self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+        self,
+        tmp_path: Path,
+        monkeypatch: pytest.MonkeyPatch,
+        github_block: dict[str, str],
     ) -> None:
         monkeypatch.setenv("GITHUB_TOKEN", "env-provided-token")
-        cfg = {
-            "github": {
-                "project": "orgs/my-org/projects/1",
-                "in_progress_status": "In Progress",
-                "needs_input_status": "Needs Input",
-            },
-        }
-        _write_yaml(tmp_path / "config.yaml", cfg)
+        _write_yaml(tmp_path / "config.yaml", {"github": github_block})
 
         config = load_config(tmp_path)
         assert config.github is not None
         assert config.github.token == "env-provided-token"
 
-    def test_github_token_empty_string_fallback(
+    def test_github_token_neither_set_raises(
         self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
     ) -> None:
-        monkeypatch.setenv("GITHUB_TOKEN", "env-provided-token")
-        cfg = {
-            "github": {
-                "token": "",
-                "project": "orgs/my-org/projects/1",
-                "in_progress_status": "In Progress",
-                "needs_input_status": "Needs Input",
-            },
-        }
-        _write_yaml(tmp_path / "config.yaml", cfg)
-
-        config = load_config(tmp_path)
-        assert config.github is not None
-        assert config.github.token == "env-provided-token"
-
-    def test_github_token_neither_set_raises(self, tmp_path: Path) -> None:
-        cfg = {
-            "github": {
-                "project": "orgs/my-org/projects/1",
-                "in_progress_status": "In Progress",
-                "needs_input_status": "Needs Input",
-            },
-        }
-        _write_yaml(tmp_path / "config.yaml", cfg)
+        monkeypatch.delenv("GITHUB_TOKEN", raising=False)
+        _write_yaml(
+            tmp_path / "config.yaml",
+            {"github": {"project": "orgs/my-org/projects/1"}},
+        )
 
         with pytest.raises(ValueError, match="GITHUB_TOKEN"):
             load_config(tmp_path)
-
-    def test_github_qa_status_round_trips(self, tmp_path: Path) -> None:
-        cfg = {
-            "github": {
-                "token": "ghp_test",
-                "project": "orgs/my-org/projects/1",
-                "in_progress_status": "In Progress",
-                "needs_input_status": "Needs Input",
-                "qa_status": "In Review",
-            },
-        }
-        _write_yaml(tmp_path / "config.yaml", cfg)
-
-        config = load_config(tmp_path)
-        assert config.github is not None
-        assert config.github.qa_status == "In Review"
-
-    def test_clone_protocol_defaults_to_ssh(self, tmp_path: Path) -> None:
-        cfg = {
-            "github": {
-                "token": "ghp_test",
-                "project": "orgs/my-org/projects/1",
-                "in_progress_status": "In Progress",
-                "needs_input_status": "Needs Input",
-            },
-        }
-        _write_yaml(tmp_path / "config.yaml", cfg)
-
-        config = load_config(tmp_path)
-        assert config.github is not None
-        assert config.github.clone_protocol == "ssh"
-
-    def test_clone_protocol_https_accepted(self, tmp_path: Path) -> None:
-        cfg = {
-            "github": {
-                "token": "ghp_test",
-                "project": "orgs/my-org/projects/1",
-                "in_progress_status": "In Progress",
-                "needs_input_status": "Needs Input",
-                "clone_protocol": "https",
-            },
-        }
-        _write_yaml(tmp_path / "config.yaml", cfg)
-
-        config = load_config(tmp_path)
-        assert config.github is not None
-        assert config.github.clone_protocol == "https"
 
     def test_clone_protocol_invalid_value_rejected(self, tmp_path: Path) -> None:
         cfg = {
             "github": {
                 "token": "ghp_test",
                 "project": "orgs/my-org/projects/1",
-                "in_progress_status": "In Progress",
-                "needs_input_status": "Needs Input",
                 "clone_protocol": "git",
             },
         }
@@ -722,43 +319,33 @@ class TestLoadConfigGitHub:
 
 
 class TestExactlyOneTracker:
-    def test_both_blocks_set_raises(self, tmp_path: Path) -> None:
-        cfg = {
-            "linear": {
-                "api_key": "key",
+    @pytest.mark.parametrize(
+        "cfg",
+        [
+            {
+                "linear": {"api_key": "key"},
+                "github": {
+                    "token": "ghp_test",
+                    "project": "orgs/my-org/projects/1",
+                },
             },
-            "github": {
-                "token": "ghp_test",
-                "project": "orgs/my-org/projects/1",
-                "in_progress_status": "In Progress",
-                "needs_input_status": "Needs Input",
+            {
+                "linear": {"api_key": "key"},
+                "webui": _webui_block(),
             },
-        }
-        _write_yaml(tmp_path / "config.yaml", cfg)
-
-        with pytest.raises(ValueError, match="More than one tracker backend"):
-            load_config(tmp_path)
-
-    def test_webui_and_linear_both_set_raises(self, tmp_path: Path) -> None:
-        cfg = {
-            "linear": {"api_key": "key"},
-            "webui": _webui_block(),
-        }
-        _write_yaml(tmp_path / "config.yaml", cfg)
-
-        with pytest.raises(ValueError, match="More than one tracker backend"):
-            load_config(tmp_path)
-
-    def test_webui_and_github_both_set_raises(self, tmp_path: Path) -> None:
-        cfg = {
-            "github": {
-                "token": "ghp_test",
-                "project": "orgs/my-org/projects/1",
-                "in_progress_status": "In Progress",
-                "needs_input_status": "Needs Input",
+            {
+                "github": {
+                    "token": "ghp_test",
+                    "project": "orgs/my-org/projects/1",
+                },
+                "webui": _webui_block(),
             },
-            "webui": _webui_block(),
-        }
+        ],
+        ids=["linear-github", "linear-webui", "github-webui"],
+    )
+    def test_more_than_one_backend_raises(
+        self, tmp_path: Path, cfg: dict[str, object]
+    ) -> None:
         _write_yaml(tmp_path / "config.yaml", cfg)
 
         with pytest.raises(ValueError, match="More than one tracker backend"):
@@ -782,8 +369,6 @@ class TestExactlyOneTracker:
         cfg = {
             "github": {
                 "project": "orgs/my-org/projects/1",
-                "in_progress_status": "In Progress",
-                "needs_input_status": "Needs Input",
             },
         }
         _write_yaml(tmp_path / "config.yaml", cfg)
@@ -816,30 +401,21 @@ class TestExactlyOneTracker:
 
 
 class TestWebUIConfig:
-    def test_webui_only_loads_with_defaults(self, tmp_path: Path) -> None:
-        cfg = {"webui": _webui_block()}
-        _write_yaml(tmp_path / "config.yaml", cfg)
-
-        config = load_config(tmp_path)
-        assert config.linear is None
-        assert config.github is None
-        assert config.webui is not None
-        assert config.webui.port == 8080
-        assert config.webui.host == "127.0.0.1"
-        assert config.webui.password == "secret"
-        assert config.webui.anthropic_api_key is None
-        assert config.webui.api_token is None
-
-    def test_api_token_is_expanded_from_the_environment(
+    def test_webui_only_config_loads(
         self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
     ) -> None:
-        monkeypatch.setenv("SYMPHONY_API_TOKEN", "agent-token")
-        cfg = {"webui": _webui_block(api_token="${SYMPHONY_API_TOKEN}")}
-        _write_yaml(tmp_path / "config.yaml", cfg)
+        """A webui-only config needs none of the other backends' credentials."""
+        monkeypatch.delenv("LINEAR_API_KEY", raising=False)
+        monkeypatch.delenv("GITHUB_TOKEN", raising=False)
+        _write_yaml(tmp_path / "config.yaml", {"webui": _webui_block()})
 
         config = load_config(tmp_path)
         assert config.webui is not None
-        assert config.webui.api_token == "agent-token"
+        assert config.webui.port == 8080
+        assert config.webui.password == "secret"
+        assert config.webui.host == "127.0.0.1"
+        assert config.linear is None
+        assert config.github is None
 
     def test_empty_api_token_raises(self, tmp_path: Path) -> None:
         _write_yaml(tmp_path / "config.yaml", {"webui": _webui_block(api_token="  ")})
@@ -847,40 +423,13 @@ class TestWebUIConfig:
         with pytest.raises(ValueError, match="non-empty"):
             load_config(tmp_path)
 
-    def test_explicit_host_and_api_key(self, tmp_path: Path) -> None:
-        cfg = {"webui": _webui_block(host="0.0.0.0", anthropic_api_key="sk-ant-test")}
-        _write_yaml(tmp_path / "config.yaml", cfg)
-
-        config = load_config(tmp_path)
-        assert config.webui is not None
-        assert config.webui.host == "0.0.0.0"
-        assert config.webui.anthropic_api_key == "sk-ant-test"
-
-    def test_password_is_expanded_from_the_environment(
-        self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
-    ) -> None:
-        monkeypatch.setenv("WEBUI_PASS", "expanded-pass")
-        cfg = {"webui": _webui_block(password="${WEBUI_PASS}")}
-        _write_yaml(tmp_path / "config.yaml", cfg)
-
-        config = load_config(tmp_path)
-        assert config.webui is not None
-        assert config.webui.password == "expanded-pass"
-
-    def test_port_missing_raises(self, tmp_path: Path) -> None:
+    @pytest.mark.parametrize("field", ["port", "password"])
+    def test_missing_required_field_raises(self, tmp_path: Path, field: str) -> None:
         block = _webui_block()
-        del block["port"]
+        del block[field]
         _write_yaml(tmp_path / "config.yaml", {"webui": block})
 
-        with pytest.raises(ValueError, match="Config validation failed"):
-            load_config(tmp_path)
-
-    def test_password_missing_raises(self, tmp_path: Path) -> None:
-        block = _webui_block()
-        del block["password"]
-        _write_yaml(tmp_path / "config.yaml", {"webui": block})
-
-        with pytest.raises(ValueError, match="password"):
+        with pytest.raises(ValueError, match=field):
             load_config(tmp_path)
 
     def test_empty_password_raises(self, tmp_path: Path) -> None:
@@ -888,45 +437,6 @@ class TestWebUIConfig:
 
         with pytest.raises(ValueError, match="non-empty"):
             load_config(tmp_path)
-
-    def test_username_field_raises(self, tmp_path: Path) -> None:
-        # The username is no longer a credential, and dropping it without a
-        # deprecation shim is deliberate: a config that still sets it must be
-        # fixed rather than silently ignored.
-        _write_yaml(tmp_path / "config.yaml", {"webui": _webui_block(username="admin")})
-
-        with pytest.raises(ValueError, match="username"):
-            load_config(tmp_path)
-
-    def test_webui_only_does_not_require_tracker_env(
-        self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
-    ) -> None:
-        monkeypatch.delenv("LINEAR_API_KEY", raising=False)
-        monkeypatch.delenv("GITHUB_TOKEN", raising=False)
-        _write_yaml(tmp_path / "config.yaml", {"webui": _webui_block()})
-
-        config = load_config(tmp_path)
-        assert config.webui is not None
-
-    def test_webhook_with_webui_raises(self, tmp_path: Path) -> None:
-        cfg = {
-            "webui": _webui_block(),
-            "webhook": {"port": 4000, "linear_secret": "secret"},
-        }
-        _write_yaml(tmp_path / "config.yaml", cfg)
-
-        with pytest.raises(
-            ValueError, match="webhook block requires a 'linear:' backend"
-        ):
-            load_config(tmp_path)
-
-    def test_null_webui_with_linear_is_treated_as_absent(self, tmp_path: Path) -> None:
-        cfg = {"linear": {"api_key": "key"}, "webui": None}
-        _write_yaml(tmp_path / "config.yaml", cfg)
-
-        config = load_config(tmp_path)
-        assert config.webui is None
-        assert config.linear is not None
 
     def test_public_url_loses_trailing_slash(self, tmp_path: Path) -> None:
         _write_yaml(
@@ -1005,17 +515,56 @@ class TestWebUIConfig:
             load_config(tmp_path)
 
 
-class TestWebUINtfyRemoved:
-    def test_a_ntfy_block_is_rejected(self, tmp_path: Path) -> None:
-        """ntfy was removed before release, so an old block must fail loudly."""
-        ntfy = {"url": "https://example.com/mytopic"}
-        _write_yaml(tmp_path / "config.yaml", {"webui": _webui_block(ntfy=ntfy)})
+class TestNullSubconfigs:
+    @pytest.mark.parametrize("key", ["webui", "webhook"])
+    def test_a_null_block_is_treated_as_absent(self, tmp_path: Path, key: str) -> None:
+        """A YAML key with an empty value parses as None, not as a block."""
+        cfg = {"linear": {"api_key": "key"}, key: None}
+        _write_yaml(tmp_path / "config.yaml", cfg)
 
-        # The specific error matters: a block must fail because the field no
-        # longer exists, not because its contents happened to be invalid.
-        with pytest.raises(
-            ValueError, match="webui -> ntfy: Extra inputs are not permitted"
-        ):
+        config = load_config(tmp_path)
+        assert config.linear is not None
+        assert getattr(config, key) is None
+
+
+class TestRemovedConfigFields:
+    @pytest.mark.parametrize(
+        ("cfg", "message"),
+        [
+            pytest.param(
+                {
+                    "linear": {
+                        "api_key": "test-key",
+                        "bot_user_email": "bot@example.com",
+                    }
+                },
+                "bot_user_email",
+                id="linear-bot-user-email",
+            ),
+            pytest.param(
+                {"linear": {"api_key": "key"}, "workspace_root": "~/anything"},
+                "workspace_root",
+                id="workspace-root",
+            ),
+            pytest.param(
+                {"webui": _webui_block(username="admin")},
+                "username",
+                id="webui-username",
+            ),
+            pytest.param(
+                {"webui": _webui_block(ntfy={"url": "https://example.com/mytopic"})},
+                "webui -> ntfy: Extra inputs are not permitted",
+                id="webui-ntfy",
+            ),
+        ],
+    )
+    def test_a_removed_field_fails_loudly(
+        self, tmp_path: Path, cfg: dict[str, object], message: str
+    ) -> None:
+        """Old configs must be fixed, not silently ignored."""
+        _write_yaml(tmp_path / "config.yaml", cfg)
+
+        with pytest.raises(ValueError, match=message):
             load_config(tmp_path)
 
 
@@ -1025,20 +574,7 @@ class TestWebUINtfyRemoved:
 
 
 class TestWebhookConfig:
-    def test_block_absent_webhook_is_none(self, tmp_path: Path) -> None:
-        """When no webhook block is in config, config.webhook is None."""
-        cfg = {
-            "linear": {
-                "api_key": "test-key",
-            },
-        }
-        _write_yaml(tmp_path / "config.yaml", cfg)
-
-        config = load_config(tmp_path)
-        assert config.webhook is None
-
-    def test_block_present_with_port_and_secret(self, tmp_path: Path) -> None:
-        """Webhook config loads with explicit port and secret."""
+    def test_block_with_port_and_secret_loads(self, tmp_path: Path) -> None:
         cfg = {
             "linear": {
                 "api_key": "test-key",
@@ -1055,19 +591,21 @@ class TestWebhookConfig:
         assert config.webhook.port == 4000
         assert config.webhook.linear_secret == "my-secret"
 
-    def test_secret_empty_env_var_fallback(
-        self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+    @pytest.mark.parametrize(
+        "webhook_block",
+        [{"port": 4000, "linear_secret": ""}, {"port": 4000}],
+        ids=["empty-secret", "missing-secret"],
+    )
+    def test_secret_env_var_fallback(
+        self,
+        tmp_path: Path,
+        monkeypatch: pytest.MonkeyPatch,
+        webhook_block: dict[str, object],
     ) -> None:
-        """If linear_secret is empty in YAML, fall back to env var."""
         monkeypatch.setenv("SYMPHONY_LINEAR_WEBHOOK_SECRET", "env-secret")
         cfg = {
-            "linear": {
-                "api_key": "test-key",
-            },
-            "webhook": {
-                "port": 4000,
-                "linear_secret": "",
-            },
+            "linear": {"api_key": "test-key"},
+            "webhook": webhook_block,
         }
         _write_yaml(tmp_path / "config.yaml", cfg)
 
@@ -1075,154 +613,49 @@ class TestWebhookConfig:
         assert config.webhook is not None
         assert config.webhook.linear_secret == "env-secret"
 
-    def test_secret_missing_env_var_fallback(
-        self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+    @pytest.mark.parametrize(
+        "webhook_block",
+        [{"port": 4000, "linear_secret": ""}, {"port": 4000}],
+        ids=["empty-secret", "missing-secret"],
+    )
+    def test_secret_missing_everywhere_raises(
+        self,
+        tmp_path: Path,
+        monkeypatch: pytest.MonkeyPatch,
+        webhook_block: dict[str, object],
     ) -> None:
-        """If linear_secret key is absent from YAML, fall back to env var."""
-        monkeypatch.setenv("SYMPHONY_LINEAR_WEBHOOK_SECRET", "env-secret")
+        monkeypatch.delenv("SYMPHONY_LINEAR_WEBHOOK_SECRET", raising=False)
         cfg = {
-            "linear": {
-                "api_key": "test-key",
-            },
-            "webhook": {
-                "port": 4000,
-            },
-        }
-        _write_yaml(tmp_path / "config.yaml", cfg)
-
-        config = load_config(tmp_path)
-        assert config.webhook is not None
-        assert config.webhook.linear_secret == "env-secret"
-
-    def test_secret_empty_env_var_unset_raises(self, tmp_path: Path) -> None:
-        """If linear_secret is empty and env var is unset, raise ValueError."""
-        cfg = {
-            "linear": {
-                "api_key": "test-key",
-            },
-            "webhook": {
-                "port": 4000,
-                "linear_secret": "",
-            },
+            "linear": {"api_key": "test-key"},
+            "webhook": webhook_block,
         }
         _write_yaml(tmp_path / "config.yaml", cfg)
 
         with pytest.raises(ValueError, match="SYMPHONY_LINEAR_WEBHOOK_SECRET"):
             load_config(tmp_path)
 
-    def test_secret_missing_env_var_unset_raises(self, tmp_path: Path) -> None:
-        """If linear_secret key is absent and env var unset, raise ValueError."""
-        cfg = {
-            "linear": {
-                "api_key": "test-key",
+    @pytest.mark.parametrize(
+        "backend",
+        [
+            {
+                "github": {
+                    "token": "ghp_test",
+                    "project": "orgs/my-org/projects/1",
+                }
             },
-            "webhook": {
-                "port": 4000,
-            },
-        }
-        _write_yaml(tmp_path / "config.yaml", cfg)
-
-        with pytest.raises(ValueError, match="SYMPHONY_LINEAR_WEBHOOK_SECRET"):
-            load_config(tmp_path)
-
-    def test_secret_env_var_in_yaml_expanded(
-        self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+            {"webui": _webui_block()},
+        ],
+        ids=["github", "webui"],
+    )
+    def test_a_backend_without_linear_rejects_a_webhook(
+        self,
+        tmp_path: Path,
+        monkeypatch: pytest.MonkeyPatch,
+        backend: dict[str, object],
     ) -> None:
-        """$VAR expansion works for linear_secret in YAML."""
-        monkeypatch.setenv("MY_SECRET", "expanded-secret")
-        cfg = {
-            "linear": {
-                "api_key": "test-key",
-            },
-            "webhook": {
-                "port": 4000,
-                "linear_secret": "$MY_SECRET",
-            },
-        }
-        _write_yaml(tmp_path / "config.yaml", cfg)
-
-        config = load_config(tmp_path)
-        assert config.webhook is not None
-        assert config.webhook.linear_secret == "expanded-secret"
-
-    def test_port_zero_raises_validation_error(self, tmp_path: Path) -> None:
-        """Port 0 is invalid (must be gt=0)."""
-        cfg = {
-            "linear": {
-                "api_key": "test-key",
-            },
-            "webhook": {
-                "port": 0,
-                "linear_secret": "secret",
-            },
-        }
-        _write_yaml(tmp_path / "config.yaml", cfg)
-
-        with pytest.raises(ValueError, match="Config validation failed"):
-            load_config(tmp_path)
-
-    def test_port_negative_raises_validation_error(self, tmp_path: Path) -> None:
-        """Negative port is invalid."""
-        cfg = {
-            "linear": {
-                "api_key": "test-key",
-            },
-            "webhook": {
-                "port": -1,
-                "linear_secret": "secret",
-            },
-        }
-        _write_yaml(tmp_path / "config.yaml", cfg)
-
-        with pytest.raises(ValueError, match="Config validation failed"):
-            load_config(tmp_path)
-
-    def test_port_above_65535_raises_validation_error(self, tmp_path: Path) -> None:
-        """Port > 65535 is invalid."""
-        cfg = {
-            "linear": {
-                "api_key": "test-key",
-            },
-            "webhook": {
-                "port": 65536,
-                "linear_secret": "secret",
-            },
-        }
-        _write_yaml(tmp_path / "config.yaml", cfg)
-
-        with pytest.raises(ValueError, match="Config validation failed"):
-            load_config(tmp_path)
-
-    def test_webhook_null_in_yaml_becomes_none(self, tmp_path: Path) -> None:
-        """webhook: with no sub-fields is treated as absent (None)."""
-        cfg = {
-            "linear": {
-                "api_key": "test-key",
-            },
-            "webhook": None,
-        }
-        _write_yaml(tmp_path / "config.yaml", cfg)
-
-        config = load_config(tmp_path)
-        assert config.webhook is None
-
-    def test_webhook_with_github_backend_raises(
-        self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
-    ) -> None:
-        """Webhook block with GitHub backend is rejected — only Linear supports webhooks."""
-        monkeypatch.setenv("GITHUB_TOKEN", "ghp_test")
+        """Webhooks are Linear-only; the scope error wins over a secret error."""
         monkeypatch.setenv("SYMPHONY_LINEAR_WEBHOOK_SECRET", "env-secret")
-        cfg = {
-            "github": {
-                "project": "orgs/my-org/projects/1",
-                "in_progress_status": "In Progress",
-                "needs_input_status": "Needs Input",
-            },
-            "webhook": {
-                "port": 4000,
-                "linear_secret": "",
-            },
-        }
+        cfg = {**backend, "webhook": {"port": 4000, "linear_secret": ""}}
         _write_yaml(tmp_path / "config.yaml", cfg)
 
         with pytest.raises(

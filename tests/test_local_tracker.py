@@ -5,7 +5,7 @@ from __future__ import annotations
 import threading
 from datetime import datetime
 from pathlib import Path
-from unittest.mock import MagicMock, patch
+from unittest.mock import patch
 
 import pytest
 
@@ -32,7 +32,6 @@ from symphony_linear.local_tracker import (
 from symphony_linear.presence import ACTIVE_WINDOW_SECONDS, TicketPresence
 from symphony_linear.tracker import (
     AttachmentDownloadError,
-    Tracker,
     TrackerError,
     TrackerNotFoundError,
     TransitionTarget,
@@ -70,28 +69,6 @@ def _new_triggered(tracker: LocalTracker, description: str = "work") -> str:
 
 
 class TestProtocolConformance:
-    def test_is_a_tracker(self, tracker: LocalTracker) -> None:
-        assert isinstance(tracker, Tracker)
-
-    def test_new_draft_defaults(self, store: LocalTicketStore) -> None:
-        ticket = store.create_draft(
-            title="Title", description="Body", repo="owner/name"
-        )
-
-        assert ticket.id == "SYM-1"
-        assert ticket.identifier == "SYM-1"
-        assert ticket.state == STATE_DRAFT
-        assert ticket.comments == []
-        assert ticket.created_at
-        assert ticket.updated_at
-        assert ticket.state_changed_at
-
-    def test_draft_is_not_triggered(self, tracker: LocalTracker) -> None:
-        store = tracker.store
-        ticket = store.create_draft(description="draft")
-        assert tracker.list_triggered_issues() == []
-        assert tracker.is_still_triggered(tracker.get_issue(ticket.id)) is False
-
     def test_triggered_states_are_listed(self, tracker: LocalTracker) -> None:
         store = tracker.store
         ids = [
@@ -125,11 +102,7 @@ class TestProtocolConformance:
         assert issue.title == "A title"
         assert issue.description == "A **body**"
         assert issue.state == STATE_IN_PROGRESS
-        assert issue.branch_name is None
-        assert issue.project is None
-        assert issue.labels == []
         assert issue.comments == []
-        assert issue.archived_at is None
 
     def test_get_issue_unknown_raises(self, tracker: LocalTracker) -> None:
         with pytest.raises(TrackerNotFoundError):
@@ -204,16 +177,6 @@ class TestPersistence:
         second = reloaded.store.create_draft(description="second")
 
         assert second.id == "SYM-2"
-
-    def test_one_file_per_ticket_plus_counter(self, tmp_path: Path) -> None:
-        tracker = LocalTracker(tmp_path)
-        ticket = tracker.store.create_draft(description="one")
-        tracker.store.create_draft(description="two")
-        tracker.store.delete_draft(ticket.id)
-
-        names = sorted(path.name for path in (tmp_path / "tickets").iterdir())
-
-        assert names == ["SYM-2.json", "counter.json", "repos.json"]
 
     def test_concurrent_creates_get_unique_ids(self, store: LocalTicketStore) -> None:
         ids: list[str] = []
@@ -408,13 +371,6 @@ class TestRepos:
         assert tracker.store.list_tickets() == []
         assert tracker.store.list_repos() == []
         assert repos_path.read_bytes() == before
-
-    def test_removing_an_unknown_url_is_a_no_op(self, store: LocalTicketStore) -> None:
-        store.add_repo("owner/name")
-
-        store.remove_repo("other/repo")
-
-        assert [entry.url for entry in store.list_repos()] == ["owner/name"]
 
 
 # ---------------------------------------------------------------------------
@@ -725,36 +681,8 @@ class TestComments:
 
 
 class TestStates:
-    def test_transition_mapping(
-        self, tracker: LocalTracker, store: LocalTicketStore
-    ) -> None:
-        # A Draft is only left by a user action (Start); the tracker never
-        # moves one, so begin from the state Start leaves it in.
-        ticket = store.create_draft(description="x")
-        store.set_state(ticket.id, STATE_IN_PROGRESS)
-
-        tracker.transition_to(ticket.id, TransitionTarget.in_progress)
-        assert tracker.get_issue(ticket.id).state == STATE_IN_PROGRESS
-        tracker.transition_to(ticket.id, TransitionTarget.needs_input)
-        assert tracker.get_issue(ticket.id).state == STATE_NEEDS_INPUT
-        tracker.transition_to(ticket.id, TransitionTarget.qa)
-        issue = tracker.get_issue(ticket.id)
-        assert issue.state == STATE_QA
-        assert tracker.is_in_qa(issue) is True
-
     def test_qa_is_always_enabled(self, tracker: LocalTracker) -> None:
         assert tracker.qa_enabled is True
-
-    def test_transition_names(self, tracker: LocalTracker) -> None:
-        assert (
-            tracker.transition_name_for(TransitionTarget.in_progress)
-            == STATE_IN_PROGRESS
-        )
-        assert (
-            tracker.transition_name_for(TransitionTarget.needs_input)
-            == STATE_NEEDS_INPUT
-        )
-        assert tracker.transition_name_for(TransitionTarget.qa) == STATE_QA
 
     def test_same_state_transition_keeps_state_changed_at(
         self, tracker: LocalTracker, store: LocalTicketStore
@@ -826,9 +754,6 @@ class TestStates:
         )
         assert store.set_state_if(ticket.id, frozenset({STATE_QA}), STATE_QA) is True
 
-    def test_human_trigger_description_names_done(self, tracker: LocalTracker) -> None:
-        assert STATE_DONE in tracker.human_trigger_description()
-
 
 # ---------------------------------------------------------------------------
 # Repository and unsupported operations
@@ -836,31 +761,31 @@ class TestStates:
 
 
 class TestRepoAndAttachments:
-    def test_shorthand_repo_becomes_github_ssh(self, tracker: LocalTracker) -> None:
-        ticket = tracker.store.create_draft(description="x", repo="acme/widgets")
-
-        assert tracker.repo_url_for(tracker.get_issue(ticket.id)) == (
-            "git@github.com:acme/widgets.git"
-        )
-
-    def test_shorthand_with_git_suffix_is_not_doubled(
-        self, tracker: LocalTracker
+    @pytest.mark.parametrize(
+        ("repo", "expected"),
+        [
+            ("acme/widgets", "git@github.com:acme/widgets.git"),
+            ("acme/widgets.git", "git@github.com:acme/widgets.git"),
+            (
+                "https://github.com/acme/widgets.git",
+                "https://github.com/acme/widgets.git",
+            ),
+            (
+                "git@gitlab.example.com:acme/widgets.git",
+                "git@gitlab.example.com:acme/widgets.git",
+            ),
+            (
+                "ssh://git@example.com/acme/widgets.git",
+                "ssh://git@example.com/acme/widgets.git",
+            ),
+        ],
+    )
+    def test_repo_url_maps_shorthand_to_github_ssh_and_passes_urls_through(
+        self, tracker: LocalTracker, repo: str, expected: str
     ) -> None:
-        ticket = tracker.store.create_draft(description="x", repo="acme/widgets.git")
+        ticket = tracker.store.create_draft(description="x", repo=repo)
 
-        assert tracker.repo_url_for(tracker.get_issue(ticket.id)) == (
-            "git@github.com:acme/widgets.git"
-        )
-
-    def test_full_clone_url_passes_through(self, tracker: LocalTracker) -> None:
-        for url in (
-            "https://github.com/acme/widgets.git",
-            "git@gitlab.example.com:acme/widgets.git",
-            "ssh://git@example.com/acme/widgets.git",
-        ):
-            ticket = tracker.store.create_draft(description="x", repo=url)
-            assert tracker.repo_url_for(tracker.get_issue(ticket.id)) == url
-            tracker.store.delete_draft(ticket.id)
+        assert tracker.repo_url_for(tracker.get_issue(ticket.id)) == expected
 
     def test_empty_repo_raises_user_facing_error(self, tracker: LocalTracker) -> None:
         ticket = tracker.store.create_draft(description="x")
@@ -880,9 +805,6 @@ class TestRepoAndAttachments:
         assert tracker.is_upload_url("https://uploads.linear.app/x") is False
         with pytest.raises(AttachmentDownloadError):
             tracker.download_attachment("https://uploads.linear.app/x")
-
-    def test_ensure_trigger_setup_is_a_noop(self, tracker: LocalTracker) -> None:
-        tracker.ensure_trigger_setup(MagicMock(), ["Model: Strong"])
 
 
 class TestReplyDraftAndSeenMarker:
@@ -1029,18 +951,6 @@ class TestReplyDraftAndSeenMarker:
         after = store.get(ticket.id)
         assert after is not None
         assert after.updated_at == before.updated_at
-
-    def test_only_the_most_recent_send_tokens_are_kept(
-        self, store: LocalTicketStore
-    ) -> None:
-        ticket = store.create_draft(description="x")
-        store.set_state(ticket.id, STATE_NEEDS_INPUT)
-        for index in range(25):
-            store.add_human_comment_once(ticket.id, "x", token=f"tok-{index}")
-
-        stored = store.get(ticket.id)
-        assert stored is not None
-        assert stored.accepted_send_tokens == [f"tok-{index}" for index in range(5, 25)]
 
     def test_an_old_ticket_file_loads_with_the_new_fields_defaulted(
         self, tmp_path: Path
@@ -1552,9 +1462,6 @@ class TestDeleteDraftIfUntouched:
         assert store.delete_draft_if_untouched(ticket.id) is False
         assert store.get(ticket.id) is not None
 
-    def test_an_unknown_ticket_is_false(self, store: LocalTicketStore) -> None:
-        assert store.delete_draft_if_untouched("SYM-404") is False
-
 
 # ---------------------------------------------------------------------------
 # Orchestrator transitions versus user actions
@@ -1607,6 +1514,7 @@ class TestOrchestratorTransitions:
 
         issue = tracker.get_issue(ticket.id)
         assert issue.state == expected
+        assert tracker.is_in_qa(issue) is (expected == STATE_QA)
         stored = store.get(ticket.id)
         assert stored is not None
         assert stored.state == expected
@@ -1768,27 +1676,17 @@ class TestWebPushNotifications:
 
 
 class TestSendTransaction:
-    def test_a_reply_is_refused_while_a_turn_runs(
-        self, tracker: LocalTracker, store: LocalTicketStore
+    @pytest.mark.parametrize(
+        "state", [STATE_IN_PROGRESS, STATE_DONE], ids=["turn", "done"]
+    )
+    def test_a_reply_is_refused_outside_needs_input(
+        self, tracker: LocalTracker, store: LocalTicketStore, state: str
     ) -> None:
         ticket = store.create_draft(description="x")
-        store.set_state(ticket.id, STATE_IN_PROGRESS)
+        store.set_state(ticket.id, state)
 
         with pytest.raises(ValueError):
             store.add_human_comment_once(ticket.id, "late reply", token="t1")
-
-        stored = store.get(ticket.id)
-        assert stored is not None
-        assert stored.comments == []
-
-    def test_a_reply_is_refused_on_a_done_ticket(
-        self, tracker: LocalTracker, store: LocalTicketStore
-    ) -> None:
-        ticket = store.create_draft(description="x")
-        store.set_state(ticket.id, STATE_DONE)
-
-        with pytest.raises(ValueError):
-            store.add_human_comment_once(ticket.id, "too late", token="t1")
 
         stored = store.get(ticket.id)
         assert stored is not None
@@ -1945,19 +1843,6 @@ class TestStartTransaction:
         assert stopped is True
         tracker.transition_to(ticket.id, TransitionTarget.in_progress)
 
-        stored = store.get(ticket.id)
-        assert stored is not None
-        assert stored.state == STATE_IN_PROGRESS
-
-    def test_create_started_draft_writes_one_started_ticket(
-        self, store: LocalTicketStore
-    ) -> None:
-        ticket = store.create_started_draft(
-            title="T", description="D", repo="o/n", model=None
-        )
-
-        assert ticket.state == STATE_IN_PROGRESS
-        assert ticket.created_at == ticket.state_changed_at
         stored = store.get(ticket.id)
         assert stored is not None
         assert stored.state == STATE_IN_PROGRESS

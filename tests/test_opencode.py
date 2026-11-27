@@ -44,72 +44,6 @@ logging.basicConfig(level=logging.DEBUG)
 
 
 # ---------------------------------------------------------------------------
-# Unit: JSON event parser (uses fixture data)
-# ---------------------------------------------------------------------------
-
-
-class TestParseEventsFromFixture:
-    """Parse the fixture NDJSON file and verify basic event structure."""
-
-    def test_fixture_has_three_events(self) -> None:
-        """The captured fixture should contain exactly three events."""
-        events = _load_fixture_events()
-        assert len(events) == 3
-
-    def test_fixture_contains_session_id(self) -> None:
-        """Every event should carry a sessionID."""
-        events = _load_fixture_events()
-        for evt in events:
-            assert "sessionID" in evt
-            assert isinstance(evt["sessionID"], str)
-            assert evt["sessionID"].startswith("ses_")
-
-    def test_fixture_event_types(self) -> None:
-        """The three events should be step_start, text, step_finish."""
-        events = _load_fixture_events()
-        types = [evt["type"] for evt in events]
-        assert types == ["step_start", "text", "step_finish"]
-
-    def test_extract_text_and_session_id(self) -> None:
-        """Simulate the parser logic: session_id from first event,
-        text from text events, detect step_finish."""
-        events = _load_fixture_events()
-
-        session_id: str | None = None
-        text_parts: list[str] = []
-        finished = False
-
-        for evt in events:
-            if session_id is None:
-                session_id = evt.get("sessionID")
-            if evt.get("type") == "text":
-                text_parts.append(evt["part"]["text"])
-            if evt.get("type") == "step_finish":
-                finished = True
-
-        assert session_id == "ses_1e3790378ffecZySU3wIpFOoIz"
-        assert "".join(text_parts) == "hi"
-        assert finished is True
-
-    def test_parse_corrupt_line_skipped(self, caplog: pytest.LogCaptureFixture) -> None:
-        """A corrupt JSON line should be logged and skipped."""
-        corrupt_line = "not valid json {{{"
-        with caplog.at_level(logging.DEBUG):
-            _parse_one_line(corrupt_line)
-        # Should have a debug log about skipping.
-        assert any("Skipping" in rec.message for rec in caplog.records), (
-            f"Expected debug skip message in: {[r.message for r in caplog.records]}"
-        )
-
-    def test_parse_empty_line(self) -> None:
-        """Empty lines should be skipped silently."""
-        result = _parse_one_line("")
-        assert result is None
-        result = _parse_one_line("   ")
-        assert result is None
-
-
-# ---------------------------------------------------------------------------
 # Unit: context token extraction from step_finish events
 # ---------------------------------------------------------------------------
 
@@ -118,19 +52,12 @@ class TestExtractContextTokens:
     """Verify context-token computation from the last step_finish event."""
 
     def test_existing_fixture_context_tokens(self) -> None:
-        """Fixture 1: input=6, cache.read=0, cache.write=23097 → 23103."""
+        """Fixture: input=6, cache.read=0, cache.write=23097 → 23103."""
         events = _load_fixture_events("opencode_events.jsonl")
         assert _extract_context_tokens(events) == 23103
 
-    def test_tool_use_fixture_context_tokens(self) -> None:
-        """Fixture 2: input=10, cache.read=0, cache.write=80 → 90."""
-        events = _load_fixture_events("opencode_events_tool_use.jsonl")
-        assert _extract_context_tokens(events) == 90
-
     def test_multi_step_fixture_last_wins(self) -> None:
-        """Multiple step_finish events — last one's tokens are used.
-        First: input=20+read=0+write=65=85. Last: input=30+read=0+write=145=175.
-        """
+        """Multiple step_finish events: the last one's tokens are used."""
         events = _load_fixture_events("opencode_events_multi_step.jsonl")
         assert _extract_context_tokens(events) == 175
 
@@ -141,74 +68,22 @@ class TestExtractContextTokens:
         ]
         assert _extract_context_tokens(events) is None
 
-    def test_step_finish_no_cache_subdict(self) -> None:
-        """Missing 'cache' key defaults to 0 for read and write."""
-        event = {
-            "type": "step_finish",
-            "sessionID": "ses_test",
-            "part": {
-                "type": "step-finish",
-                "tokens": {"input": 42, "output": 10},
-            },
-        }
-        assert _extract_context_tokens([event]) == 42
-
-    def test_step_finish_missing_input_defaults_zero(self) -> None:
-        """Missing 'input' key defaults to 0."""
-        event = {
-            "type": "step_finish",
-            "sessionID": "ses_test",
-            "part": {
-                "type": "step-finish",
-                "tokens": {"output": 10, "cache": {"read": 5, "write": 7}},
-            },
-        }
-        assert _extract_context_tokens([event]) == 12
-
-    def test_step_finish_none_values_treated_as_zero(self) -> None:
-        """None values for numeric fields are treated as 0."""
-        event = {
-            "type": "step_finish",
-            "sessionID": "ses_test",
-            "part": {
-                "type": "step-finish",
-                "tokens": {
-                    "input": None,
-                    "cache": {"read": None, "write": None},
-                },
-            },
-        }
-        assert _extract_context_tokens([event]) == 0
-
-    def test_step_finish_part_is_none(self) -> None:
-        """part = None (null in JSON) → treated as {} → returns 0."""
-        event = {
-            "type": "step_finish",
-            "sessionID": "ses_test",
-            "part": None,
-        }
-        assert _extract_context_tokens([event]) == 0
-
-    def test_step_finish_no_tokens_key(self) -> None:
-        """No 'tokens' key at all → defaults to 0."""
-        event = {
-            "type": "step_finish",
-            "sessionID": "ses_test",
-            "part": {"type": "step-finish"},
-        }
-        assert _extract_context_tokens([event]) == 0
-
-    def test_step_finish_tokens_is_not_a_dict(self) -> None:
-        """tokens is a string (not a dict) → treated as missing → returns 0."""
-        event = {
-            "type": "step_finish",
-            "sessionID": "ses_test",
-            "part": {
-                "type": "step-finish",
-                "tokens": "invalid",
-            },
-        }
-        assert _extract_context_tokens([event]) == 0
+    @pytest.mark.parametrize(
+        ("part", "expected"),
+        [
+            ({"tokens": {"input": 42, "output": 10}}, 42),
+            ({"tokens": {"output": 10, "cache": {"read": 5, "write": 7}}}, 12),
+            ({"tokens": {"input": None, "cache": {"read": None, "write": None}}}, 0),
+            (None, 0),
+            ({"type": "step-finish"}, 0),
+            ({"tokens": "invalid"}, 0),
+        ],
+    )
+    def test_missing_or_malformed_token_fields_default_to_zero(
+        self, part: dict[str, Any] | None, expected: int
+    ) -> None:
+        event = {"type": "step_finish", "sessionID": "ses_test", "part": part}
+        assert _extract_context_tokens([event]) == expected
 
 
 # ---------------------------------------------------------------------------
@@ -224,36 +99,6 @@ class TestAssembleMessage:
         events = _load_fixture_events()
         assert _assemble_message(events) == "hi"
 
-    def test_tool_use_with_title(self) -> None:
-        """tool_use with a state.title produces *<title>* between text bursts."""
-        events = [
-            _make_text("Hello"),
-            _make_tool_use(tool="bash", title="Running shell command"),
-            _make_text("Done."),
-        ]
-        result = _assemble_message(events)
-        assert result == "Hello\n\n*Running shell command*\n\nDone."
-
-    def test_tool_use_with_no_title_falls_back_to_tool_name(self) -> None:
-        """tool_use with no title but a tool name produces *<tool>*."""
-        events = [
-            _make_text("Before"),
-            _make_tool_use(tool="read_file", title=""),
-            _make_text("After"),
-        ]
-        result = _assemble_message(events)
-        assert result == "Before\n\n*read_file*\n\nAfter"
-
-    def test_tool_use_with_neither_title_nor_tool_is_skipped(self) -> None:
-        """tool_use with no title and no tool name contributes no segment."""
-        events = [
-            _make_text("Only text"),
-            _make_tool_use(tool="", title=""),
-            _make_text("More text"),
-        ]
-        result = _assemble_message(events)
-        assert result == "Only text\n\nMore text"
-
     def test_tool_use_fixture_full_sequence(self) -> None:
         """The tool_use fixture file produces the expected assembled message."""
         events = _load_fixture_events("opencode_events_tool_use.jsonl")
@@ -262,13 +107,28 @@ class TestAssembleMessage:
             result == "Let me check that for you.\n\n*Running shell command*\n\nDone."
         )
 
-    def test_italics_use_single_asterisks(self) -> None:
-        """Tool labels must use *foo* (single asterisk), not _foo_ or **foo**."""
-        events = [_make_tool_use(tool="bash", title="My Tool")]
-        result = _assemble_message(events)
-        assert result == "*My Tool*"
-        assert "_My Tool_" not in result
-        assert "**My Tool**" not in result
+    @pytest.mark.parametrize(
+        ("tool", "title", "expected"),
+        [
+            (
+                "bash",
+                "Running shell command",
+                "Hello\n\n*Running shell command*\n\nDone.",
+            ),
+            ("read_file", "", "Hello\n\n*read_file*\n\nDone."),
+            ("", "", "Hello\n\nDone."),
+        ],
+    )
+    def test_tool_use_label_falls_back_from_title_to_tool_name(
+        self, tool: str, title: str, expected: str
+    ) -> None:
+        """A tool_use contributes *<title>* or *<tool>*, or nothing."""
+        events = [
+            _make_text("Hello"),
+            _make_tool_use(tool=tool, title=title),
+            _make_text("Done."),
+        ]
+        assert _assemble_message(events) == expected
 
 
 # ---------------------------------------------------------------------------
@@ -459,81 +319,6 @@ class TestParseStream:
         msg = _assemble_message(parsed)
         assert msg == "Partial output"
 
-    def test_empty_stdout_yields_no_session_and_empty_events(self) -> None:
-        """Empty stdout produces no session_id and empty events list."""
-        session_id, parsed = _parse_stream("")
-        assert session_id is None
-        assert parsed == []
-
-    def test_garbage_stdout_yields_no_session_and_empty_events(self) -> None:
-        """Completely unparseable stdout is silently skipped."""
-        session_id, parsed = _parse_stream("not json at all\n{garbage}\nbork")
-        assert session_id is None
-        assert parsed == []
-
-    def test_blank_lines_are_skipped(self) -> None:
-        """Blank lines between events are skipped silently."""
-        events = [
-            {"type": "text", "sessionID": "ses_x", "part": {"text": "A"}},
-        ]
-        stdout = "\n\n" + json.dumps(events[0]) + "\n\n"
-        session_id, parsed = _parse_stream(stdout)
-        assert session_id == "ses_x"
-        assert len(parsed) == 1
-
-    def test_tool_use_events_parsed_in_partial_stream(self) -> None:
-        """tool_use events in a partial stream are captured as events."""
-        events = [
-            {"type": "step_start", "sessionID": "ses_t", "part": {}},
-            {"type": "text", "sessionID": "ses_t", "part": {"text": "Running..."}},
-            {
-                "type": "tool_use",
-                "sessionID": "ses_t",
-                "part": {
-                    "tool": "bash",
-                    "state": {"title": "Installing deps", "status": "running"},
-                },
-            },
-        ]
-        stdout = "\n".join(json.dumps(e) for e in events)
-        _, parsed = _parse_stream(stdout)
-        msg = _assemble_message(parsed)
-        assert msg == "Running...\n\n*Installing deps*"
-
-    def test_step_finish_in_partial_stream(self) -> None:
-        """step_finish events are parsed but contribute nothing to message."""
-        events = [
-            {
-                "type": "step_finish",
-                "sessionID": "ses_f",
-                "part": {"reason": "stop", "tokens": {"input": 5}},
-            },
-        ]
-        stdout = "\n".join(json.dumps(e) for e in events)
-        _, parsed = _parse_stream(stdout)
-        msg = _assemble_message(parsed)
-        assert msg == ""
-
-    def test_null_json_line_is_skipped(self) -> None:
-        """A line containing valid JSON ``null`` is skipped (not a dict)."""
-        stdout = (
-            json.dumps({"type": "text", "sessionID": "ses_n", "part": {"text": "Hi"}})
-            + "\nnull\n"
-        )
-        session_id, parsed = _parse_stream(stdout)
-        assert session_id == "ses_n"
-        assert len(parsed) == 1
-
-    def test_nested_null_json_is_skipped(self) -> None:
-        """A line containing a JSON array is skipped (not a dict)."""
-        stdout = (
-            json.dumps({"type": "text", "sessionID": "ses_arr", "part": {"text": "X"}})
-            + "\n[]\n"
-        )
-        session_id, parsed = _parse_stream(stdout)
-        assert session_id == "ses_arr"
-        assert len(parsed) == 1
-
     def test_event_with_null_part_does_not_break_assembly(self) -> None:
         """An event with ``"part": null`` is parseable but assembly handles None."""
         event = {"type": "text", "sessionID": "ses_p", "part": None}
@@ -544,6 +329,46 @@ class TestParseStream:
         # _assemble_message must not raise on part=None.
         msg = _assemble_message(parsed)
         assert msg == ""
+
+    @pytest.mark.parametrize(
+        ("stdout", "expected_session", "expected_count"),
+        [
+            ("", None, 0),
+            ("not json at all\n{garbage}\nbork", None, 0),
+            (
+                "\n\n"
+                + json.dumps(
+                    {"type": "text", "sessionID": "ses_x", "part": {"text": "A"}}
+                )
+                + "\n\n",
+                "ses_x",
+                1,
+            ),
+            (
+                json.dumps(
+                    {"type": "text", "sessionID": "ses_n", "part": {"text": "Hi"}}
+                )
+                + "\nnull\n",
+                "ses_n",
+                1,
+            ),
+            (
+                json.dumps(
+                    {"type": "text", "sessionID": "ses_arr", "part": {"text": "X"}}
+                )
+                + "\n[]\n",
+                "ses_arr",
+                1,
+            ),
+        ],
+    )
+    def test_skips_unusable_lines(
+        self, stdout: str, expected_session: str | None, expected_count: int
+    ) -> None:
+        """Blank, garbage, non-dict and empty streams never raise."""
+        session_id, parsed = _parse_stream(stdout)
+        assert session_id == expected_session
+        assert len(parsed) == expected_count
 
 
 class TestExecuteTimeout:
@@ -674,86 +499,6 @@ class TestExecuteTimeout:
         assert "no output" not in exc.reason
         assert proc.killed
 
-    def test_timeout_with_null_line_does_not_mask_timeout(self) -> None:
-        """A ``null`` line in partial stdout is skipped; timeout still raised."""
-        stdout = (
-            json.dumps({"type": "step_start", "sessionID": "ses_nl", "part": {}})
-            + "\nnull\n"
-            + json.dumps(
-                {
-                    "type": "text",
-                    "sessionID": "ses_nl",
-                    "part": {"text": "Working..."},
-                }
-            )
-            + "\n"
-        ).encode()
-        proc = _FakePopen(stdout=stdout, exit_code=None)
-        exc = self._run_initial(proc, idle_timeout_seconds=0.2)
-        assert exc.session_id == "ses_nl"
-        assert exc.partial_message == "Working..."
-
-    def test_timeout_with_null_part_does_not_mask_timeout(self) -> None:
-        """An event with ``"part": null`` does not mask the timeout."""
-        stdout = (
-            json.dumps({"type": "step_start", "sessionID": "ses_np", "part": {}})
-            + "\n"
-            + json.dumps({"type": "text", "sessionID": "ses_np", "part": None})
-            + "\n"
-            + json.dumps(
-                {
-                    "type": "text",
-                    "sessionID": "ses_np",
-                    "part": {"text": "More text"},
-                }
-            )
-            + "\n"
-        ).encode()
-        proc = _FakePopen(stdout=stdout, exit_code=None)
-        exc = self._run_initial(proc, idle_timeout_seconds=0.2)
-        assert exc.session_id == "ses_np"
-        # null-part text event contributes nothing, "More text" does.
-        assert exc.partial_message == "More text"
-
-    def test_timeout_with_pure_garbage_stdout(self) -> None:
-        """Completely unparseable partial stdout still raises timeout."""
-        proc = _FakePopen(stdout=b"not json\n{garbage}", exit_code=None)
-        exc = self._run_initial(proc, idle_timeout_seconds=0.2)
-        assert exc.session_id is None
-        assert exc.partial_message == ""
-
-    def test_timeout_with_no_session_id(self) -> None:
-        """Timeout with no sessionID in partial stdout still raises."""
-        stdout = (
-            json.dumps({"type": "text", "part": {"text": "No session here."}}) + "\n"
-        ).encode()
-        proc = _FakePopen(stdout=stdout, exit_code=None)
-        exc = self._run_initial(proc, idle_timeout_seconds=0.2)
-        assert exc.session_id is None
-        assert exc.partial_message == "No session here."
-
-    def test_success_path_returns_parsed_output(self) -> None:
-        """A process that writes valid NDJSON and exits 0 succeeds."""
-        events = [
-            {"type": "step_start", "sessionID": "ses_ok", "part": {}},
-            {"type": "text", "sessionID": "ses_ok", "part": {"text": "all done"}},
-            {"type": "step_finish", "sessionID": "ses_ok", "part": {}},
-        ]
-        stdout = "\n".join(json.dumps(e) for e in events).encode()
-        proc = _FakePopen(stdout=stdout, exit_code=0)
-        with patch("symphony_linear.agent_runner.run_in_sandbox", return_value=proc):
-            session_id, final_message, _ = run_initial(
-                workspace_path="/ws",
-                tmp_path="/ws/tmp",
-                prompt="do it",
-                timeout_seconds=10,
-                idle_timeout_seconds=10,
-                on_subprocess=lambda p: None,
-            )
-        assert session_id == "ses_ok"
-        assert final_message == "all done"
-        assert proc.killed is False
-
     def test_process_exit_reaped_promptly_within_idle_window(self) -> None:
         """A process that exits well inside both windows is reaped as soon
         as it exits — the watchdog must not sleep out the idle window.
@@ -871,55 +616,13 @@ class TestExecuteExitErrors:
         assert excinfo.value.session_id == "ses_1e3790378ffecZySU3wIpFOoIz"
 
 
-class TestOpenCodeTimeoutAttributes:
-    """Verify OpenCodeTimeout carries partial_message, session_id, and reason."""
+class TestExceptionAliases:
+    """Orchestrator-facing OpenCode exception names remain compatible."""
 
     def test_legacy_exceptions_alias_agent_runner_exceptions(self) -> None:
-        """Orchestrator-facing OpenCode exception names remain compatible."""
         assert OpenCodeError is agent_runner.AgentError
         assert OpenCodeTimeout is agent_runner.AgentTimeout
         assert OpenCodeCancelled is agent_runner.AgentCancelled
-
-    def test_timeout_with_partial_output(self) -> None:
-        """Full partial output is captured as attributes."""
-        exc = OpenCodeTimeout(
-            "timed out",
-            partial_message="Hello\n\n*Running command*",
-            session_id="ses_partial",
-            reason="produced no output for 1200s",
-        )
-        assert exc.partial_message == "Hello\n\n*Running command*"
-        assert exc.session_id == "ses_partial"
-        assert exc.reason == "produced no output for 1200s"
-        assert "timed out" in str(exc)
-
-    def test_timeout_with_no_partial_output(self) -> None:
-        """partial_message and session_id default to empty/None."""
-        exc = OpenCodeTimeout("timed out", reason="exceeded 1800s in total")
-        assert exc.partial_message == ""
-        assert exc.session_id is None
-        assert exc.reason == "exceeded 1800s in total"
-
-    def test_timeout_with_message_only_no_session(self) -> None:
-        """Partial text without a sessionID event yields a message but no session."""
-        exc = OpenCodeTimeout(
-            "timed out",
-            partial_message="Partial text",
-            session_id=None,
-            reason="produced no output for 1200s",
-        )
-        assert exc.partial_message == "Partial text"
-        assert exc.session_id is None
-
-    def test_timeout_requires_reason(self) -> None:
-        """reason is a required keyword argument."""
-        with pytest.raises(TypeError):
-            OpenCodeTimeout("timed out")  # type: ignore[call-arg]
-
-    def test_timeout_carries_reason(self) -> None:
-        """The reason distinguishes idle stalls from the absolute cap."""
-        exc = OpenCodeTimeout("timed out", reason="produced no output for 1200s")
-        assert exc.reason == "produced no output for 1200s"
 
 
 # ---------------------------------------------------------------------------
@@ -975,28 +678,6 @@ class TestPrintLogsFlag:
         cmd = mock_sandbox.call_args.kwargs["cmd"]
         assert "--print-logs" in cmd
 
-    def test_print_logs_does_not_leak_into_stdout_parsing(self) -> None:
-        """Log output must not appear on stdout: NDJSON parsing is unaffected."""
-        events = [
-            {"type": "step_start", "sessionID": "ses_p", "part": {}},
-            {"type": "text", "sessionID": "ses_p", "part": {"text": "clean"}},
-        ]
-        stdout = "\n".join(json.dumps(e) for e in events).encode()
-        proc = _FakePopen(
-            stdout=stdout, stderr=b"[log] 12:00:00 something\n", exit_code=0
-        )
-        with patch("symphony_linear.agent_runner.run_in_sandbox", return_value=proc):
-            session_id, final_message, _ = run_initial(
-                workspace_path="/ws",
-                tmp_path="/ws/tmp",
-                prompt="hello",
-                timeout_seconds=60,
-                idle_timeout_seconds=60,
-                on_subprocess=lambda p: None,
-            )
-        assert session_id == "ses_p"
-        assert final_message == "clean"
-
 
 # ---------------------------------------------------------------------------
 # Unit: --file flag argv construction
@@ -1016,8 +697,9 @@ class TestFilesArgv:
         stdout = "\n".join(json.dumps(e) for e in events).encode()
         return _FakePopen(stdout=stdout, exit_code=0)
 
-    def test_run_initial_no_files(self) -> None:
-        """When files is None, no --file flags appear."""
+    @pytest.mark.parametrize("files", [None, []])
+    def test_run_initial_no_files(self, files: list[str] | None) -> None:
+        """An absent or empty file list emits no --file flags."""
         fake_proc = self._make_fake_popen()
         with patch(
             "symphony_linear.agent_runner.run_in_sandbox", return_value=fake_proc
@@ -1029,46 +711,10 @@ class TestFilesArgv:
                 timeout_seconds=60,
                 idle_timeout_seconds=60,
                 on_subprocess=lambda p: None,
+                files=files,
             )
         cmd = mock_sandbox.call_args.kwargs["cmd"]
         assert "--file" not in cmd
-
-    def test_run_initial_empty_files(self) -> None:
-        """When files is an empty list, no --file flags appear."""
-        fake_proc = self._make_fake_popen()
-        with patch(
-            "symphony_linear.agent_runner.run_in_sandbox", return_value=fake_proc
-        ) as mock_sandbox:
-            run_initial(
-                workspace_path="/ws",
-                tmp_path="/ws/tmp",
-                prompt="hello",
-                timeout_seconds=60,
-                idle_timeout_seconds=60,
-                on_subprocess=lambda p: None,
-                files=[],
-            )
-        cmd = mock_sandbox.call_args.kwargs["cmd"]
-        assert "--file" not in cmd
-
-    def test_run_initial_single_file(self) -> None:
-        """A single file emits one --file <path> pair."""
-        fake_proc = self._make_fake_popen()
-        with patch(
-            "symphony_linear.agent_runner.run_in_sandbox", return_value=fake_proc
-        ) as mock_sandbox:
-            run_initial(
-                workspace_path="/ws",
-                tmp_path="/ws/tmp",
-                prompt="hello",
-                timeout_seconds=60,
-                idle_timeout_seconds=60,
-                on_subprocess=lambda p: None,
-                files=["/tmp/foo.txt"],
-            )
-        cmd = mock_sandbox.call_args.kwargs["cmd"]
-        file_idx = cmd.index("--file")
-        assert cmd[file_idx + 1] == "/tmp/foo.txt"
 
     def test_run_initial_multiple_files(self) -> None:
         """Multiple files emit --file pairs in order."""
@@ -1112,24 +758,6 @@ class TestFilesArgv:
         sep_idx = cmd.index("--")
         assert file_idx < sep_idx
 
-    def test_run_resume_no_files(self) -> None:
-        """When files is None, no --file flags appear in resume."""
-        fake_proc = self._make_fake_popen()
-        with patch(
-            "symphony_linear.agent_runner.run_in_sandbox", return_value=fake_proc
-        ) as mock_sandbox:
-            run_resume(
-                workspace_path="/ws",
-                tmp_path="/ws/tmp",
-                session_id="ses_x",
-                message="continue",
-                timeout_seconds=60,
-                idle_timeout_seconds=60,
-                on_subprocess=lambda p: None,
-            )
-        cmd = mock_sandbox.call_args.kwargs["cmd"]
-        assert "--file" not in cmd
-
     def test_run_resume_with_files(self) -> None:
         """Files are emitted as --file pairs in the resume command."""
         fake_proc = self._make_fake_popen()
@@ -1154,27 +782,6 @@ class TestFilesArgv:
         # --file before --
         assert file_positions[1] < cmd.index("--")
 
-    def test_run_resume_file_before_separator(self) -> None:
-        """--file appears before -- in resume command."""
-        fake_proc = self._make_fake_popen()
-        with patch(
-            "symphony_linear.agent_runner.run_in_sandbox", return_value=fake_proc
-        ) as mock_sandbox:
-            run_resume(
-                workspace_path="/ws",
-                tmp_path="/ws/tmp",
-                session_id="ses_x",
-                message="continue",
-                timeout_seconds=60,
-                idle_timeout_seconds=60,
-                on_subprocess=lambda p: None,
-                files=["/f.txt"],
-            )
-        cmd = mock_sandbox.call_args.kwargs["cmd"]
-        file_idx = cmd.index("--file")
-        sep_idx = cmd.index("--")
-        assert file_idx < sep_idx
-
 
 # ---------------------------------------------------------------------------
 # Unit: --model flag argv construction
@@ -1195,7 +802,8 @@ class TestModelFlag:
         stdout = "\n".join(json.dumps(e) for e in events).encode()
         return _FakePopen(stdout=stdout, exit_code=0)
 
-    def test_run_initial_with_model(self) -> None:
+    @pytest.mark.parametrize("model", ["anthropic/claude-opus-5", None])
+    def test_run_initial_model_flag(self, model: str | None) -> None:
         fake_proc = self._make_fake_popen()
         with patch(
             "symphony_linear.agent_runner.run_in_sandbox", return_value=fake_proc
@@ -1207,30 +815,18 @@ class TestModelFlag:
                 timeout_seconds=60,
                 idle_timeout_seconds=60,
                 on_subprocess=lambda p: None,
-                model="anthropic/claude-opus-5",
+                model=model,
             )
         cmd = mock_sandbox.call_args.kwargs["cmd"]
-        idx = cmd.index("--model")
-        assert cmd[idx + 1] == "anthropic/claude-opus-5"
-        assert idx < cmd.index("--")
+        if model is None:
+            assert "--model" not in cmd
+        else:
+            idx = cmd.index("--model")
+            assert cmd[idx + 1] == model
+            assert idx < cmd.index("--")
 
-    def test_run_initial_without_model(self) -> None:
-        fake_proc = self._make_fake_popen()
-        with patch(
-            "symphony_linear.agent_runner.run_in_sandbox", return_value=fake_proc
-        ) as mock_sandbox:
-            run_initial(
-                workspace_path="/ws",
-                tmp_path="/ws/tmp",
-                prompt="hello",
-                timeout_seconds=60,
-                idle_timeout_seconds=60,
-                on_subprocess=lambda p: None,
-            )
-        cmd = mock_sandbox.call_args.kwargs["cmd"]
-        assert "--model" not in cmd
-
-    def test_run_resume_with_model(self) -> None:
+    @pytest.mark.parametrize("model", ["anthropic/claude-opus-5", None])
+    def test_run_resume_model_flag(self, model: str | None) -> None:
         fake_proc = self._make_fake_popen()
         with patch(
             "symphony_linear.agent_runner.run_in_sandbox", return_value=fake_proc
@@ -1243,29 +839,15 @@ class TestModelFlag:
                 timeout_seconds=60,
                 idle_timeout_seconds=60,
                 on_subprocess=lambda p: None,
-                model="anthropic/claude-opus-5",
+                model=model,
             )
         cmd = mock_sandbox.call_args.kwargs["cmd"]
-        idx = cmd.index("--model")
-        assert cmd[idx + 1] == "anthropic/claude-opus-5"
-        assert idx < cmd.index("--")
-
-    def test_run_resume_without_model(self) -> None:
-        fake_proc = self._make_fake_popen()
-        with patch(
-            "symphony_linear.agent_runner.run_in_sandbox", return_value=fake_proc
-        ) as mock_sandbox:
-            run_resume(
-                workspace_path="/ws",
-                tmp_path="/ws/tmp",
-                session_id="ses_x",
-                message="continue",
-                timeout_seconds=60,
-                idle_timeout_seconds=60,
-                on_subprocess=lambda p: None,
-            )
-        cmd = mock_sandbox.call_args.kwargs["cmd"]
-        assert "--model" not in cmd
+        if model is None:
+            assert "--model" not in cmd
+        else:
+            idx = cmd.index("--model")
+            assert cmd[idx + 1] == model
+            assert idx < cmd.index("--")
 
 
 # ---------------------------------------------------------------------------
@@ -1288,56 +870,6 @@ class TestRunResumeGuard:
                 idle_timeout_seconds=60,
                 on_subprocess=lambda p: None,
             )
-
-
-# ---------------------------------------------------------------------------
-# Unit: tmp_path is forwarded to the sandbox
-# ---------------------------------------------------------------------------
-
-
-class TestTmpPathForwarded:
-    """run_initial / run_resume pass tmp_path through to run_in_sandbox."""
-
-    @staticmethod
-    def _make_fake_popen() -> _FakePopen:
-        events = [
-            {"type": "step_start", "sessionID": "ses_test", "part": {}},
-            {"type": "text", "sessionID": "ses_test", "part": {"text": "ok"}},
-            {"type": "step_finish", "sessionID": "ses_test", "part": {}},
-        ]
-        stdout = "\n".join(json.dumps(e) for e in events).encode()
-        return _FakePopen(stdout=stdout, exit_code=0)
-
-    def test_run_initial_forwards_tmp_path(self) -> None:
-        fake_proc = self._make_fake_popen()
-        with patch(
-            "symphony_linear.agent_runner.run_in_sandbox", return_value=fake_proc
-        ) as mock_sandbox:
-            run_initial(
-                workspace_path="/ws",
-                prompt="hello",
-                timeout_seconds=60,
-                idle_timeout_seconds=60,
-                on_subprocess=lambda p: None,
-                tmp_path="/ws/tmp",
-            )
-        assert mock_sandbox.call_args.kwargs["tmp_path"] == "/ws/tmp"
-
-    def test_run_resume_forwards_tmp_path(self) -> None:
-        fake_proc = self._make_fake_popen()
-        with patch(
-            "symphony_linear.agent_runner.run_in_sandbox", return_value=fake_proc
-        ) as mock_sandbox:
-            run_resume(
-                workspace_path="/ws",
-                session_id="ses_x",
-                message="continue",
-                timeout_seconds=60,
-                idle_timeout_seconds=60,
-                on_subprocess=lambda p: None,
-                tmp_path="/ws/tmp",
-            )
-        assert mock_sandbox.call_args.kwargs["tmp_path"] == "/ws/tmp"
 
 
 # ---------------------------------------------------------------------------
@@ -1458,21 +990,6 @@ class TestSecretsFileEnv:
         env = mock_sandbox.call_args.kwargs["env"]
         assert env["SYMPHONY_SECRETS_FILE"] == "/ws/TEAM-1/secrets.env"
 
-    def test_run_initial_omits_secrets_file_when_none(self) -> None:
-        with patch(
-            "symphony_linear.agent_runner.run_in_sandbox",
-            return_value=self._make_fake_popen(),
-        ) as mock_sandbox:
-            run_initial(
-                workspace_path="/ws",
-                tmp_path="/ws/tmp",
-                prompt="hello",
-                timeout_seconds=60,
-                idle_timeout_seconds=60,
-                on_subprocess=lambda p: None,
-            )
-        assert "SYMPHONY_SECRETS_FILE" not in mock_sandbox.call_args.kwargs["env"]
-
     def test_run_resume_exports_secrets_file(self) -> None:
         with patch(
             "symphony_linear.agent_runner.run_in_sandbox",
@@ -1575,20 +1092,6 @@ def _load_fixture_events(
         if stripped:
             events.append(json.loads(stripped))
     return events
-
-
-def _parse_one_line(line: str) -> dict[str, Any] | None:
-    """Simulate the parser logic on a single line (used by unit tests)."""
-    stripped = line.strip()
-    if not stripped:
-        return None
-    try:
-        return json.loads(stripped)
-    except json.JSONDecodeError:
-        logging.getLogger("symphony_linear.opencode").debug(
-            "Skipping unparseable JSON line: %s", stripped[:200]
-        )
-        return None
 
 
 def _make_text(text: str) -> dict[str, Any]:

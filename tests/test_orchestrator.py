@@ -12,7 +12,7 @@ import time
 from concurrent.futures import Future
 from datetime import datetime, timezone
 from pathlib import Path
-from typing import Any, Iterator
+from typing import Any, Iterator, Literal
 from unittest import mock
 
 import pytest
@@ -65,7 +65,12 @@ from symphony_linear.tracker import (
 )
 from symphony_linear.turn_activity import TurnActivity
 from symphony_linear.webhook import WebhookServer
-from symphony_linear.workspace import SecretsError, SetupFailed, WorkspaceError
+from symphony_linear.workspace import (
+    SecretsError,
+    ServeScriptMissing,
+    SetupFailed,
+    WorkspaceError,
+)
 
 
 # ---------------------------------------------------------------------------
@@ -270,16 +275,25 @@ def orchestrator(
 
 
 class TestFormatCommentsMessage:
-    def test_single_comment(self) -> None:
-        msg = _format_comments_message([_make_comment("1", "Hello")])
-        assert msg == "[usr-human at 2025-06-01T00:00:00Z]\nHello"
-
-    def test_multiple_comments(self) -> None:
-        msg = _format_comments_message(
-            [_make_comment("1", "A"), _make_comment("2", "B")]
-        )
-        expected = "[usr-human at 2025-06-01T00:00:00Z]\nA\n\n[usr-human at 2025-06-01T00:00:00Z]\nB"
-        assert msg == expected
+    @pytest.mark.parametrize(
+        ("comments", "expected"),
+        [
+            (
+                [_make_comment("1", "Hello")],
+                "[usr-human at 2025-06-01T00:00:00Z]\nHello",
+            ),
+            (
+                [_make_comment("1", "A"), _make_comment("2", "B")],
+                "[usr-human at 2025-06-01T00:00:00Z]\nA\n\n"
+                "[usr-human at 2025-06-01T00:00:00Z]\nB",
+            ),
+        ],
+        ids=["single", "multiple"],
+    )
+    def test_comments_are_formatted_in_order(
+        self, comments: list[Comment], expected: str
+    ) -> None:
+        assert _format_comments_message(comments) == expected
 
 
 # ---------------------------------------------------------------------------
@@ -563,70 +577,6 @@ class TestNewTicketPipeline:
         assert kw.get("on_subprocess") is not None
         assert kw.get("auto_branch") is True  # global default
 
-    def test_question_format_note_ends_the_initial_prompt(
-        self, orchestrator: Orchestrator, linear: FakeLinearClient
-    ) -> None:
-        """The web UI note is the prompt's last text, after pending comments."""
-        with (
-            mock.patch("symphony_linear.orchestrator.clone_workspace") as mock_clone,
-            mock.patch(
-                "symphony_linear.orchestrator.finalize_workspace"
-            ) as mock_finalize,
-            mock.patch(
-                "symphony_linear.orchestrator.load_project_config"
-            ) as mock_load_config,
-            mock.patch("symphony_linear.orchestrator.run_initial") as mock_run_initial,
-            mock.patch.object(
-                LinearTracker, "question_format_note", QUESTION_FORMAT_NOTE
-            ),
-        ):
-            issue = self._setup_mocks(
-                mock_clone, mock_finalize, mock_load_config, mock_run_initial, linear
-            )
-            orchestrator._new_ticket_pipeline(issue, extra_context="HUMAN CONTEXT")
-
-        prompt = mock_run_initial.call_args.kwargs["prompt"]
-        assert prompt.endswith(f"\n\n{QUESTION_FORMAT_NOTE}")
-        assert prompt.index("HUMAN CONTEXT") < prompt.index(QUESTION_FORMAT_NOTE)
-
-    def test_turn_output_activity_is_recorded_and_cleared_with_the_task(
-        self, orchestrator: Orchestrator, linear: FakeLinearClient
-    ) -> None:
-        """The ticket page's output age is a per-turn record.
-
-        The callback must reach the adapter's ``on_output``, and the record
-        must be dropped when the task ends so the next turn never shows the
-        previous one's age.
-        """
-        # Without a record (Linear and GitHub deployments) adapters get None.
-        assert orchestrator._output_callback("ticket-1") is None
-
-        activity = TurnActivity()
-        orchestrator._turn_activity = activity
-
-        with (
-            mock.patch("symphony_linear.orchestrator.clone_workspace") as mock_clone,
-            mock.patch(
-                "symphony_linear.orchestrator.finalize_workspace"
-            ) as mock_finalize,
-            mock.patch(
-                "symphony_linear.orchestrator.load_project_config"
-            ) as mock_load_config,
-            mock.patch("symphony_linear.orchestrator.run_initial") as mock_run_initial,
-        ):
-            issue = self._setup_mocks(
-                mock_clone, mock_finalize, mock_load_config, mock_run_initial, linear
-            )
-            orchestrator._new_ticket_pipeline(issue)
-
-        on_output = mock_run_initial.call_args.kwargs["on_output"]
-        assert on_output is not None
-        on_output()
-        assert activity.output_age("ticket-1") is not None
-
-        orchestrator._task_wrapper("ticket-1", lambda: None)
-        assert activity.output_age("ticket-1") is None
-
     def test_turn_activity_is_cleared_before_the_task_slot_is_released(
         self, orchestrator: Orchestrator
     ) -> None:
@@ -704,49 +654,6 @@ class TestNewTicketPipeline:
 
         assert events.index("transition:In Progress") < events.index("clone")
 
-    def test_clone_failure_still_parks_in_needs_input_after_early_in_progress(
-        self, orchestrator: Orchestrator, linear: FakeLinearClient
-    ) -> None:
-        """A prep failure after the early In Progress transition still ends
-        in Needs Input (In Progress first, clone failure, Needs Input last)."""
-        from symphony_linear.workspace import CloneFailed
-
-        events: list[str] = []
-        orig_transition = linear.transition_to_state
-
-        def record_transition(iid: str, state: str) -> None:
-            events.append(f"transition:{state}")
-            orig_transition(iid, state)
-
-        linear.set_response(
-            "get_project",
-            Project(
-                id="proj-1",
-                name="Test",
-                links=[
-                    ProjectLink(label="Repo", url="https://github.com/org/repo.git")
-                ],
-            ),
-        )
-        with (
-            mock.patch(
-                "symphony_linear.orchestrator.clone_workspace",
-                side_effect=CloneFailed("fail"),
-            ),
-            mock.patch.object(
-                linear, "transition_to_state", side_effect=record_transition
-            ),
-        ):
-            orchestrator._new_ticket_pipeline(_make_issue())
-
-        assert events.index("transition:In Progress") < events.index(
-            "transition:Needs Input"
-        )
-        ts = orchestrator._state.get("ticket-1")
-        assert ts is not None
-        assert ts.status == TicketStatus.failed
-        assert ts.setup_error is not None
-
     def test_transient_in_progress_failure_is_retried(
         self, orchestrator: Orchestrator, linear: FakeLinearClient
     ) -> None:
@@ -786,48 +693,21 @@ class TestNewTicketPipeline:
         assert ts.status == TicketStatus.needs_input
         mock_sleep.assert_called_once_with(2.0)
 
-    def test_end_of_turn_transition_cancelled_leaves_state_unchanged(
-        self, orchestrator: Orchestrator, linear: FakeLinearClient
+    @pytest.mark.parametrize(
+        ("agent", "patch_target"),
+        [
+            ("omp", "symphony_linear.orchestrator.omp.run_initial"),
+            ("pi", "symphony_linear.orchestrator.pi.run_initial"),
+        ],
+    )
+    def test_agent_dispatches_initial_and_tags_session(
+        self,
+        orchestrator: Orchestrator,
+        linear: FakeLinearClient,
+        agent: Literal["omp", "pi"],
+        patch_target: str,
     ) -> None:
-        original = linear.transition_to_state
-
-        def flaky(issue_id: str, state_name: str) -> None:
-            if state_name == "Needs Input":
-                raise TrackerTransientError("503 Service Unavailable")
-            original(issue_id, state_name)
-
-        def cancel_on_sleep(_delay: float) -> None:
-            orchestrator._cancel_ticket("ticket-1")
-
-        with (
-            mock.patch("symphony_linear.orchestrator.clone_workspace") as mock_clone,
-            mock.patch(
-                "symphony_linear.orchestrator.finalize_workspace"
-            ) as mock_finalize,
-            mock.patch(
-                "symphony_linear.orchestrator.load_project_config"
-            ) as mock_load_config,
-            mock.patch("symphony_linear.orchestrator.run_initial") as mock_run_initial,
-            mock.patch.object(linear, "transition_to_state", side_effect=flaky),
-            mock.patch(
-                "symphony_linear.orchestrator.time.sleep", side_effect=cancel_on_sleep
-            ),
-        ):
-            issue = self._setup_mocks(
-                mock_clone, mock_finalize, mock_load_config, mock_run_initial, linear
-            )
-            orchestrator._new_ticket_pipeline(issue)
-
-        ts = orchestrator._state.get("ticket-1")
-        assert ts is not None
-        # The cancelling path owns the state now, so the failed transition must
-        # not overwrite the working status with failed/needs_input.
-        assert ts.status == TicketStatus.working
-
-    def test_omp_dispatches_initial_and_tags_session(
-        self, orchestrator: Orchestrator, linear: FakeLinearClient
-    ) -> None:
-        orchestrator._config.agent = "omp"
+        orchestrator._config.agent = agent
         with (
             mock.patch("symphony_linear.orchestrator.clone_workspace") as mock_clone,
             mock.patch(
@@ -837,52 +717,22 @@ class TestNewTicketPipeline:
                 "symphony_linear.orchestrator.load_project_config"
             ) as mock_load_config,
             mock.patch("symphony_linear.orchestrator.run_initial") as mock_opencode,
-            mock.patch("symphony_linear.orchestrator.omp.run_initial") as mock_omp,
+            mock.patch(patch_target) as mock_agent,
         ):
             issue = self._setup_mocks(
                 mock_clone,
                 mock_finalize,
                 mock_load_config,
-                mock_omp,
+                mock_agent,
                 linear,
             )
             orchestrator._new_ticket_pipeline(issue)
 
         mock_opencode.assert_not_called()
-        mock_omp.assert_called_once()
+        mock_agent.assert_called_once()
         ticket_state = orchestrator._state.get("ticket-1")
         assert ticket_state is not None
-        assert ticket_state.agent == "omp"
-
-    def test_pi_dispatches_initial_and_tags_session(
-        self, orchestrator: Orchestrator, linear: FakeLinearClient
-    ) -> None:
-        orchestrator._config.agent = "pi"
-        with (
-            mock.patch("symphony_linear.orchestrator.clone_workspace") as mock_clone,
-            mock.patch(
-                "symphony_linear.orchestrator.finalize_workspace"
-            ) as mock_finalize,
-            mock.patch(
-                "symphony_linear.orchestrator.load_project_config"
-            ) as mock_load_config,
-            mock.patch("symphony_linear.orchestrator.run_initial") as mock_opencode,
-            mock.patch("symphony_linear.orchestrator.pi.run_initial") as mock_pi,
-        ):
-            issue = self._setup_mocks(
-                mock_clone,
-                mock_finalize,
-                mock_load_config,
-                mock_pi,
-                linear,
-            )
-            orchestrator._new_ticket_pipeline(issue)
-
-        mock_opencode.assert_not_called()
-        mock_pi.assert_called_once()
-        ticket_state = orchestrator._state.get("ticket-1")
-        assert ticket_state is not None
-        assert ticket_state.agent == "pi"
+        assert ticket_state.agent == agent
 
     def test_turn_input_marker_set_to_baseline(
         self, orchestrator: Orchestrator, linear: FakeLinearClient
@@ -1048,21 +898,19 @@ class TestNewTicketPipeline:
 
         assert mock_run_initial.call_args.kwargs["model"] == "anthropic/claude-opus-5"
 
-    def test_missing_repo_saves_setup_error(
-        self, orchestrator: Orchestrator, linear: FakeLinearClient
+    @pytest.mark.parametrize(
+        "project",
+        [Project(id="proj-1", name="Test", links=[]), None],
+        ids=["no-repo-link", "no-project"],
+    )
+    def test_unusable_project_saves_setup_error(
+        self,
+        orchestrator: Orchestrator,
+        linear: FakeLinearClient,
+        project: Project | None,
     ) -> None:
-        linear.set_response("get_project", Project(id="proj-1", name="Test", links=[]))
-        orchestrator._new_ticket_pipeline(_make_issue())
-        ts = orchestrator._state.get("ticket-1")
-        assert ts is not None
-        assert ts.status == TicketStatus.failed
-        assert ts.setup_error is not None
-        assert ts.last_seen_comment_id is not None  # S3
-
-    def test_no_project_saves_setup_error(
-        self, orchestrator: Orchestrator, linear: FakeLinearClient
-    ) -> None:
-        orchestrator._new_ticket_pipeline(_make_issue(project=None))
+        linear.set_response("get_project", project)
+        orchestrator._new_ticket_pipeline(_make_issue(project=project))
         ts = orchestrator._state.get("ticket-1")
         assert ts is not None
         assert ts.status == TicketStatus.failed
@@ -1153,46 +1001,6 @@ class TestNewTicketPipeline:
         assert ts.last_seen_comment_id == "cmt-prior"
         assert linear.calls.get("list_comments_since") is None
 
-    def test_opencode_timeout_advances_last_seen(
-        self, orchestrator: Orchestrator, linear: FakeLinearClient
-    ) -> None:
-        """B1: OpenCode failure sets last_seen_comment_id to error comment id."""
-        linear.set_response(
-            "get_project",
-            Project(
-                id="proj-1",
-                name="Test",
-                links=[
-                    ProjectLink(label="Repo", url="https://github.com/org/repo.git")
-                ],
-            ),
-        )
-        linear.set_response("get_issue", _make_issue(description="Fix"))
-        with (
-            mock.patch(
-                "symphony_linear.orchestrator.clone_workspace",
-                return_value=("/tmp/ws/TEAM-1", False),
-            ),
-            mock.patch(
-                "symphony_linear.orchestrator.finalize_workspace",
-            ),
-            mock.patch(
-                "symphony_linear.orchestrator.load_project_config",
-                return_value=ProjectConfig(),
-            ),
-            mock.patch(
-                "symphony_linear.orchestrator.run_initial",
-                side_effect=OpenCodeTimeout("timeout", reason="exceeded 30s in total"),
-            ),
-        ):
-            orchestrator._new_ticket_pipeline(_make_issue())
-        ts = orchestrator._state.get("ticket-1")
-        assert ts is not None
-        assert ts.status == TicketStatus.failed
-        assert ts.last_seen_comment_id is not None  # B1
-        assert ts.session_id is None  # no session in timeout exception
-        assert ts.agent is None
-
     def test_opencode_timeout_persists_salvaged_session_id(
         self, orchestrator: Orchestrator, linear: FakeLinearClient
     ) -> None:
@@ -1273,13 +1081,17 @@ class TestNewTicketPipeline:
             "transition_to_state", []
         )
 
+    @pytest.mark.parametrize(
+        "removal", ["before-salvage", "during-salvage"], ids=lambda value: value
+    )
     def test_cancelled_turn_does_not_resurrect_removed_state(
         self,
         orchestrator: Orchestrator,
         linear: FakeLinearClient,
         state_mgr: StateManager,
+        removal: Literal["before-salvage", "during-salvage"],
     ) -> None:
-        """Cancellation after cleanup must not reinsert the removed ticket."""
+        """A cleanup interleave cannot reinsert the detached state entry."""
 
         def remove_state_then_cancel(
             *args: Any, **kwargs: Any
@@ -1288,35 +1100,6 @@ class TestNewTicketPipeline:
             assert orchestrator._state.remove("ticket-1")
             orchestrator._state.save()
             raise OpenCodeCancelled("cancelled", session_id="ses-cancelled")
-
-        with (
-            mock.patch("symphony_linear.orchestrator.clone_workspace") as mock_clone,
-            mock.patch(
-                "symphony_linear.orchestrator.finalize_workspace"
-            ) as mock_finalize,
-            mock.patch(
-                "symphony_linear.orchestrator.load_project_config"
-            ) as mock_load_config,
-            mock.patch(
-                "symphony_linear.orchestrator.run_initial",
-                side_effect=remove_state_then_cancel,
-            ) as mock_run_initial,
-        ):
-            issue = self._setup_mocks(
-                mock_clone, mock_finalize, mock_load_config, mock_run_initial, linear
-            )
-            orchestrator._new_ticket_pipeline(issue)
-
-        state_mgr.load()
-        assert state_mgr.get("ticket-1") is None
-
-    def test_cancelled_turn_does_not_resurrect_state_removed_during_salvage(
-        self,
-        orchestrator: Orchestrator,
-        linear: FakeLinearClient,
-        state_mgr: StateManager,
-    ) -> None:
-        """A cleanup interleave cannot reinsert the detached state entry."""
 
         def remove_state_during_timestamp() -> str:
             assert orchestrator._state.remove("ticket-1")
@@ -1339,107 +1122,18 @@ class TestNewTicketPipeline:
             issue = self._setup_mocks(
                 mock_clone, mock_finalize, mock_load_config, mock_run_initial, linear
             )
-            mock_run_initial.side_effect = OpenCodeCancelled(
-                "cancelled", session_id="ses-cancelled"
-            )
+            if removal == "before-salvage":
+                mock_run_initial.side_effect = remove_state_then_cancel
+            else:
+                mock_run_initial.side_effect = OpenCodeCancelled(
+                    "cancelled", session_id="ses-cancelled"
+                )
             orchestrator._new_ticket_pipeline(issue)
 
-        mock_iso_now.assert_called_once()
+        if removal == "during-salvage":
+            mock_iso_now.assert_called_once()
         state_mgr.load()
         assert state_mgr.get("ticket-1") is None
-
-    def test_opencode_timeout_comment_includes_partial_output(
-        self, orchestrator: Orchestrator, linear: FakeLinearClient
-    ) -> None:
-        """Initial timeout comment includes partial message when present."""
-        linear.set_response(
-            "get_project",
-            Project(
-                id="proj-1",
-                name="Test",
-                links=[
-                    ProjectLink(label="Repo", url="https://github.com/org/repo.git")
-                ],
-            ),
-        )
-        linear.set_response("get_issue", _make_issue(description="Fix"))
-        with (
-            mock.patch(
-                "symphony_linear.orchestrator.clone_workspace",
-                return_value=("/tmp/ws/TEAM-1", False),
-            ),
-            mock.patch(
-                "symphony_linear.orchestrator.finalize_workspace",
-            ),
-            mock.patch(
-                "symphony_linear.orchestrator.load_project_config",
-                return_value=ProjectConfig(),
-            ),
-            mock.patch(
-                "symphony_linear.orchestrator.run_initial",
-                side_effect=OpenCodeTimeout(
-                    "timeout",
-                    partial_message="I was working on...",
-                    reason="produced no output for 1200s",
-                ),
-            ),
-        ):
-            orchestrator._new_ticket_pipeline(_make_issue())
-        # Check the comment body posted
-        post_calls = linear.calls.get("post_comment", [])
-        timeout_comments = [args[1] for args in post_calls if "timed out" in args[1]]
-        assert len(timeout_comments) == 1
-        assert "Partial output before the timeout" in timeout_comments[0]
-        assert "I was working on..." in timeout_comments[0]
-        # The reason distinguishes an idle stall from the absolute cap.
-        assert "produced no output for 1200s" in timeout_comments[0]
-        assert "after 30s" not in timeout_comments[0]
-
-    def test_opencode_timeout_comment_unchanged_when_empty_partial(
-        self, orchestrator: Orchestrator, linear: FakeLinearClient
-    ) -> None:
-        """Initial timeout comment is unchanged when partial_message is empty."""
-        linear.set_response(
-            "get_project",
-            Project(
-                id="proj-1",
-                name="Test",
-                links=[
-                    ProjectLink(label="Repo", url="https://github.com/org/repo.git")
-                ],
-            ),
-        )
-        linear.set_response("get_issue", _make_issue(description="Fix"))
-        with (
-            mock.patch(
-                "symphony_linear.orchestrator.clone_workspace",
-                return_value=("/tmp/ws/TEAM-1", False),
-            ),
-            mock.patch(
-                "symphony_linear.orchestrator.finalize_workspace",
-            ),
-            mock.patch(
-                "symphony_linear.orchestrator.load_project_config",
-                return_value=ProjectConfig(),
-            ),
-            mock.patch(
-                "symphony_linear.orchestrator.run_initial",
-                side_effect=OpenCodeTimeout(
-                    "timeout",
-                    partial_message="",
-                    session_id=None,
-                    reason="exceeded 30s in total",
-                ),
-            ),
-        ):
-            orchestrator._new_ticket_pipeline(_make_issue())
-        # Check the comment body posted
-        post_calls = linear.calls.get("post_comment", [])
-        timeout_comments = [args[1] for args in post_calls if "timed out" in args[1]]
-        assert len(timeout_comments) == 1
-        assert "Partial output before the timeout" not in timeout_comments[0]
-        # The single-format comment always carries the reason.
-        assert "exceeded 30s in total" in timeout_comments[0]
 
     def test_opencode_error_advances_last_seen(
         self, orchestrator: Orchestrator, linear: FakeLinearClient
@@ -1479,68 +1173,6 @@ class TestNewTicketPipeline:
         assert ts.status == TicketStatus.failed
         assert ts.last_seen_comment_id is not None
         assert ts.session_id is None
-
-    def test_turn_failure_transitions_to_needs_input_before_error_comment(
-        self, orchestrator: Orchestrator, linear: FakeLinearClient
-    ) -> None:
-        """A timed-out turn parks the tracker ticket in Needs Input before commenting."""
-        linear.set_response(
-            "get_project",
-            Project(
-                id="proj-1",
-                name="Test",
-                links=[
-                    ProjectLink(label="Repo", url="https://github.com/org/repo.git")
-                ],
-            ),
-        )
-        linear.set_response("get_issue", _make_issue(description="Fix"))
-
-        events: list[str] = []
-        orig_transition = linear.transition_to_state
-        orig_comment = linear.post_comment
-
-        def record_transition(iid: str, state: str) -> None:
-            events.append(f"transition:{state}")
-            orig_transition(iid, state)
-
-        def record_comment(iid: str, body: str) -> Comment:
-            events.append(f"comment:{body}")
-            return orig_comment(iid, body)
-
-        with (
-            mock.patch(
-                "symphony_linear.orchestrator.clone_workspace",
-                return_value=("/tmp/ws/TEAM-1", False),
-            ),
-            mock.patch("symphony_linear.orchestrator.finalize_workspace"),
-            mock.patch(
-                "symphony_linear.orchestrator.load_project_config",
-                return_value=ProjectConfig(),
-            ),
-            mock.patch(
-                "symphony_linear.orchestrator.run_initial",
-                side_effect=OpenCodeTimeout("t", reason="exceeded 30s in total"),
-            ),
-            mock.patch.object(
-                linear, "transition_to_state", side_effect=record_transition
-            ),
-            mock.patch.object(linear, "post_comment", side_effect=record_comment),
-        ):
-            orchestrator._new_ticket_pipeline(_make_issue())
-
-        assert ("ticket-1", "Needs Input") in linear.calls.get(
-            "transition_to_state", []
-        )
-        # The transition must precede the error comment (a comment without a
-        # state change self-amplifies through the webhook).
-        needs_input_idx = events.index("transition:Needs Input")
-        error_idx = next(i for i, e in enumerate(events) if "timed out" in e)
-        assert needs_input_idx < error_idx
-
-        ts = orchestrator._state.get("ticket-1")
-        assert ts is not None
-        assert ts.status == TicketStatus.failed
 
     def test_setup_error_transitions_to_needs_input_before_comment(
         self, orchestrator: Orchestrator, linear: FakeLinearClient
@@ -1766,132 +1398,6 @@ class TestNewTicketPipeline:
         assert ts.branch == ""  # auto_branch=False override preserved
         assert ts.status == TicketStatus.failed
 
-    # --- Context-tokens footer (new-ticket pipeline) ---
-
-    def test_context_tokens_footer_appended(
-        self, orchestrator: Orchestrator, linear: FakeLinearClient
-    ) -> None:
-        """Footer with comma-formatted context tokens is appended to final message."""
-        linear.set_response(
-            "get_project",
-            Project(
-                id="proj-1",
-                name="Test",
-                links=[
-                    ProjectLink(label="Repo", url="https://github.com/org/repo.git")
-                ],
-            ),
-        )
-        linear.set_response("get_issue", _make_issue(description="Fix"))
-        with (
-            mock.patch(
-                "symphony_linear.orchestrator.clone_workspace",
-                return_value=("/tmp/ws/TEAM-1", False),
-            ),
-            mock.patch(
-                "symphony_linear.orchestrator.finalize_workspace",
-            ),
-            mock.patch(
-                "symphony_linear.orchestrator.load_project_config",
-                return_value=ProjectConfig(),
-            ),
-            mock.patch(
-                "symphony_linear.orchestrator.run_initial",
-                return_value=("ses-abc", "I have done the work.", 37074),
-            ),
-        ):
-            orchestrator._new_ticket_pipeline(_make_issue())
-
-        post_calls = linear.calls.get("post_comment", [])
-        final_bodies = [
-            body for tid, body in post_calls if "I have done the work." in body
-        ]
-        assert len(final_bodies) == 1
-
-        expected = "I have done the work.\n\n*Symphony · context: 37,074 tokens*"
-        assert final_bodies[0] == expected
-
-    def test_context_tokens_none_no_footer(
-        self, orchestrator: Orchestrator, linear: FakeLinearClient
-    ) -> None:
-        """When context_tokens is None, no footer is appended."""
-        linear.set_response(
-            "get_project",
-            Project(
-                id="proj-1",
-                name="Test",
-                links=[
-                    ProjectLink(label="Repo", url="https://github.com/org/repo.git")
-                ],
-            ),
-        )
-        linear.set_response("get_issue", _make_issue(description="Fix"))
-        with (
-            mock.patch(
-                "symphony_linear.orchestrator.clone_workspace",
-                return_value=("/tmp/ws/TEAM-1", False),
-            ),
-            mock.patch(
-                "symphony_linear.orchestrator.finalize_workspace",
-            ),
-            mock.patch(
-                "symphony_linear.orchestrator.load_project_config",
-                return_value=ProjectConfig(),
-            ),
-            mock.patch(
-                "symphony_linear.orchestrator.run_initial",
-                return_value=("ses-abc", "I have done the work.", None),
-            ),
-        ):
-            orchestrator._new_ticket_pipeline(_make_issue())
-
-        post_calls = linear.calls.get("post_comment", [])
-        final_bodies = [
-            body for tid, body in post_calls if "I have done the work." in body
-        ]
-        assert len(final_bodies) == 1
-
-        assert final_bodies[0] == "I have done the work.\n\n*Symphony · final*"
-
-    def test_context_tokens_comma_format(
-        self, orchestrator: Orchestrator, linear: FakeLinearClient
-    ) -> None:
-        """Context token count is comma-formatted with thousands separators."""
-        linear.set_response(
-            "get_project",
-            Project(
-                id="proj-1",
-                name="Test",
-                links=[
-                    ProjectLink(label="Repo", url="https://github.com/org/repo.git")
-                ],
-            ),
-        )
-        linear.set_response("get_issue", _make_issue(description="Fix"))
-        with (
-            mock.patch(
-                "symphony_linear.orchestrator.clone_workspace",
-                return_value=("/tmp/ws/TEAM-1", False),
-            ),
-            mock.patch(
-                "symphony_linear.orchestrator.finalize_workspace",
-            ),
-            mock.patch(
-                "symphony_linear.orchestrator.load_project_config",
-                return_value=ProjectConfig(),
-            ),
-            mock.patch(
-                "symphony_linear.orchestrator.run_initial",
-                return_value=("ses-abc", "Done.", 1_234_567),
-            ),
-        ):
-            orchestrator._new_ticket_pipeline(_make_issue())
-
-        post_calls = linear.calls.get("post_comment", [])
-        final_bodies = [body for tid, body in post_calls if "Done." in body]
-        assert len(final_bodies) == 1
-        assert "*Symphony · context: 1,234,567 tokens*" in final_bodies[0]
-
     def test_clone_recovery_posts_comment(
         self, orchestrator: Orchestrator, linear: FakeLinearClient
     ) -> None:
@@ -1947,10 +1453,11 @@ class TestNewTicketPipeline:
 
 
 class TestNewTicketProjectConfig:
-    def test_auto_branch_override_false(
-        self, orchestrator: Orchestrator, linear: FakeLinearClient
+    @pytest.mark.parametrize("auto_branch", [False, True])
+    def test_auto_branch_override(
+        self, orchestrator: Orchestrator, linear: FakeLinearClient, auto_branch: bool
     ) -> None:
-        """Project config overrides auto_branch to False → branch stays empty."""
+        """A project config auto_branch value overrides the global default."""
         linear.set_response(
             "get_project",
             Project(
@@ -1972,7 +1479,7 @@ class TestNewTicketProjectConfig:
             ) as mock_finalize,
             mock.patch(
                 "symphony_linear.orchestrator.load_project_config",
-                return_value=ProjectConfig(auto_branch=False),
+                return_value=ProjectConfig(auto_branch=auto_branch),
             ),
             mock.patch(
                 "symphony_linear.orchestrator.run_initial",
@@ -1983,219 +1490,11 @@ class TestNewTicketProjectConfig:
 
         ts = orchestrator._state.get("ticket-1")
         assert ts is not None
-        # Branch should be "" when auto_branch is overridden to False.
-        assert ts.branch == ""
-
-        # finalize_workspace should be called with auto_branch=False.
-        mock_finalize.assert_called_once()
-        _, kw = mock_finalize.call_args
-        assert kw.get("auto_branch") is False
-
-    def test_auto_branch_override_true(
-        self, orchestrator: Orchestrator, linear: FakeLinearClient
-    ) -> None:
-        """Project config auto_branch=True → branch computed from issue."""
-        linear.set_response(
-            "get_project",
-            Project(
-                id="proj-1",
-                name="Test",
-                links=[
-                    ProjectLink(label="Repo", url="https://github.com/org/repo.git")
-                ],
-            ),
-        )
-        linear.set_response("get_issue", _make_issue(description="Fix"))
-        with (
-            mock.patch(
-                "symphony_linear.orchestrator.clone_workspace",
-                return_value=("/tmp/ws/TEAM-1", False),
-            ),
-            mock.patch(
-                "symphony_linear.orchestrator.finalize_workspace",
-            ) as mock_finalize,
-            mock.patch(
-                "symphony_linear.orchestrator.load_project_config",
-                return_value=ProjectConfig(auto_branch=True),
-            ),
-            mock.patch(
-                "symphony_linear.orchestrator.run_initial",
-                return_value=("ses-abc", "done", None),
-            ),
-        ):
-            orchestrator._new_ticket_pipeline(_make_issue())
-
-        ts = orchestrator._state.get("ticket-1")
-        assert ts is not None
-        assert ts.branch == "feature/test"
+        assert ts.branch == ("feature/test" if auto_branch else "")
 
         mock_finalize.assert_called_once()
         _, kw = mock_finalize.call_args
-        assert kw.get("auto_branch") is True
-
-    def test_turn_timeout_override_passed_to_run_initial(
-        self, orchestrator: Orchestrator, linear: FakeLinearClient
-    ) -> None:
-        """Project config turn_timeout_seconds passed to run_initial."""
-        linear.set_response(
-            "get_project",
-            Project(
-                id="proj-1",
-                name="Test",
-                links=[
-                    ProjectLink(label="Repo", url="https://github.com/org/repo.git")
-                ],
-            ),
-        )
-        linear.set_response("get_issue", _make_issue(description="Fix"))
-        with (
-            mock.patch(
-                "symphony_linear.orchestrator.clone_workspace",
-                return_value=("/tmp/ws/TEAM-1", False),
-            ),
-            mock.patch(
-                "symphony_linear.orchestrator.finalize_workspace",
-            ),
-            mock.patch(
-                "symphony_linear.orchestrator.load_project_config",
-                return_value=ProjectConfig(turn_timeout_seconds=120),
-            ),
-            mock.patch(
-                "symphony_linear.orchestrator.run_initial",
-                return_value=("ses-abc", "done", None),
-            ) as mock_run_initial,
-        ):
-            orchestrator._new_ticket_pipeline(_make_issue())
-
-        _, kwargs = mock_run_initial.call_args
-        assert kwargs.get("timeout_seconds") == 120
-        # Idle watchdog is global-only: always the global config value.
-        assert kwargs.get("idle_timeout_seconds") == 1200
-
-    def test_project_config_error_triggers_setup_error(
-        self, orchestrator: Orchestrator, linear: FakeLinearClient
-    ) -> None:
-        """ProjectConfigError on new ticket → setup_error + Linear comment."""
-        linear.set_response(
-            "get_project",
-            Project(
-                id="proj-1",
-                name="Test",
-                links=[
-                    ProjectLink(label="Repo", url="https://github.com/org/repo.git")
-                ],
-            ),
-        )
-        with (
-            mock.patch(
-                "symphony_linear.orchestrator.clone_workspace",
-                return_value=("/tmp/ws/TEAM-1", False),
-            ),
-            mock.patch(
-                "symphony_linear.orchestrator.load_project_config",
-                side_effect=ProjectConfigError("invalid YAML"),
-            ),
-            mock.patch(
-                "symphony_linear.orchestrator.run_initial",
-            ) as mock_run_initial,
-        ):
-            orchestrator._new_ticket_pipeline(_make_issue())
-
-        mock_run_initial.assert_not_called()
-
-        ts = orchestrator._state.get("ticket-1")
-        assert ts is not None
-        assert ts.status == TicketStatus.failed
-        assert ts.setup_error == "project_config_invalid"
-        assert ts.last_seen_comment_id is not None
-
-    def test_missing_project_config_falls_back_to_globals(
-        self, orchestrator: Orchestrator, linear: FakeLinearClient
-    ) -> None:
-        """No .symphony/config.yaml → global defaults used."""
-        linear.set_response(
-            "get_project",
-            Project(
-                id="proj-1",
-                name="Test",
-                links=[
-                    ProjectLink(label="Repo", url="https://github.com/org/repo.git")
-                ],
-            ),
-        )
-        linear.set_response(
-            "get_issue", _make_issue(description="Fix", branchName=None)
-        )
-        with (
-            mock.patch(
-                "symphony_linear.orchestrator.clone_workspace",
-                return_value=("/tmp/ws/TEAM-1", False),
-            ),
-            mock.patch(
-                "symphony_linear.orchestrator.finalize_workspace",
-            ) as mock_finalize,
-            mock.patch(
-                "symphony_linear.orchestrator.load_project_config",
-                return_value=ProjectConfig(),  # empty = all None → fall back to globals
-            ),
-            mock.patch(
-                "symphony_linear.orchestrator.run_initial",
-                return_value=("ses-abc", "done", None),
-            ) as mock_run_initial,
-        ):
-            orchestrator._new_ticket_pipeline(_make_issue())
-
-        # auto_branch falls back to global (True by default in test config).
-        _, kw = mock_finalize.call_args
-        assert kw.get("auto_branch") is True
-
-        # turn_timeout falls back to global (30s in test config).
-        _, kwargs = mock_run_initial.call_args
-        assert kwargs.get("timeout_seconds") == 30
-
-        ts = orchestrator._state.get("ticket-1")
-        assert ts is not None
-
-    def test_save_setup_error_baseline_comment_id_when_post_fails(
-        self, orchestrator: Orchestrator, linear: FakeLinearClient
-    ) -> None:
-        """When error comment post fails, baseline last_seen_comment_id to most recent comment."""
-        linear.set_response(
-            "get_project",
-            Project(
-                id="proj-1",
-                name="Test",
-                links=[
-                    ProjectLink(label="Repo", url="https://github.com/org/repo.git")
-                ],
-            ),
-        )
-        # A historical comment exists.
-        linear.set_response(
-            "list_comments_since",
-            [_make_comment("cmt-old-1", "Hello")],
-        )
-        # Make post_comment fail so error_comment is None.
-        linear.set_response("post_comment", LinearError("api down"))
-        with (
-            mock.patch(
-                "symphony_linear.orchestrator.clone_workspace",
-                return_value=("/tmp/ws/TEAM-1", False),
-            ),
-            mock.patch(
-                "symphony_linear.orchestrator.load_project_config",
-                side_effect=ProjectConfigError("invalid YAML"),
-            ),
-            mock.patch("symphony_linear.orchestrator.run_initial"),
-        ):
-            orchestrator._new_ticket_pipeline(_make_issue())
-
-        ts = orchestrator._state.get("ticket-1")
-        assert ts is not None
-        assert ts.status == TicketStatus.failed
-        assert ts.setup_error == "project_config_invalid"
-        # Baseline should be the most recent existing comment, not None.
-        assert ts.last_seen_comment_id == "cmt-old-1"
+        assert kw.get("auto_branch") is auto_branch
 
     def test_save_setup_error_baseline_comment_id_fallback(
         self, orchestrator: Orchestrator, linear: FakeLinearClient
@@ -2234,46 +1533,6 @@ class TestNewTicketProjectConfig:
         assert ts.setup_error == "project_config_invalid"
         # Both the post and baseline fetch failed → last_seen remains None.
         assert ts.last_seen_comment_id is None
-
-    def test_save_setup_error_preserves_existing_last_seen_when_post_fails(
-        self, orchestrator: Orchestrator, linear: FakeLinearClient
-    ) -> None:
-        """When error_comment is None but existing state has a valid last_seen_comment_id, preserve it."""
-        # Pre-populate state with a known-good last_seen_comment_id.
-        existing = TicketState(
-            ticket_id="ticket-1",
-            ticket_identifier="TEAM-1",
-            project_id="proj-1",
-            repo_url="https://github.com/org/repo.git",
-            workspace_path="/tmp/ws/TEAM-1",
-            branch="feature/test",
-            status=TicketStatus.bootstrapping,
-            last_seen_comment_id="cmt-prior",
-        )
-        orchestrator._state.upsert(existing)
-        orchestrator._state.save()
-
-        with mock.patch.object(
-            orchestrator._tracker, "list_comments_since"
-        ) as mock_lcs:
-            orchestrator._save_setup_error(
-                "ticket-1",
-                _make_issue(),
-                "project_config_invalid",
-                error_comment=None,
-            )
-
-        # list_comments_since must not be called — the existing baseline is reused.
-        mock_lcs.assert_not_called()
-
-        ts = orchestrator._state.get("ticket-1")
-        assert ts is not None
-        assert ts.status == TicketStatus.failed
-        assert ts.setup_error == "project_config_invalid"
-        assert ts.last_seen_comment_id == "cmt-prior"
-        # Other fields preserved from prior state.
-        assert ts.workspace_path == "/tmp/ws/TEAM-1"
-        assert ts.branch == "feature/test"
 
 
 # ---------------------------------------------------------------------------
@@ -2365,48 +1624,6 @@ class TestNewTicketRehydrate:
 
         # Session mapping is NOT deleted on use (durable).
         assert orchestrator._state.get_session("ticket-1") is not None
-
-    def test_rehydrate_no_mapping_unchanged_behavior(
-        self, orchestrator: Orchestrator, linear: FakeLinearClient
-    ) -> None:
-        """Without a session mapping, _new_ticket_pipeline proceeds normally."""
-        linear.set_response(
-            "get_project",
-            Project(
-                id="proj-1",
-                name="Test",
-                links=[
-                    ProjectLink(label="Repo", url="https://github.com/org/repo.git")
-                ],
-            ),
-        )
-        linear.set_response("get_issue", _make_issue(description="Fix"))
-        with (
-            mock.patch(
-                "symphony_linear.orchestrator.clone_workspace",
-                return_value=("/tmp/ws/TEAM-1", False),
-            ),
-            mock.patch(
-                "symphony_linear.orchestrator.finalize_workspace",
-            ),
-            mock.patch(
-                "symphony_linear.orchestrator.load_project_config",
-                return_value=ProjectConfig(),
-            ),
-            mock.patch(
-                "symphony_linear.orchestrator.run_initial",
-                return_value=("ses-fresh", "Done.", None),
-            ) as mock_run_initial,
-        ):
-            orchestrator._new_ticket_pipeline(_make_issue())
-
-        # Normal flow: run_initial was called.
-        mock_run_initial.assert_called_once()
-
-        ts = orchestrator._state.get("ticket-1")
-        assert ts is not None
-        assert ts.session_id == "ses-fresh"
-        assert ts.status == TicketStatus.needs_input
 
     def test_rehydrate_discards_session_from_other_agent(
         self, orchestrator: Orchestrator, linear: FakeLinearClient
@@ -2582,58 +1799,6 @@ class TestNewTicketRehydrate:
         assert ts.status == TicketStatus.needs_input
         assert ts.session_id == "ses-rehydrated"
 
-    def test_rehydrate_posts_restore_comment_with_workspace_kind(
-        self, orchestrator: Orchestrator, linear: FakeLinearClient
-    ) -> None:
-        """The restore comment uses kind='workspace'."""
-        from symphony_linear.state import SessionRecord
-
-        orchestrator._state.set_session(
-            "ticket-1",
-            SessionRecord(session_id="ses-abc", workspace_path="/tmp/ws/TEAM-1"),
-        )
-
-        linear.set_response(
-            "get_project",
-            Project(
-                id="proj-1",
-                name="Test",
-                links=[
-                    ProjectLink(label="Repo", url="https://github.com/org/repo.git")
-                ],
-            ),
-        )
-        linear.set_response("get_issue", _make_issue(description="Fix"))
-        with (
-            mock.patch(
-                "symphony_linear.orchestrator.clone_workspace",
-                return_value=("/tmp/ws/TEAM-1", False),
-            ),
-            mock.patch(
-                "symphony_linear.orchestrator.finalize_workspace",
-            ),
-            mock.patch(
-                "symphony_linear.orchestrator.load_project_config",
-                return_value=ProjectConfig(),
-            ),
-            mock.patch(
-                "symphony_linear.orchestrator.run_initial",
-                return_value=("ses-fresh", "Done.", None),
-            ),
-        ):
-            orchestrator._new_ticket_pipeline(_make_issue())
-
-        # Verify exactly one "Restored" comment is posted, with the workspace
-        # kind footer, the path and the session id, and no placeholder.
-        post_calls = linear.calls.get("post_comment", [])
-        assert len(post_calls) == 1
-        body = post_calls[0][1]
-        assert "**Restored**" in body
-        assert "/tmp/ws/TEAM-1" in body
-        assert "ses-abc" in body
-        assert "session: _pending_" not in body
-        assert "*Symphony · workspace*" in body
-
     def test_rehydrate_with_pending_comment_posts_resuming_message_and_skips_transition(
         self, orchestrator: Orchestrator, linear: FakeLinearClient
     ) -> None:
@@ -2713,81 +1878,16 @@ class TestNewTicketRehydrate:
         assert "Resuming the previous session with your comment." in body
         assert "session: _pending_" not in body
 
-    def test_rehydrate_without_pending_comment_keeps_current_behavior(
-        self, orchestrator: Orchestrator, linear: FakeLinearClient
+    @pytest.mark.parametrize(
+        "pending_check_fails", [False, True], ids=["no-pending", "fetch-error"]
+    )
+    def test_rehydrate_without_pending_input_parks_for_next_comment(
+        self,
+        orchestrator: Orchestrator,
+        linear: FakeLinearClient,
+        pending_check_fails: bool,
     ) -> None:
-        """Without pending human comments, rehydrate behaves exactly as before."""
-        from symphony_linear.state import SessionRecord
-
-        orchestrator._state.set_session(
-            "ticket-1",
-            SessionRecord(
-                session_id="ses-rehydrated",
-                workspace_path="/tmp/ws/TEAM-1",
-                last_seen_comment_id="cmt-prior",
-            ),
-        )
-        # No comments since last_seen (default response is []).
-
-        linear.set_response(
-            "get_project",
-            Project(
-                id="proj-1",
-                name="Test",
-                links=[
-                    ProjectLink(label="Repo", url="https://github.com/org/repo.git")
-                ],
-            ),
-        )
-        linear.set_response("get_issue", _make_issue(description="Fix"))
-        with (
-            mock.patch(
-                "symphony_linear.orchestrator.clone_workspace",
-                return_value=("/tmp/ws/TEAM-1", False),
-            ),
-            mock.patch(
-                "symphony_linear.orchestrator.finalize_workspace",
-            ),
-            mock.patch(
-                "symphony_linear.orchestrator.load_project_config",
-                return_value=ProjectConfig(),
-            ),
-            mock.patch(
-                "symphony_linear.orchestrator.run_initial",
-            ) as mock_run_initial,
-        ):
-            orchestrator._new_ticket_pipeline(_make_issue())
-
-        mock_run_initial.assert_not_called()
-
-        ts = orchestrator._state.get("ticket-1")
-        assert ts is not None
-        assert ts.status == TicketStatus.needs_input
-        assert ts.session_id == "ses-rehydrated"
-
-        # Tracker IS transitioned to Needs Input.
-        transition_calls = linear.calls.get("transition_to_state", [])
-        assert any(
-            tid == "ticket-1" and state == "Needs Input"
-            for tid, state in transition_calls
-        )
-
-        # The "next comment" tail was posted, the "resuming" tail was not, and
-        # no placeholder metadata comment is posted.
-        post_calls = linear.calls.get("post_comment", [])
-        assert len(post_calls) == 1
-        body = post_calls[0][1]
-        assert "**Restored**" in body
-        assert "/tmp/ws/TEAM-1" in body
-        assert "ses-rehydrated" in body
-        assert "The previous session will resume on your next comment." in body
-        assert "session: _pending_" not in body
-
-    def test_rehydrate_pending_check_error_keeps_current_behavior(
-        self, orchestrator: Orchestrator, linear: FakeLinearClient
-    ) -> None:
-        """A tracker failure during the pending-comment check falls back to the
-        current needs_input behavior."""
+        """No pending human comment, or a failed check, parks the ticket."""
         from symphony_linear.state import SessionRecord
 
         orchestrator._state.set_session(
@@ -2810,6 +1910,11 @@ class TestNewTicketRehydrate:
             ),
         )
         linear.set_response("get_issue", _make_issue(description="Fix"))
+        list_comments_kwargs: dict[str, Any] = (
+            {"side_effect": LinearError("boom")}
+            if pending_check_fails
+            else {"return_value": []}
+        )
         with (
             mock.patch(
                 "symphony_linear.orchestrator.clone_workspace",
@@ -2828,7 +1933,7 @@ class TestNewTicketRehydrate:
             mock.patch.object(
                 orchestrator._tracker,
                 "list_comments_since",
-                side_effect=LinearError("boom"),
+                **list_comments_kwargs,
             ),
         ):
             orchestrator._new_ticket_pipeline(_make_issue())
@@ -2898,55 +2003,6 @@ class TestResumePipeline:
             orchestrator._resume_pipeline(ts)
         updated = orchestrator._state.get("ticket-1")
         assert updated is not None and updated.status == TicketStatus.needs_input
-
-    def test_question_format_note_ends_the_resume_message(
-        self, orchestrator: Orchestrator, linear: FakeLinearClient
-    ) -> None:
-        """Every turn carries the note, including a restart-recovery replay."""
-        ts = self._make_ts()
-        orchestrator._state.upsert(ts)
-        linear.set_response("list_comments_since", [_make_comment("c1", "Fix please")])
-        with (
-            mock.patch(
-                "symphony_linear.orchestrator.load_project_config",
-                return_value=ProjectConfig(),
-            ),
-            mock.patch(
-                "symphony_linear.orchestrator.run_resume", return_value=("Done!", None)
-            ) as mock_run_resume,
-            mock.patch.object(
-                LinearTracker, "question_format_note", QUESTION_FORMAT_NOTE
-            ),
-        ):
-            orchestrator._resume_pipeline(ts)
-
-        message = mock_run_resume.call_args.kwargs["message"]
-        assert message.endswith(f"\n\n{QUESTION_FORMAT_NOTE}")
-
-    def test_resume_turn_records_its_output_activity(
-        self, orchestrator: Orchestrator, linear: FakeLinearClient
-    ) -> None:
-        """Resume turns report output to the same record as initial turns."""
-        activity = TurnActivity()
-        orchestrator._turn_activity = activity
-        ts = self._make_ts()
-        orchestrator._state.upsert(ts)
-        linear.set_response("list_comments_since", [_make_comment("c1", "Fix please")])
-        with (
-            mock.patch(
-                "symphony_linear.orchestrator.load_project_config",
-                return_value=ProjectConfig(),
-            ),
-            mock.patch(
-                "symphony_linear.orchestrator.run_resume", return_value=("Done!", None)
-            ) as mock_run_resume,
-        ):
-            orchestrator._resume_pipeline(ts)
-
-        on_output = mock_run_resume.call_args.kwargs["on_output"]
-        assert on_output is not None
-        on_output()
-        assert activity.output_age("ticket-1") is not None
 
     def test_in_progress_transition_precedes_config_load(
         self, orchestrator: Orchestrator, linear: FakeLinearClient
@@ -3041,48 +2097,22 @@ class TestResumePipeline:
         assert updated is not None
         assert updated.status == TicketStatus.failed
 
-    def test_end_of_turn_transition_cancelled_leaves_state_unchanged(
-        self, orchestrator: Orchestrator, linear: FakeLinearClient
+    @pytest.mark.parametrize(
+        ("agent", "patch_target"),
+        [
+            ("omp", "symphony_linear.orchestrator.omp.run_resume"),
+            ("pi", "symphony_linear.orchestrator.pi.run_resume"),
+        ],
+    )
+    def test_agent_dispatches_resume(
+        self,
+        orchestrator: Orchestrator,
+        linear: FakeLinearClient,
+        agent: Literal["omp", "pi"],
+        patch_target: str,
     ) -> None:
-        ts = self._make_ts()
-        orchestrator._state.upsert(ts)
-        linear.set_response("list_comments_since", [_make_comment("c1", "Fix please")])
-        original = linear.transition_to_state
-
-        def flaky(issue_id: str, state_name: str) -> None:
-            if state_name == "Needs Input":
-                raise TrackerTransientError("503 Service Unavailable")
-            original(issue_id, state_name)
-
-        def cancel_on_sleep(_delay: float) -> None:
-            orchestrator._cancel_ticket("ticket-1")
-
-        with (
-            mock.patch(
-                "symphony_linear.orchestrator.load_project_config",
-                return_value=ProjectConfig(),
-            ),
-            mock.patch(
-                "symphony_linear.orchestrator.run_resume", return_value=("Done!", None)
-            ),
-            mock.patch.object(linear, "transition_to_state", side_effect=flaky),
-            mock.patch(
-                "symphony_linear.orchestrator.time.sleep", side_effect=cancel_on_sleep
-            ),
-        ):
-            orchestrator._resume_pipeline(ts)
-
-        updated = orchestrator._state.get("ticket-1")
-        assert updated is not None
-        # The cancelling path owns the state now, so the failed transition must
-        # not overwrite the working status with failed/needs_input.
-        assert updated.status == TicketStatus.working
-
-    def test_omp_dispatches_resume(
-        self, orchestrator: Orchestrator, linear: FakeLinearClient
-    ) -> None:
-        orchestrator._config.agent = "omp"
-        ts = self._make_ts(agent="omp")
+        orchestrator._config.agent = agent
+        ts = self._make_ts(agent=agent)
         orchestrator._state.upsert(ts)
         linear.set_response("list_comments_since", [_make_comment("c1", "Fix please")])
         with (
@@ -3091,50 +2121,35 @@ class TestResumePipeline:
                 return_value=ProjectConfig(),
             ),
             mock.patch("symphony_linear.orchestrator.run_resume") as mock_opencode,
-            mock.patch(
-                "symphony_linear.orchestrator.omp.run_resume",
-                return_value=("Done!", None),
-            ) as mock_omp,
+            mock.patch(patch_target, return_value=("Done!", None)) as mock_agent,
         ):
             orchestrator._resume_pipeline(ts)
 
         mock_opencode.assert_not_called()
-        mock_omp.assert_called_once()
+        mock_agent.assert_called_once()
 
-    def test_pi_dispatches_resume(
-        self, orchestrator: Orchestrator, linear: FakeLinearClient
-    ) -> None:
-        orchestrator._config.agent = "pi"
-        ts = self._make_ts(agent="pi")
-        orchestrator._state.upsert(ts)
-        linear.set_response("list_comments_since", [_make_comment("c1", "Fix please")])
-        with (
-            mock.patch(
-                "symphony_linear.orchestrator.load_project_config",
-                return_value=ProjectConfig(),
-            ),
-            mock.patch("symphony_linear.orchestrator.run_resume") as mock_opencode,
-            mock.patch(
-                "symphony_linear.orchestrator.pi.run_resume",
-                return_value=("Done!", None),
-            ) as mock_pi,
-        ):
-            orchestrator._resume_pipeline(ts)
-
-        mock_opencode.assert_not_called()
-        mock_pi.assert_called_once()
-
+    @pytest.mark.parametrize(
+        ("configured_agent", "module"),
+        [("omp", "omp"), ("pi", "pi")],
+        ids=["opencode-to-omp", "omp-to-pi"],
+    )
     def test_agent_mismatch_starts_initial_pipeline(
-        self, orchestrator: Orchestrator, linear: FakeLinearClient
+        self,
+        orchestrator: Orchestrator,
+        linear: FakeLinearClient,
+        configured_agent: Literal["omp", "pi"],
+        module: Literal["omp", "pi"],
     ) -> None:
         """A comment after an agent switch starts a fresh session, not a resume."""
         from symphony_linear.state import SessionRecord
 
-        orchestrator._config.agent = "omp"
-        ts = self._make_ts(agent="opencode")
+        orchestrator._config.agent = configured_agent
+        recorded_agent = "omp" if configured_agent == "pi" else "opencode"
+        ts = self._make_ts(agent=recorded_agent)
         orchestrator._state.upsert(ts)
         orchestrator._state.set_session(
-            "ticket-1", SessionRecord(session_id="ses-opencode", agent="opencode")
+            "ticket-1",
+            SessionRecord(session_id="ses-old", agent=recorded_agent),
         )
         linear.set_response("list_comments_since", [_make_comment("c1", "Fix please")])
         linear.set_response("get_issue", _make_issue(description="Fix the bug"))
@@ -3159,10 +2174,12 @@ class TestResumePipeline:
                 return_value=ProjectConfig(),
             ),
             mock.patch(
-                "symphony_linear.orchestrator.omp.run_initial",
-                return_value=("omp-session", "Done.", None),
+                f"symphony_linear.orchestrator.{module}.run_initial",
+                return_value=("new-session", "Done.", None),
             ) as mock_initial,
-            mock.patch("symphony_linear.orchestrator.omp.run_resume") as mock_resume,
+            mock.patch(
+                f"symphony_linear.orchestrator.{module}.run_resume"
+            ) as mock_resume,
         ):
             orchestrator._resume_pipeline(ts)
 
@@ -3173,61 +2190,8 @@ class TestResumePipeline:
         assert "Fix please" in prompt
         ticket_state = orchestrator._state.get("ticket-1")
         assert ticket_state is not None
-        assert ticket_state.session_id == "omp-session"
-        assert ticket_state.agent == "omp"
-        assert orchestrator._state.get_session("ticket-1") is None
-
-    def test_pi_discards_omp_session_and_starts_initial_pipeline(
-        self, orchestrator: Orchestrator, linear: FakeLinearClient
-    ) -> None:
-        """A pi turn cannot resume an OMP-created session."""
-        from symphony_linear.state import SessionRecord
-
-        orchestrator._config.agent = "pi"
-        ts = self._make_ts(agent="omp")
-        orchestrator._state.upsert(ts)
-        orchestrator._state.set_session(
-            "ticket-1", SessionRecord(session_id="ses-omp", agent="omp")
-        )
-        linear.set_response("list_comments_since", [_make_comment("c1", "Fix please")])
-        linear.set_response("get_issue", _make_issue(description="Fix the bug"))
-        linear.set_response(
-            "get_project",
-            Project(
-                id="proj-1",
-                name="Test",
-                links=[
-                    ProjectLink(label="Repo", url="https://github.com/org/repo.git")
-                ],
-            ),
-        )
-        with (
-            mock.patch(
-                "symphony_linear.orchestrator.clone_workspace",
-                return_value=("/tmp/ws/TEAM-1", False),
-            ),
-            mock.patch("symphony_linear.orchestrator.finalize_workspace"),
-            mock.patch(
-                "symphony_linear.orchestrator.load_project_config",
-                return_value=ProjectConfig(),
-            ),
-            mock.patch(
-                "symphony_linear.orchestrator.pi.run_initial",
-                return_value=("pi-session", "Done.", None),
-            ) as mock_initial,
-            mock.patch("symphony_linear.orchestrator.pi.run_resume") as mock_resume,
-        ):
-            orchestrator._resume_pipeline(ts)
-
-        mock_resume.assert_not_called()
-        mock_initial.assert_called_once()
-        prompt = mock_initial.call_args.kwargs["prompt"]
-        assert "Fix the bug" in prompt
-        assert "Fix please" in prompt
-        ticket_state = orchestrator._state.get("ticket-1")
-        assert ticket_state is not None
-        assert ticket_state.session_id == "pi-session"
-        assert ticket_state.agent == "pi"
+        assert ticket_state.session_id == "new-session"
+        assert ticket_state.agent == configured_agent
         assert orchestrator._state.get_session("ticket-1") is None
 
     def test_resume_turn_clears_cleanup_refused_state(
@@ -3314,130 +2278,6 @@ class TestResumePipeline:
         assert state_entry.agent is None
         assert state_entry.status == TicketStatus.working
 
-    def test_resume_timeout_advances_last_seen(
-        self, orchestrator: Orchestrator, linear: FakeLinearClient
-    ) -> None:
-        ts = self._make_ts()
-        orchestrator._state.upsert(ts)
-        linear.set_response("list_comments_since", [_make_comment("c1", "Go")])
-        with (
-            mock.patch(
-                "symphony_linear.orchestrator.load_project_config",
-                return_value=ProjectConfig(),
-            ),
-            mock.patch(
-                "symphony_linear.orchestrator.run_resume",
-                side_effect=OpenCodeTimeout("t", reason="exceeded 30s in total"),
-            ),
-        ):
-            orchestrator._resume_pipeline(ts)
-        updated = orchestrator._state.get("ticket-1")
-        assert updated is not None
-        assert updated.last_seen_comment_id != "cmt-seen-1"
-
-    def test_resume_failure_transitions_to_needs_input_before_comment(
-        self, orchestrator: Orchestrator, linear: FakeLinearClient
-    ) -> None:
-        """A failed resume turn parks the tracker ticket in Needs Input before commenting."""
-        ts = self._make_ts()
-        orchestrator._state.upsert(ts)
-        linear.set_response("list_comments_since", [_make_comment("c1", "Go")])
-
-        events: list[str] = []
-        orig_transition = linear.transition_to_state
-        orig_comment = linear.post_comment
-
-        def record_transition(iid: str, state: str) -> None:
-            events.append(f"transition:{state}")
-            orig_transition(iid, state)
-
-        def record_comment(iid: str, body: str) -> Comment:
-            events.append(f"comment:{body}")
-            return orig_comment(iid, body)
-
-        with (
-            mock.patch(
-                "symphony_linear.orchestrator.load_project_config",
-                return_value=ProjectConfig(),
-            ),
-            mock.patch(
-                "symphony_linear.orchestrator.run_resume",
-                side_effect=OpenCodeError("boom"),
-            ),
-            mock.patch.object(
-                linear, "transition_to_state", side_effect=record_transition
-            ),
-            mock.patch.object(linear, "post_comment", side_effect=record_comment),
-        ):
-            orchestrator._resume_pipeline(ts)
-
-        assert ("ticket-1", "Needs Input") in linear.calls.get(
-            "transition_to_state", []
-        )
-        # The failure transition must precede the error comment.
-        needs_input_idx = events.index("transition:Needs Input")
-        error_idx = next(i for i, e in enumerate(events) if "failed" in e)
-        assert needs_input_idx < error_idx
-        updated = orchestrator._state.get("ticket-1")
-        assert updated is not None
-        assert updated.status == TicketStatus.failed
-
-    def test_resume_timeout_comment_includes_partial_output(
-        self, orchestrator: Orchestrator, linear: FakeLinearClient
-    ) -> None:
-        """Resume timeout comment includes partial output when present."""
-        ts = self._make_ts()
-        orchestrator._state.upsert(ts)
-        linear.set_response("list_comments_since", [_make_comment("c1", "Go")])
-        with (
-            mock.patch(
-                "symphony_linear.orchestrator.load_project_config",
-                return_value=ProjectConfig(),
-            ),
-            mock.patch(
-                "symphony_linear.orchestrator.run_resume",
-                side_effect=OpenCodeTimeout(
-                    "t",
-                    partial_message="Continuing work...",
-                    reason="exceeded 30s in total",
-                ),
-            ),
-        ):
-            orchestrator._resume_pipeline(ts)
-        post_calls = linear.calls.get("post_comment", [])
-        timeout_comments = [args[1] for args in post_calls if "timed out" in args[1]]
-        assert len(timeout_comments) == 1
-        assert "Partial output before the timeout" in timeout_comments[0]
-        assert "Continuing work..." in timeout_comments[0]
-        # The reason distinguishes the absolute cap from an idle stall.
-        assert "exceeded 30s in total" in timeout_comments[0]
-        assert "after 30s" not in timeout_comments[0]
-
-    def test_resume_timeout_comment_unchanged_when_empty_partial(
-        self, orchestrator: Orchestrator, linear: FakeLinearClient
-    ) -> None:
-        """Resume timeout comment unchanged when partial_message is empty."""
-        ts = self._make_ts()
-        orchestrator._state.upsert(ts)
-        linear.set_response("list_comments_since", [_make_comment("c1", "Go")])
-        with (
-            mock.patch(
-                "symphony_linear.orchestrator.load_project_config",
-                return_value=ProjectConfig(),
-            ),
-            mock.patch(
-                "symphony_linear.orchestrator.run_resume",
-                side_effect=OpenCodeTimeout(
-                    "t", partial_message="", reason="produced no output for 1200s"
-                ),
-            ),
-        ):
-            orchestrator._resume_pipeline(ts)
-        post_calls = linear.calls.get("post_comment", [])
-        timeout_comments = [args[1] for args in post_calls if "timed out" in args[1]]
-        assert len(timeout_comments) == 1
-        assert "Partial output before the timeout" not in timeout_comments[0]
-
     def test_no_retry_without_new_comment(
         self, orchestrator: Orchestrator, linear: FakeLinearClient
     ) -> None:
@@ -3469,138 +2309,7 @@ class TestResumePipeline:
             orchestrator._resume_pipeline(updated)
         m.assert_not_called()
 
-    # --- Context-tokens footer (resume pipeline) ---
-
-    def test_context_tokens_footer_appended(
-        self, orchestrator: Orchestrator, linear: FakeLinearClient
-    ) -> None:
-        """Footer with comma-formatted context tokens is appended to resume final message."""
-        ts = self._make_ts()
-        orchestrator._state.upsert(ts)
-        linear.set_response("list_comments_since", [_make_comment("c1", "Fix please")])
-        with (
-            mock.patch(
-                "symphony_linear.orchestrator.load_project_config",
-                return_value=ProjectConfig(),
-            ),
-            mock.patch(
-                "symphony_linear.orchestrator.run_resume",
-                return_value=("Done!", 37074),
-            ),
-        ):
-            orchestrator._resume_pipeline(ts)
-
-        post_calls = linear.calls.get("post_comment", [])
-        final_bodies = [body for tid, body in post_calls if "Done!" in body]
-        assert len(final_bodies) == 1
-
-        expected = "Done!\n\n*Symphony · context: 37,074 tokens*"
-        assert final_bodies[0] == expected
-
-    def test_context_tokens_none_no_footer(
-        self, orchestrator: Orchestrator, linear: FakeLinearClient
-    ) -> None:
-        """When context_tokens is None on resume, no footer is appended."""
-        ts = self._make_ts()
-        orchestrator._state.upsert(ts)
-        linear.set_response("list_comments_since", [_make_comment("c1", "Fix please")])
-        with (
-            mock.patch(
-                "symphony_linear.orchestrator.load_project_config",
-                return_value=ProjectConfig(),
-            ),
-            mock.patch(
-                "symphony_linear.orchestrator.run_resume",
-                return_value=("Done!", None),
-            ),
-        ):
-            orchestrator._resume_pipeline(ts)
-
-        post_calls = linear.calls.get("post_comment", [])
-        final_bodies = [body for tid, body in post_calls if "Done!" in body]
-        assert len(final_bodies) == 1
-
-        assert final_bodies[0] == "Done!\n\n*Symphony · final*"
-
-    def test_context_tokens_comma_format(
-        self, orchestrator: Orchestrator, linear: FakeLinearClient
-    ) -> None:
-        """Context token count is comma-formatted with thousands separators on resume."""
-        ts = self._make_ts()
-        orchestrator._state.upsert(ts)
-        linear.set_response("list_comments_since", [_make_comment("c1", "Fix please")])
-        with (
-            mock.patch(
-                "symphony_linear.orchestrator.load_project_config",
-                return_value=ProjectConfig(),
-            ),
-            mock.patch(
-                "symphony_linear.orchestrator.run_resume",
-                return_value=("OK", 1_234_567),
-            ),
-        ):
-            orchestrator._resume_pipeline(ts)
-
-        post_calls = linear.calls.get("post_comment", [])
-        final_bodies = [body for tid, body in post_calls if "OK" in body]
-        assert len(final_bodies) == 1
-        assert "*Symphony · context: 1,234,567 tokens*" in final_bodies[0]
-
     # --- Per-issue model override (resume pipeline) ---
-
-    def test_model_passed_to_run_resume_and_footer(
-        self, orchestrator: Orchestrator, linear: FakeLinearClient
-    ) -> None:
-        """A resolved model is passed to run_resume and named in the footer."""
-        ts = self._make_ts()
-        orchestrator._state.upsert(ts)
-        linear.set_response("list_comments_since", [_make_comment("c1", "Fix please")])
-        with (
-            mock.patch(
-                "symphony_linear.orchestrator.load_project_config",
-                return_value=ProjectConfig(),
-            ),
-            mock.patch(
-                "symphony_linear.orchestrator.run_resume",
-                return_value=("Done!", 37074),
-            ) as mock_run_resume,
-        ):
-            orchestrator._resume_pipeline(ts, "anthropic/claude-opus-5")
-
-        assert mock_run_resume.call_args.kwargs["model"] == "anthropic/claude-opus-5"
-        post_calls = linear.calls.get("post_comment", [])
-        final_bodies = [body for tid, body in post_calls if "Done!" in body]
-        assert len(final_bodies) == 1
-        expected = (
-            "Done!\n\n*Symphony · context: 37,074 tokens · model: "
-            "anthropic/claude-opus-5*"
-        )
-        assert final_bodies[0] == expected
-
-    def test_no_model_footer_unchanged(
-        self, orchestrator: Orchestrator, linear: FakeLinearClient
-    ) -> None:
-        """Without a model, run_resume gets model=None and the footer is unchanged."""
-        ts = self._make_ts()
-        orchestrator._state.upsert(ts)
-        linear.set_response("list_comments_since", [_make_comment("c1", "Fix please")])
-        with (
-            mock.patch(
-                "symphony_linear.orchestrator.load_project_config",
-                return_value=ProjectConfig(),
-            ),
-            mock.patch(
-                "symphony_linear.orchestrator.run_resume",
-                return_value=("Done!", 37074),
-            ) as mock_run_resume,
-        ):
-            orchestrator._resume_pipeline(ts)
-
-        assert mock_run_resume.call_args.kwargs["model"] is None
-        post_calls = linear.calls.get("post_comment", [])
-        final_bodies = [body for tid, body in post_calls if "Done!" in body]
-        assert len(final_bodies) == 1
-        assert final_bodies[0] == "Done!\n\n*Symphony · context: 37,074 tokens*"
 
     def test_resume_turn_does_not_warn_about_triggering_comment(
         self, orchestrator: Orchestrator, linear: FakeLinearClient
@@ -3664,6 +2373,548 @@ class TestResumePipeline:
 # ---------------------------------------------------------------------------
 
 
+class TestPipelineTwins:
+    """Behaviour shared by the initial and resume pipelines.
+
+    The two entry points call different adapters but must produce the same
+    comment, state and cancellation outcomes; parametrizing keeps those
+    contracts from drifting apart.
+    """
+
+    @staticmethod
+    def _resume_state() -> TicketState:
+        return TicketState(
+            ticket_id="ticket-1",
+            ticket_identifier="TEAM-1",
+            repo_url="https://github.com/org/repo.git",
+            workspace_path="/tmp/ws/TEAM-1",
+            branch="feature/test",
+            status=TicketStatus.needs_input,
+            session_id="ses-abc",
+            last_seen_comment_id="cmt-seen-1",
+            metadata_comment_id="cmt-meta-1",
+        )
+
+    def _run_pipeline(
+        self,
+        orchestrator: Orchestrator,
+        linear: FakeLinearClient,
+        pipeline: Literal["initial", "resume"],
+        *,
+        initial_run: dict[str, Any] | None = None,
+        resume_run: dict[str, Any] | None = None,
+        extra_context: str | None = None,
+        model: str | None = None,
+        issue_description: str = "Fix",
+        comment_body: str = "Go",
+        project_config: ProjectConfig | None = None,
+        project_config_error: bool = False,
+    ) -> mock.MagicMock:
+        config_kwargs: dict[str, Any] = (
+            {"side_effect": ProjectConfigError("invalid YAML")}
+            if project_config_error
+            else {"return_value": project_config or ProjectConfig()}
+        )
+        if pipeline == "initial":
+            linear.set_response(
+                "get_project",
+                Project(
+                    id="proj-1",
+                    name="Test",
+                    links=[
+                        ProjectLink(label="Repo", url="https://github.com/org/repo.git")
+                    ],
+                ),
+            )
+            linear.set_response("get_issue", _make_issue(description=issue_description))
+            run_kwargs: dict[str, Any] = initial_run or {
+                "return_value": ("ses-abc", "Done!", None)
+            }
+            with (
+                mock.patch(
+                    "symphony_linear.orchestrator.clone_workspace",
+                    return_value=("/tmp/ws/TEAM-1", False),
+                ),
+                mock.patch("symphony_linear.orchestrator.finalize_workspace"),
+                mock.patch(
+                    "symphony_linear.orchestrator.load_project_config",
+                    **config_kwargs,
+                ),
+                mock.patch(
+                    "symphony_linear.orchestrator.run_initial", **run_kwargs
+                ) as launch,
+            ):
+                orchestrator._new_ticket_pipeline(
+                    _make_issue(), extra_context=extra_context
+                )
+            return launch
+
+        ts = self._resume_state()
+        orchestrator._state.upsert(ts)
+        linear.set_response("list_comments_since", [_make_comment("c1", comment_body)])
+        resume_kwargs: dict[str, Any] = resume_run or {"return_value": ("Done!", None)}
+        with (
+            mock.patch(
+                "symphony_linear.orchestrator.load_project_config",
+                **config_kwargs,
+            ),
+            mock.patch(
+                "symphony_linear.orchestrator.run_resume", **resume_kwargs
+            ) as launch,
+        ):
+            orchestrator._resume_pipeline(ts, model)
+        return launch
+
+    @pytest.mark.parametrize("pipeline", ["initial", "resume"])
+    @pytest.mark.parametrize(
+        ("tokens", "footer"),
+        [(37074, "context: 37,074 tokens"), (None, "final")],
+        ids=["tokens", "none"],
+    )
+    def test_context_tokens_footer(
+        self,
+        orchestrator: Orchestrator,
+        linear: FakeLinearClient,
+        pipeline: Literal["initial", "resume"],
+        tokens: int | None,
+        footer: str,
+    ) -> None:
+        if pipeline == "initial":
+            self._run_pipeline(
+                orchestrator,
+                linear,
+                pipeline,
+                initial_run={"return_value": ("ses-abc", "Done!", tokens)},
+            )
+        else:
+            self._run_pipeline(
+                orchestrator,
+                linear,
+                pipeline,
+                resume_run={"return_value": ("Done!", tokens)},
+            )
+        final_bodies = [
+            body
+            for _tid, body in linear.calls.get("post_comment", [])
+            if "Done!" in body
+        ]
+        assert final_bodies == [f"Done!\n\n*Symphony · {footer}*"]
+
+    @pytest.mark.parametrize("pipeline", ["initial", "resume"])
+    @pytest.mark.parametrize(
+        "partial", ["I was working on...", ""], ids=["partial", "empty"]
+    )
+    def test_timeout_comment_reports_partial_output(
+        self,
+        orchestrator: Orchestrator,
+        linear: FakeLinearClient,
+        pipeline: Literal["initial", "resume"],
+        partial: str,
+    ) -> None:
+        error = OpenCodeTimeout(
+            "timeout",
+            partial_message=partial,
+            reason="produced no output for 1200s",
+        )
+        if pipeline == "initial":
+            self._run_pipeline(
+                orchestrator, linear, pipeline, initial_run={"side_effect": error}
+            )
+        else:
+            self._run_pipeline(
+                orchestrator, linear, pipeline, resume_run={"side_effect": error}
+            )
+        timeout_comments = [
+            body
+            for _tid, body in linear.calls.get("post_comment", [])
+            if "timed out" in body
+        ]
+        assert len(timeout_comments) == 1
+        assert "produced no output for 1200s" in timeout_comments[0]
+        assert "after 30s" not in timeout_comments[0]
+        if partial:
+            assert "Partial output before the timeout" in timeout_comments[0]
+            assert partial in timeout_comments[0]
+        else:
+            assert "Partial output before the timeout" not in timeout_comments[0]
+
+    @pytest.mark.parametrize("pipeline", ["initial", "resume"])
+    def test_timeout_advances_last_seen(
+        self,
+        orchestrator: Orchestrator,
+        linear: FakeLinearClient,
+        pipeline: Literal["initial", "resume"],
+    ) -> None:
+        error = OpenCodeTimeout("timeout", reason="produced no output for 1200s")
+        if pipeline == "initial":
+            self._run_pipeline(
+                orchestrator, linear, pipeline, initial_run={"side_effect": error}
+            )
+        else:
+            self._run_pipeline(
+                orchestrator, linear, pipeline, resume_run={"side_effect": error}
+            )
+        ts = orchestrator._state.get("ticket-1")
+        assert ts is not None
+        assert ts.status == TicketStatus.failed
+        assert ts.last_seen_comment_id not in (None, "cmt-seen-1")
+
+    @pytest.mark.parametrize("pipeline", ["initial", "resume"])
+    def test_turn_failure_transitions_before_comment(
+        self,
+        orchestrator: Orchestrator,
+        linear: FakeLinearClient,
+        pipeline: Literal["initial", "resume"],
+    ) -> None:
+        events: list[str] = []
+        orig_transition = linear.transition_to_state
+        orig_comment = linear.post_comment
+
+        def record_transition(issue_id: str, state: str) -> None:
+            events.append(f"transition:{state}")
+            orig_transition(issue_id, state)
+
+        def record_comment(issue_id: str, body: str) -> Comment:
+            events.append(f"comment:{body}")
+            return orig_comment(issue_id, body)
+
+        error = OpenCodeTimeout("t", reason="exceeded 30s in total")
+        with (
+            mock.patch.object(
+                linear, "transition_to_state", side_effect=record_transition
+            ),
+            mock.patch.object(linear, "post_comment", side_effect=record_comment),
+        ):
+            if pipeline == "initial":
+                self._run_pipeline(
+                    orchestrator, linear, pipeline, initial_run={"side_effect": error}
+                )
+            else:
+                self._run_pipeline(
+                    orchestrator, linear, pipeline, resume_run={"side_effect": error}
+                )
+
+        needs_input_idx = events.index("transition:Needs Input")
+        error_idx = next(i for i, event in enumerate(events) if "timed out" in event)
+        assert needs_input_idx < error_idx
+        ts = orchestrator._state.get("ticket-1")
+        assert ts is not None
+        assert ts.status == TicketStatus.failed
+
+    @pytest.mark.parametrize("pipeline", ["initial", "resume"])
+    def test_end_of_turn_transition_cancelled_leaves_state_unchanged(
+        self,
+        orchestrator: Orchestrator,
+        linear: FakeLinearClient,
+        pipeline: Literal["initial", "resume"],
+    ) -> None:
+        original = linear.transition_to_state
+
+        def flaky(issue_id: str, state_name: str) -> None:
+            if state_name == "Needs Input":
+                raise TrackerTransientError("503 Service Unavailable")
+            original(issue_id, state_name)
+
+        def cancel_on_sleep(_delay: float) -> None:
+            orchestrator._cancel_ticket("ticket-1")
+
+        with (
+            mock.patch.object(linear, "transition_to_state", side_effect=flaky),
+            mock.patch(
+                "symphony_linear.orchestrator.time.sleep", side_effect=cancel_on_sleep
+            ),
+        ):
+            self._run_pipeline(orchestrator, linear, pipeline)
+
+        updated = orchestrator._state.get("ticket-1")
+        assert updated is not None
+        # The cancelling path owns the state now; the failed end-of-turn
+        # transition must not overwrite the working status.
+        assert updated.status == TicketStatus.working
+
+    @pytest.mark.parametrize("pipeline", ["initial", "resume"])
+    def test_question_format_note_ends_the_prompt(
+        self,
+        orchestrator: Orchestrator,
+        linear: FakeLinearClient,
+        pipeline: Literal["initial", "resume"],
+    ) -> None:
+        with mock.patch.object(
+            LinearTracker, "question_format_note", QUESTION_FORMAT_NOTE
+        ):
+            launch = self._run_pipeline(
+                orchestrator,
+                linear,
+                pipeline,
+                extra_context="HUMAN CONTEXT" if pipeline == "initial" else None,
+            )
+        text = launch.call_args.kwargs["prompt" if pipeline == "initial" else "message"]
+        assert text.endswith(f"\n\n{QUESTION_FORMAT_NOTE}")
+        if pipeline == "initial":
+            assert text.index("HUMAN CONTEXT") < text.index(QUESTION_FORMAT_NOTE)
+
+    @pytest.mark.parametrize("pipeline", ["initial", "resume"])
+    def test_turn_output_activity_is_recorded_and_cleared(
+        self,
+        orchestrator: Orchestrator,
+        linear: FakeLinearClient,
+        pipeline: Literal["initial", "resume"],
+    ) -> None:
+        # Without a record (Linear and GitHub deployments) adapters get None.
+        assert orchestrator._output_callback("ticket-1") is None
+        activity = TurnActivity()
+        orchestrator._turn_activity = activity
+
+        launch = self._run_pipeline(orchestrator, linear, pipeline)
+
+        on_output = launch.call_args.kwargs["on_output"]
+        assert on_output is not None
+        on_output()
+        assert activity.output_age("ticket-1") is not None
+        orchestrator._task_wrapper("ticket-1", lambda: None)
+        assert activity.output_age("ticket-1") is None
+
+    @pytest.mark.parametrize(
+        ("model", "footer"),
+        [
+            (
+                "anthropic/claude-opus-5",
+                "context: 37,074 tokens · model: anthropic/claude-opus-5",
+            ),
+            (None, "context: 37,074 tokens"),
+        ],
+        ids=["model", "none"],
+    )
+    def test_model_reaches_resume_and_footer(
+        self,
+        orchestrator: Orchestrator,
+        linear: FakeLinearClient,
+        model: str | None,
+        footer: str,
+    ) -> None:
+        launch = self._run_pipeline(
+            orchestrator,
+            linear,
+            "resume",
+            resume_run={"return_value": ("Done!", 37074)},
+            model=model,
+        )
+        assert launch.call_args.kwargs["model"] == model
+        final_bodies = [
+            body
+            for _tid, body in linear.calls.get("post_comment", [])
+            if "Done!" in body
+        ]
+        assert final_bodies == [f"Done!\n\n*Symphony · {footer}*"]
+
+    @pytest.mark.parametrize("pipeline", ["initial", "resume"])
+    def test_cancelled_turn_does_not_post_final_message(
+        self,
+        orchestrator: Orchestrator,
+        linear: FakeLinearClient,
+        pipeline: Literal["initial", "resume"],
+    ) -> None:
+        def cancel_then_return(*args: Any, **kwargs: Any) -> Any:
+            orchestrator._cancel_ticket("ticket-1")
+            return ("ses-abc", "Done!", None)
+
+        def cancel_then_return_resume(*args: Any, **kwargs: Any) -> Any:
+            orchestrator._cancel_ticket("ticket-1")
+            return ("Done!", None)
+
+        if pipeline == "initial":
+            self._run_pipeline(
+                orchestrator,
+                linear,
+                pipeline,
+                initial_run={"side_effect": cancel_then_return},
+            )
+        else:
+            self._run_pipeline(
+                orchestrator,
+                linear,
+                pipeline,
+                resume_run={"side_effect": cancel_then_return_resume},
+            )
+        post_calls = linear.calls.get("post_comment", [])
+        assert not any("Done!" in body for _tid, body in post_calls)
+
+    @pytest.mark.parametrize("pipeline", ["initial", "resume"])
+    def test_cancelled_turn_skips_needs_input_transition(
+        self,
+        orchestrator: Orchestrator,
+        linear: FakeLinearClient,
+        pipeline: Literal["initial", "resume"],
+    ) -> None:
+        def cancel_then_return(*args: Any, **kwargs: Any) -> Any:
+            orchestrator._cancel_ticket("ticket-1")
+            return ("ses-abc", "Done!", None)
+
+        def cancel_then_return_resume(*args: Any, **kwargs: Any) -> Any:
+            orchestrator._cancel_ticket("ticket-1")
+            return ("Done!", None)
+
+        if pipeline == "initial":
+            self._run_pipeline(
+                orchestrator,
+                linear,
+                pipeline,
+                initial_run={"side_effect": cancel_then_return},
+            )
+        else:
+            self._run_pipeline(
+                orchestrator,
+                linear,
+                pipeline,
+                resume_run={"side_effect": cancel_then_return_resume},
+            )
+        needs_input_name = orchestrator._tracker.transition_name_for(
+            TransitionTarget.needs_input
+        )
+        needs_input_transitions = [
+            (tid, state)
+            for tid, state in linear.calls.get("transition_to_state", [])
+            if state == needs_input_name
+        ]
+        assert needs_input_transitions == []
+
+    @pytest.mark.parametrize("pipeline", ["initial", "resume"])
+    def test_project_turn_timeout_reaches_turn(
+        self,
+        orchestrator: Orchestrator,
+        linear: FakeLinearClient,
+        pipeline: Literal["initial", "resume"],
+    ) -> None:
+        launch = self._run_pipeline(
+            orchestrator,
+            linear,
+            pipeline,
+            project_config=ProjectConfig(turn_timeout_seconds=120),
+        )
+        kwargs = launch.call_args.kwargs
+        assert kwargs.get("timeout_seconds") == 120
+        # Idle watchdog is global-only: always the global config value.
+        assert kwargs.get("idle_timeout_seconds") == 1200
+
+    @pytest.mark.parametrize("pipeline", ["initial", "resume"])
+    def test_project_config_error_reports_setup_error(
+        self,
+        orchestrator: Orchestrator,
+        linear: FakeLinearClient,
+        pipeline: Literal["initial", "resume"],
+    ) -> None:
+        launch = self._run_pipeline(
+            orchestrator, linear, pipeline, project_config_error=True
+        )
+        launch.assert_not_called()
+        ts = orchestrator._state.get("ticket-1")
+        assert ts is not None
+        assert ts.status == TicketStatus.failed
+        assert ts.setup_error == "project_config_invalid"
+        assert ts.last_seen_comment_id is not None
+
+    @pytest.mark.parametrize("pipeline", ["initial", "resume"])
+    @pytest.mark.parametrize(
+        ("prior_last_seen", "expected"),
+        [(None, "cmt-latest"), ("cmt-prior", "cmt-prior")],
+        ids=["baseline", "preserve"],
+    )
+    def test_project_config_error_baselines_when_post_fails(
+        self,
+        orchestrator: Orchestrator,
+        linear: FakeLinearClient,
+        pipeline: Literal["initial", "resume"],
+        prior_last_seen: str | None,
+        expected: str,
+    ) -> None:
+        linear.set_response(
+            "get_project",
+            Project(
+                id="proj-1",
+                name="Test",
+                links=[
+                    ProjectLink(label="Repo", url="https://github.com/org/repo.git")
+                ],
+            ),
+        )
+        linear.set_response("get_issue", _make_issue(description="Fix"))
+        linear.set_response("list_comments_since", [_make_comment("cmt-latest", "hi")])
+        linear.set_response("post_comment", LinearError("api down"))
+        error = ProjectConfigError("invalid YAML")
+        if pipeline == "initial":
+            if prior_last_seen is not None:
+                orchestrator._state.upsert(
+                    TicketState(
+                        ticket_id="ticket-1",
+                        ticket_identifier="TEAM-1",
+                        project_id="proj-1",
+                        repo_url="https://github.com/org/repo.git",
+                        workspace_path="/tmp/ws/TEAM-1",
+                        branch="feature/test",
+                        status=TicketStatus.bootstrapping,
+                        last_seen_comment_id=prior_last_seen,
+                    )
+                )
+            with (
+                mock.patch(
+                    "symphony_linear.orchestrator.clone_workspace",
+                    return_value=("/tmp/ws/TEAM-1", False),
+                ),
+                mock.patch(
+                    "symphony_linear.orchestrator.load_project_config",
+                    side_effect=error,
+                ),
+                mock.patch("symphony_linear.orchestrator.run_initial") as launch,
+            ):
+                orchestrator._new_ticket_pipeline(_make_issue())
+        else:
+            ts = self._resume_state().model_copy(
+                update={"last_seen_comment_id": prior_last_seen}
+            )
+            orchestrator._state.upsert(ts)
+            with (
+                mock.patch(
+                    "symphony_linear.orchestrator.load_project_config",
+                    side_effect=error,
+                ),
+                mock.patch("symphony_linear.orchestrator.run_resume") as launch,
+            ):
+                orchestrator._resume_pipeline(ts)
+        launch.assert_not_called()
+        saved = orchestrator._state.get("ticket-1")
+        assert saved is not None
+        assert saved.status == TicketStatus.failed
+        assert saved.setup_error == "project_config_invalid"
+        assert saved.last_seen_comment_id == expected
+
+    @pytest.mark.parametrize("pipeline", ["initial", "resume"])
+    def test_attachment_plumbing_failure_does_not_break_turn(
+        self,
+        orchestrator: Orchestrator,
+        linear: FakeLinearClient,
+        pipeline: Literal["initial", "resume"],
+    ) -> None:
+        image = "![img](http://ex.com/pic.png)"
+        error = RuntimeError("attachment plumbing bug")
+        with mock.patch(
+            "symphony_linear.orchestrator.process_attachments", side_effect=error
+        ):
+            if pipeline == "initial":
+                launch = self._run_pipeline(
+                    orchestrator, linear, pipeline, issue_description=f"Fix {image}"
+                )
+                kwargs = launch.call_args.kwargs
+                assert image in kwargs["prompt"]
+            else:
+                launch = self._run_pipeline(
+                    orchestrator, linear, pipeline, comment_body=f"Fix {image}"
+                )
+                kwargs = launch.call_args.kwargs
+                assert image in kwargs["message"]
+        assert launch.call_count == 1
+        assert kwargs.get("files") == []
+
+
 class TestResumeProjectConfig:
     def _make_ts(self, **overrides: Any) -> TicketState:
         defaults: dict[str, Any] = {
@@ -3679,55 +2930,6 @@ class TestResumeProjectConfig:
         }
         defaults.update(overrides)
         return TicketState(**defaults)
-
-    def test_turn_timeout_override_passed_to_run_resume(
-        self, orchestrator: Orchestrator, linear: FakeLinearClient
-    ) -> None:
-        """Project config turn_timeout_seconds override used by run_resume."""
-        ts = self._make_ts()
-        orchestrator._state.upsert(ts)
-        linear.set_response("list_comments_since", [_make_comment("c1", "Go")])
-        with (
-            mock.patch(
-                "symphony_linear.orchestrator.load_project_config",
-                return_value=ProjectConfig(turn_timeout_seconds=90),
-            ),
-            mock.patch(
-                "symphony_linear.orchestrator.run_resume", return_value=("Done!", None)
-            ) as mock_run_resume,
-        ):
-            orchestrator._resume_pipeline(ts)
-
-        _, kwargs = mock_run_resume.call_args
-        assert kwargs.get("timeout_seconds") == 90
-        # Idle watchdog is global-only: always the global config value.
-        assert kwargs.get("idle_timeout_seconds") == 1200
-
-    def test_project_config_error_on_resume_triggers_setup_error(
-        self, orchestrator: Orchestrator, linear: FakeLinearClient
-    ) -> None:
-        """ProjectConfigError on resume → setup_error + Linear comment."""
-        ts = self._make_ts()
-        orchestrator._state.upsert(ts)
-        linear.set_response("list_comments_since", [_make_comment("c1", "Go")])
-        with (
-            mock.patch(
-                "symphony_linear.orchestrator.load_project_config",
-                side_effect=ProjectConfigError("bad config"),
-            ),
-            mock.patch(
-                "symphony_linear.orchestrator.run_resume",
-            ) as mock_run_resume,
-        ):
-            orchestrator._resume_pipeline(ts)
-
-        mock_run_resume.assert_not_called()
-
-        updated = orchestrator._state.get("ticket-1")
-        assert updated is not None
-        assert updated.status == TicketStatus.failed
-        assert updated.setup_error == "project_config_invalid"
-        assert updated.last_seen_comment_id is not None
 
     def test_project_config_error_ends_in_needs_input_after_early_in_progress(
         self, orchestrator: Orchestrator, linear: FakeLinearClient
@@ -3760,92 +2962,6 @@ class TestResumeProjectConfig:
         ], (
             f"Expected In Progress then Needs Input for ticket-1, got: {ticket_transitions}"
         )
-
-    def test_missing_project_config_falls_back_to_globals_on_resume(
-        self, orchestrator: Orchestrator, linear: FakeLinearClient
-    ) -> None:
-        """No project config on resume → global turn_timeout used."""
-        ts = self._make_ts()
-        orchestrator._state.upsert(ts)
-        linear.set_response("list_comments_since", [_make_comment("c1", "Go")])
-        with (
-            mock.patch(
-                "symphony_linear.orchestrator.load_project_config",
-                return_value=ProjectConfig(),  # empty → fall back
-            ),
-            mock.patch(
-                "symphony_linear.orchestrator.run_resume", return_value=("Done!", None)
-            ) as mock_run_resume,
-        ):
-            orchestrator._resume_pipeline(ts)
-
-        _, kwargs = mock_run_resume.call_args
-        assert kwargs.get("timeout_seconds") == 30  # global default
-
-    def test_project_config_re_read_on_every_resume(
-        self, orchestrator: Orchestrator, linear: FakeLinearClient
-    ) -> None:
-        """load_project_config is called fresh on each resume (no caching)."""
-        ts = self._make_ts()
-        orchestrator._state.upsert(ts)
-        linear.set_response("list_comments_since", [_make_comment("c1", "Go")])
-        with mock.patch(
-            "symphony_linear.orchestrator.load_project_config",
-            return_value=ProjectConfig(),
-        ) as mock_load:
-            with mock.patch(
-                "symphony_linear.orchestrator.run_resume", return_value=("Done!", None)
-            ):
-                orchestrator._resume_pipeline(ts)
-        mock_load.assert_called_once_with("/tmp/ws/TEAM-1")
-
-    def test_project_config_error_baseline_comment_when_post_fails_and_last_seen_is_none(
-        self, orchestrator: Orchestrator, linear: FakeLinearClient
-    ) -> None:
-        """When post fails AND last_seen is None, baseline to most recent comment."""
-        ts = self._make_ts(last_seen_comment_id=None)
-        orchestrator._state.upsert(ts)
-        linear.set_response(
-            "list_comments_since",
-            [_make_comment("cmt-human", "Fix please")],
-        )
-        linear.set_response("post_comment", LinearError("api down"))
-        with mock.patch(
-            "symphony_linear.orchestrator.load_project_config",
-            side_effect=ProjectConfigError("bad config"),
-        ):
-            orchestrator._resume_pipeline(ts)
-
-        updated = orchestrator._state.get("ticket-1")
-        assert updated is not None
-        assert updated.status == TicketStatus.failed
-        assert updated.setup_error == "project_config_invalid"
-        # When last_seen was None, baseline to the most recent comment.
-        assert updated.last_seen_comment_id == "cmt-human"
-
-    def test_project_config_error_preserves_existing_last_seen_when_post_fails(
-        self, orchestrator: Orchestrator, linear: FakeLinearClient
-    ) -> None:
-        """When post fails but last_seen already has a valid value, preserve it."""
-        ts = self._make_ts(last_seen_comment_id="cmt-prior-baseline")
-        orchestrator._state.upsert(ts)
-        linear.set_response(
-            "list_comments_since",
-            [_make_comment("cmt-human", "Fix please")],
-        )
-        linear.set_response("post_comment", LinearError("api down"))
-        with mock.patch(
-            "symphony_linear.orchestrator.load_project_config",
-            side_effect=ProjectConfigError("bad config"),
-        ):
-            orchestrator._resume_pipeline(ts)
-
-        updated = orchestrator._state.get("ticket-1")
-        assert updated is not None
-        assert updated.status == TicketStatus.failed
-        assert updated.setup_error == "project_config_invalid"
-        # Existing valid baseline must be kept, not overwritten.
-        assert updated.last_seen_comment_id == "cmt-prior-baseline"
 
 
 # ---------------------------------------------------------------------------
@@ -3916,39 +3032,6 @@ class TestAttachmentWiringInitial:
         assert kwargs.get("attachments_path") is not None
         assert "Rewritten desc" in kwargs["prompt"]
 
-    def test_rewritten_body_in_prompt(
-        self, orchestrator: Orchestrator, linear: FakeLinearClient
-    ) -> None:
-        """The initial prompt uses the rewritten body from process_attachments."""
-        with (
-            mock.patch("symphony_linear.orchestrator.clone_workspace") as mock_clone,
-            mock.patch(
-                "symphony_linear.orchestrator.finalize_workspace"
-            ) as mock_finalize,
-            mock.patch(
-                "symphony_linear.orchestrator.load_project_config"
-            ) as mock_load_config,
-            mock.patch("symphony_linear.orchestrator.run_initial") as mock_run_initial,
-            mock.patch(
-                "symphony_linear.orchestrator.process_attachments"
-            ) as mock_process,
-        ):
-            issue = self._setup_mocks_for_attachments(
-                linear, mock_clone, mock_finalize, mock_load_config
-            )
-            mock_run_initial.return_value = ("ses-abc", "Done.", None)
-            mock_process.return_value = AttachmentResult(
-                rewritten_body="Body with /tmp/symphony-attachments/img-0001.png",
-                file_paths=["/tmp/symphony-attachments/img-0001.png"],
-                skipped=[],
-                next_index=1,
-            )
-
-            orchestrator._new_ticket_pipeline(issue)
-
-        _, kwargs = mock_run_initial.call_args
-        assert "Body with /tmp/symphony-attachments/img-0001.png" in kwargs["prompt"]
-
     def test_skipped_comment_posted(
         self, orchestrator: Orchestrator, linear: FakeLinearClient
     ) -> None:
@@ -3988,43 +3071,6 @@ class TestAttachmentWiringInitial:
         # Footer should be "attachments"
         assert "*Symphony · attachments*" in skipped_bodies[0]
 
-    def test_attachment_count_incremented(
-        self, orchestrator: Orchestrator, linear: FakeLinearClient
-    ) -> None:
-        """attachment_count is incremented by the number of downloaded files."""
-        with (
-            mock.patch("symphony_linear.orchestrator.clone_workspace") as mock_clone,
-            mock.patch(
-                "symphony_linear.orchestrator.finalize_workspace"
-            ) as mock_finalize,
-            mock.patch(
-                "symphony_linear.orchestrator.load_project_config"
-            ) as mock_load_config,
-            mock.patch("symphony_linear.orchestrator.run_initial") as mock_run_initial,
-            mock.patch(
-                "symphony_linear.orchestrator.process_attachments"
-            ) as mock_process,
-        ):
-            issue = self._setup_mocks_for_attachments(
-                linear, mock_clone, mock_finalize, mock_load_config
-            )
-            mock_run_initial.return_value = ("ses-abc", "Done.", None)
-            mock_process.return_value = AttachmentResult(
-                rewritten_body="Body",
-                file_paths=[
-                    "/tmp/symphony-attachments/img-0001.png",
-                    "/tmp/symphony-attachments/img-0002.png",
-                ],
-                skipped=[],
-                next_index=2,
-            )
-
-            orchestrator._new_ticket_pipeline(issue)
-
-        ts = orchestrator._state.get("ticket-1")
-        assert ts is not None
-        assert ts.attachment_count == 2
-
     def test_attachment_count_persisted(
         self, orchestrator: Orchestrator, linear: FakeLinearClient
     ) -> None:
@@ -4061,39 +3107,6 @@ class TestAttachmentWiringInitial:
         ts = mgr2.get("ticket-1")
         assert ts is not None
         assert ts.attachment_count == 1
-
-    def test_plumbing_failure_does_not_break_turn(
-        self, orchestrator: Orchestrator, linear: FakeLinearClient
-    ) -> None:
-        """When process_attachments raises, the turn proceeds with original description."""
-        with (
-            mock.patch("symphony_linear.orchestrator.clone_workspace") as mock_clone,
-            mock.patch(
-                "symphony_linear.orchestrator.finalize_workspace"
-            ) as mock_finalize,
-            mock.patch(
-                "symphony_linear.orchestrator.load_project_config"
-            ) as mock_load_config,
-            mock.patch("symphony_linear.orchestrator.run_initial") as mock_run_initial,
-            mock.patch(
-                "symphony_linear.orchestrator.process_attachments"
-            ) as mock_process,
-        ):
-            issue = self._setup_mocks_for_attachments(
-                linear, mock_clone, mock_finalize, mock_load_config
-            )
-            mock_run_initial.return_value = ("ses-abc", "Done.", None)
-            mock_process.side_effect = RuntimeError("attachment plumbing bug")
-
-            orchestrator._new_ticket_pipeline(issue)
-
-        # run_initial must still be called.
-        mock_run_initial.assert_called_once()
-        _, kwargs = mock_run_initial.call_args
-        # Original description used (contains the raw image markdown).
-        assert "![img](http://ex.com/pic.png)" in kwargs["prompt"]
-        # No files and attachments_path is still passed (directory exists).
-        assert kwargs.get("files") == []
 
 
 class TestAttachmentWiringResume:
@@ -4148,43 +3161,10 @@ class TestAttachmentWiringResume:
         assert kwargs.get("attachments_path") is not None
         assert kwargs.get("message") == "Rewritten message"
 
-    def test_rewritten_message_passed(
+    def test_attachment_count_and_existing_count_propagated(
         self, orchestrator: Orchestrator, linear: FakeLinearClient
     ) -> None:
-        """run_resume receives the rewritten message body."""
-        ts = self._make_ts()
-        orchestrator._state.upsert(ts)
-        linear.set_response(
-            "list_comments_since",
-            [_make_comment("c1", "Look at ![img](http://ex.com/pic.png)")],
-        )
-        with (
-            mock.patch(
-                "symphony_linear.orchestrator.load_project_config",
-                return_value=ProjectConfig(),
-            ),
-            mock.patch("symphony_linear.orchestrator.run_resume") as mock_run_resume,
-            mock.patch(
-                "symphony_linear.orchestrator.process_attachments"
-            ) as mock_process,
-        ):
-            mock_run_resume.return_value = ("Done!", None)
-            mock_process.return_value = AttachmentResult(
-                rewritten_body="Look at /tmp/symphony-attachments/img-0001.png",
-                file_paths=["/tmp/symphony-attachments/img-0001.png"],
-                skipped=[],
-                next_index=1,
-            )
-
-            orchestrator._resume_pipeline(ts)
-
-        _, kwargs = mock_run_resume.call_args
-        assert kwargs.get("message") == "Look at /tmp/symphony-attachments/img-0001.png"
-
-    def test_attachment_count_incremented_on_resume(
-        self, orchestrator: Orchestrator, linear: FakeLinearClient
-    ) -> None:
-        """attachment_count is incremented on resume."""
+        """The existing count reaches process_attachments and the new files add to it."""
         ts = self._make_ts(attachment_count=5)
         orchestrator._state.upsert(ts)
         linear.set_response(
@@ -4214,73 +3194,10 @@ class TestAttachmentWiringResume:
 
             orchestrator._resume_pipeline(ts)
 
+        assert mock_process.call_args.kwargs.get("existing_count") == 5
         updated = orchestrator._state.get("ticket-1")
         assert updated is not None
         assert updated.attachment_count == 7
-
-    def test_existing_count_passed_correctly(
-        self, orchestrator: Orchestrator, linear: FakeLinearClient
-    ) -> None:
-        """process_attachments receives existing_count equal to current attachment_count."""
-        ts = self._make_ts(attachment_count=3)
-        orchestrator._state.upsert(ts)
-        linear.set_response(
-            "list_comments_since",
-            [_make_comment("c1", "img")],
-        )
-        with (
-            mock.patch(
-                "symphony_linear.orchestrator.load_project_config",
-                return_value=ProjectConfig(),
-            ),
-            mock.patch("symphony_linear.orchestrator.run_resume") as mock_run_resume,
-            mock.patch(
-                "symphony_linear.orchestrator.process_attachments"
-            ) as mock_process,
-        ):
-            mock_run_resume.return_value = ("Done!", None)
-            mock_process.return_value = AttachmentResult(
-                rewritten_body="img",
-                file_paths=["/tmp/symphony-attachments/img-0004.png"],
-                skipped=[],
-                next_index=1,
-            )
-
-            orchestrator._resume_pipeline(ts)
-
-        _, kwargs = mock_process.call_args
-        assert kwargs.get("existing_count") == 3
-
-    def test_plumbing_failure_does_not_break_resume(
-        self, orchestrator: Orchestrator, linear: FakeLinearClient
-    ) -> None:
-        """When process_attachments raises on resume, the turn proceeds with original message."""
-        ts = self._make_ts()
-        orchestrator._state.upsert(ts)
-        linear.set_response(
-            "list_comments_since",
-            [_make_comment("c1", "Hello ![img](http://ex.com/pic.png)")],
-        )
-        with (
-            mock.patch(
-                "symphony_linear.orchestrator.load_project_config",
-                return_value=ProjectConfig(),
-            ),
-            mock.patch("symphony_linear.orchestrator.run_resume") as mock_run_resume,
-            mock.patch(
-                "symphony_linear.orchestrator.process_attachments"
-            ) as mock_process,
-        ):
-            mock_run_resume.return_value = ("Done!", None)
-            mock_process.side_effect = RuntimeError("plumbing bug")
-
-            orchestrator._resume_pipeline(ts)
-
-        mock_run_resume.assert_called_once()
-        _, kwargs = mock_run_resume.call_args
-        # Original message passed through (contains raw markdown).
-        assert "![img](http://ex.com/pic.png)" in kwargs["message"]
-        assert kwargs.get("files") == []
 
 
 # ---------------------------------------------------------------------------
@@ -4336,23 +3253,31 @@ class TestTick:
         m_new.assert_not_called()
         m_resume.assert_not_called()
 
-    def test_setup_error_retried_on_comment(
-        self, orchestrator: Orchestrator, linear: FakeLinearClient
+    @pytest.mark.parametrize("setup_error", [None, "clone_failed"])
+    def test_failed_no_session_retried_on_comment(
+        self,
+        orchestrator: Orchestrator,
+        linear: FakeLinearClient,
+        setup_error: str | None,
     ) -> None:
-        """setup_error + human comment + no session_id → _new_ticket_pipeline."""
+        """A failed ticket without a session starts a fresh turn on a human comment."""
         self._add_state(
             orchestrator,
             status=TicketStatus.failed,
-            setup_error="clone_failed",
+            setup_error=setup_error,
             session_id=None,
             last_seen_comment_id="cmt-old",
         )
         linear.set_response("list_triggered_issues", [_make_issue()])
-        linear.set_response("list_comments_since", [_make_comment("c1", "hello")])
+        linear.set_response("list_comments_since", [_make_comment("c1", "try again")])
         with mock.patch.object(orchestrator, "_new_ticket_pipeline") as m:
             orchestrator._tick()
             time.sleep(0.2)
         m.assert_called_once()
+        # The pending human comment must reach the pipeline so it lands in the
+        # initial prompt.
+        pending = m.call_args[0][1]
+        assert "try again" in pending
 
     def test_setup_error_with_session_retried_to_resume(
         self, orchestrator: Orchestrator, linear: FakeLinearClient
@@ -4406,52 +3331,6 @@ class TestTick:
         m_resume.assert_called_once()
         model_passed = m_resume.call_args[0][1]
         assert model_passed == "anthropic/claude-opus-5"
-
-    def test_failed_no_session_retried_on_comment(
-        self, orchestrator: Orchestrator, linear: FakeLinearClient
-    ) -> None:
-        """Step 4: failed + no session_id + human comment → initial pipeline
-        carrying the pending comment."""
-        self._add_state(
-            orchestrator,
-            status=TicketStatus.failed,
-            session_id=None,
-            last_seen_comment_id="cmt-old",
-        )
-        linear.set_response("list_triggered_issues", [_make_issue()])
-        linear.set_response("list_comments_since", [_make_comment("c1", "try again")])
-        with mock.patch.object(orchestrator, "_new_ticket_pipeline") as m:
-            orchestrator._tick()
-            time.sleep(0.2)
-        m.assert_called_once()
-        # The pending human comment must reach the pipeline so it lands in the
-        # initial prompt (prompt assembly is covered end-to-end by
-        # test_needs_input_no_session_reruns_initial_with_comment).
-        pending = m.call_args[0][1]
-        assert "try again" in pending
-
-    def test_failed_no_session_skipped_without_comment(
-        self,
-        orchestrator: Orchestrator,
-        linear: FakeLinearClient,
-    ) -> None:
-        """Step 4: failed + no session + no new comment → no turn."""
-        self._add_state(
-            orchestrator,
-            status=TicketStatus.failed,
-            session_id=None,
-            last_seen_comment_id="cmt-err",
-        )
-        linear.set_response("list_triggered_issues", [_make_issue()])
-        linear.set_response("list_comments_since", [])
-        with (
-            mock.patch.object(orchestrator, "_new_ticket_pipeline") as m_new,
-            mock.patch.object(orchestrator, "_resume_pipeline") as m_resume,
-        ):
-            orchestrator._tick()
-            time.sleep(0.2)
-        m_new.assert_not_called()
-        m_resume.assert_not_called()
 
     def test_failed_with_session_schedules_resume(
         self, orchestrator: Orchestrator, linear: FakeLinearClient
@@ -4548,13 +3427,17 @@ class TestTick:
         m_new.assert_not_called()
         m_resume.assert_called_once()
 
-    def test_needs_input_no_session_without_comment_no_turn(
-        self, orchestrator: Orchestrator, linear: FakeLinearClient
+    @pytest.mark.parametrize("status", [TicketStatus.failed, TicketStatus.needs_input])
+    def test_no_session_without_comment_no_turn(
+        self,
+        orchestrator: Orchestrator,
+        linear: FakeLinearClient,
+        status: TicketStatus,
     ) -> None:
-        """needs_input + session_id None + no new human comment → no turn."""
+        """A sessionless ticket with no new human comment does not run."""
         self._add_state(
             orchestrator,
-            status=TicketStatus.needs_input,
+            status=status,
             session_id=None,
             last_seen_comment_id="cmt-old",
         )
@@ -4569,13 +3452,24 @@ class TestTick:
         m_new.assert_not_called()
         m_resume.assert_not_called()
 
-    def test_deleted_ticket_removes_workspace(
+    @pytest.mark.parametrize(
+        "issue",
+        [
+            _make_issue(labels=[]),
+            _make_issue(archivedAt=datetime(2025, 1, 1, tzinfo=timezone.utc)),
+            _make_issue(state="Backlog", labels=["Agent"]),
+            _make_issue(state="Done", labels=["Agent"]),
+        ],
+        ids=["label-removed", "archived", "non-active-state", "terminal-state"],
+    )
+    def test_untriggered_ticket_removes_workspace_and_state(
         self,
         orchestrator: Orchestrator,
         linear: FakeLinearClient,
         tmp_path: Path,
+        issue: Issue,
     ) -> None:
-        """Ticket gone from Linear (404) → state removed AND workspace removed."""
+        """Every untriggered ticket drops its state entry and workspace."""
         ws_root = tmp_path / "workspaces"
         ws_dir = ws_root / "TEAM-1" / "repo"
         ws_dir.mkdir(parents=True)
@@ -4583,113 +3477,7 @@ class TestTick:
 
         self._add_state(orchestrator, workspace_path=str(ws_dir))
         linear.set_response("list_triggered_issues", [])
-        linear.set_response("get_issue", LinearNotFoundError("gone"))
-
-        orchestrator._tick()
-        time.sleep(0.2)
-
-        assert orchestrator._state.get("ticket-1") is None
-        assert not ws_dir.exists()
-
-    def test_label_removed_removes_workspace(
-        self,
-        orchestrator: Orchestrator,
-        linear: FakeLinearClient,
-        tmp_path: Path,
-    ) -> None:
-        """Trigger label removed → workspace AND state entry deleted."""
-        ws_root = tmp_path / "workspaces"
-        ws_dir = ws_root / "TEAM-1" / "repo"
-        ws_dir.mkdir(parents=True)
-        (ws_dir / "sentinel").write_text("x")
-
-        self._add_state(orchestrator, workspace_path=str(ws_dir))
-        linear.set_response("list_triggered_issues", [])
-        # Returns issue WITHOUT the trigger label
-        linear.set_response("get_issue", _make_issue(labels=[]))
-
-        orchestrator._tick()
-        time.sleep(0.2)
-
-        assert orchestrator._state.get("ticket-1") is None
-        assert not ws_dir.exists()
-
-    def test_archived_ticket_cleaned_up(
-        self,
-        orchestrator: Orchestrator,
-        linear: FakeLinearClient,
-        tmp_path: Path,
-    ) -> None:
-        """Archived ticket → state removed AND workspace removed."""
-        ws_root = tmp_path / "workspaces"
-        ws_dir = ws_root / "TEAM-1" / "repo"
-        ws_dir.mkdir(parents=True)
-        (ws_dir / "sentinel").write_text("x")
-
-        self._add_state(orchestrator, workspace_path=str(ws_dir))
-        linear.set_response("list_triggered_issues", [])
-        linear.set_response(
-            "get_issue",
-            _make_issue(
-                archivedAt=datetime(2025, 1, 1, tzinfo=timezone.utc),
-            ),
-        )
-
-        orchestrator._tick()
-        time.sleep(0.2)
-
-        assert orchestrator._state.get("ticket-1") is None
-        assert not ws_dir.exists()
-
-    def test_non_active_non_terminal_state_cleaned_up(
-        self,
-        orchestrator: Orchestrator,
-        linear: FakeLinearClient,
-        tmp_path: Path,
-    ) -> None:
-        """Ticket in non-active, non-terminal state (Backlog) with label still on → cleanup."""
-        ws_root = tmp_path / "workspaces"
-        ws_dir = ws_root / "TEAM-1" / "repo"
-        ws_dir.mkdir(parents=True)
-        (ws_dir / "sentinel").write_text("x")
-
-        self._add_state(orchestrator, workspace_path=str(ws_dir))
-        linear.set_response("list_triggered_issues", [])
-        linear.set_response(
-            "get_issue",
-            _make_issue(
-                state="Backlog",
-                labels=["Agent"],  # trigger label still present
-            ),
-        )
-
-        orchestrator._tick()
-        time.sleep(0.2)
-
-        assert orchestrator._state.get("ticket-1") is None
-        assert not ws_dir.exists()
-
-    def test_terminal_state_cleaned_up(
-        self,
-        orchestrator: Orchestrator,
-        linear: FakeLinearClient,
-        tmp_path: Path,
-    ) -> None:
-        """Ticket in terminal state (Done) → state removed AND workspace removed."""
-        ws_root = tmp_path / "workspaces"
-        ws_dir = ws_root / "TEAM-1" / "repo"
-        ws_dir.mkdir(parents=True)
-        (ws_dir / "sentinel").write_text("x")
-
-        self._add_state(orchestrator, workspace_path=str(ws_dir))
-        linear.set_response("list_triggered_issues", [])
-        linear.set_response(
-            "get_issue",
-            _make_issue(
-                state="Done",
-                labels=["Agent"],
-            ),
-        )
+        linear.set_response("get_issue", issue)
 
         orchestrator._tick()
         time.sleep(0.2)
@@ -4878,14 +3666,21 @@ class TestTick:
         assert "*Symphony · cleanup*" in body
         assert "I also stopped the running agent turn." not in body
 
-    def test_delete_receipt_failure_does_not_block_cleanup(
+    @pytest.mark.parametrize(
+        ("path", "keeps_directory"),
+        [("delete", False), ("stop-tracking", True)],
+        ids=["delete", "stop-tracking"],
+    )
+    def test_cleanup_receipt_failure_does_not_block(
         self,
         orchestrator: Orchestrator,
         linear: FakeLinearClient,
         tmp_path: Path,
         dirty_summary: mock.MagicMock,
+        path: Literal["delete", "stop-tracking"],
+        keeps_directory: bool,
     ) -> None:
-        """A failed delete-receipt post does not stop the rmtree cleanup."""
+        """A failed delete receipt or stop-tracking notice never blocks cleanup."""
         ws_root = tmp_path / "workspaces"
         ws_dir = ws_root / "TEAM-1" / "repo"
         ws_dir.mkdir(parents=True)
@@ -4898,43 +3693,19 @@ class TestTick:
         )
         dirty_summary.return_value = "2 uncommitted files."
         linear.set_response("list_triggered_issues", [])
-        linear.set_response("get_issue", _make_issue(state="Done"))
+        if path == "delete":
+            linear.set_response("get_issue", _make_issue(state="Done"))
+        else:
+            linear.set_response(
+                "get_issue", _make_issue(state="Needs Input", labels=[])
+            )
         linear.set_response("post_comment", LinearError("post failed"))
 
         orchestrator._tick()
         time.sleep(0.2)
 
         assert orchestrator._state.get("ticket-1") is None
-        assert not ws_dir.exists()
-
-    def test_stop_tracking_notice_failure_does_not_block(
-        self,
-        orchestrator: Orchestrator,
-        linear: FakeLinearClient,
-        tmp_path: Path,
-        dirty_summary: mock.MagicMock,
-    ) -> None:
-        """A failed stop-tracking notice does not stop dropping the state entry."""
-        ws_root = tmp_path / "workspaces"
-        ws_dir = ws_root / "TEAM-1" / "repo"
-        ws_dir.mkdir(parents=True)
-        (ws_dir / "sentinel").write_text("x")
-
-        self._add_state(
-            orchestrator,
-            workspace_path=str(ws_dir),
-            cleanup_refused_state="Needs Input",
-        )
-        dirty_summary.return_value = "2 uncommitted files."
-        linear.set_response("list_triggered_issues", [])
-        linear.set_response("get_issue", _make_issue(state="Needs Input", labels=[]))
-        linear.set_response("post_comment", LinearError("post failed"))
-
-        orchestrator._tick()
-        time.sleep(0.2)
-
-        assert orchestrator._state.get("ticket-1") is None
-        assert ws_dir.exists()
+        assert ws_dir.exists() is keeps_directory
 
     def test_clean_workspace_cleanup_unchanged(
         self,
@@ -4965,30 +3736,6 @@ class TestTick:
         assert not ws_dir.exists()
         # No in-flight turn → cleanup stays silent.
         assert linear.calls.get("post_comment", []) == []
-
-    def test_deleted_ticket_dirty_workspace_removed(
-        self,
-        orchestrator: Orchestrator,
-        linear: FakeLinearClient,
-        tmp_path: Path,
-        dirty_summary: mock.MagicMock,
-    ) -> None:
-        """TrackerNotFoundError + dirty workspace → state dropped AND workspace removed."""
-        ws_root = tmp_path / "workspaces"
-        ws_dir = ws_root / "TEAM-1" / "repo"
-        ws_dir.mkdir(parents=True)
-        (ws_dir / "sentinel").write_text("x")
-
-        self._add_state(orchestrator, workspace_path=str(ws_dir))
-        dirty_summary.return_value = "2 uncommitted files."
-        linear.set_response("list_triggered_issues", [])
-        linear.set_response("get_issue", LinearNotFoundError("gone"))
-
-        orchestrator._tick()
-        time.sleep(0.2)
-
-        assert orchestrator._state.get("ticket-1") is None
-        assert not ws_dir.exists()
 
     # --- Step-3 in-flight turn stop ---
 
@@ -5249,6 +3996,33 @@ class TestTick:
             "transition_to_state", []
         )
 
+    @pytest.mark.parametrize("dirty", [False, True])
+    def test_deleted_ticket_removes_workspace(
+        self,
+        orchestrator: Orchestrator,
+        linear: FakeLinearClient,
+        tmp_path: Path,
+        dirty_summary: mock.MagicMock,
+        dirty: bool,
+    ) -> None:
+        """A deleted ticket removes its workspace even when it is dirty."""
+        ws_root = tmp_path / "workspaces"
+        ws_dir = ws_root / "TEAM-1" / "repo"
+        ws_dir.mkdir(parents=True)
+        (ws_dir / "sentinel").write_text("x")
+
+        self._add_state(orchestrator, workspace_path=str(ws_dir))
+        if dirty:
+            dirty_summary.return_value = "2 uncommitted files."
+        linear.set_response("list_triggered_issues", [])
+        linear.set_response("get_issue", LinearNotFoundError("gone"))
+
+        orchestrator._tick()
+        time.sleep(0.2)
+
+        assert orchestrator._state.get("ticket-1") is None
+        assert not ws_dir.exists()
+
     def test_deleted_ticket_in_flight_no_comment(
         self,
         orchestrator: Orchestrator,
@@ -5277,14 +4051,23 @@ class TestTick:
         assert not ws_dir.exists()
         assert linear.calls.get("post_comment", []) == []
 
-    def test_fetch_triggered_issues_includes_qa_state_when_set(
+    @pytest.mark.parametrize(
+        ("qa_state", "expected_states"),
+        [
+            ("In Review", ["In Progress", "Needs Input", "In Review"]),
+            (None, ["In Progress", "Needs Input"]),
+        ],
+        ids=["qa-configured", "qa-unset"],
+    )
+    def test_fetch_triggered_issues_polls_qa_state_only_when_set(
         self,
         tmp_path: Path,
         state_mgr: StateManager,
         linear: FakeLinearClient,
+        qa_state: str | None,
+        expected_states: list[str],
     ) -> None:
-        """_fetch_triggered_issues passes qa_state in active_states when configured."""
-        config = _make_config(tmp_path, linear={"qa_state": "In Review"})
+        config = _make_config(tmp_path, linear={"qa_state": qa_state})
         orch = Orchestrator(
             config=config,
             state=state_mgr,
@@ -5296,39 +4079,22 @@ class TestTick:
         calls = linear.calls.get("list_triggered_issues", [])
         assert len(calls) == 1
         _, active_states = calls[0]
-        assert "In Review" in active_states
-        assert "In Progress" in active_states
-        assert "Needs Input" in active_states
+        assert active_states == expected_states
 
-    def test_fetch_triggered_issues_excludes_qa_state_when_unset(
+    @pytest.mark.parametrize(
+        ("qa_state", "expected"),
+        [("In Review", True), (None, False)],
+        ids=["qa-configured", "qa-unset"],
+    )
+    def test_is_still_triggered_follows_qa_state_config(
         self,
         tmp_path: Path,
         state_mgr: StateManager,
         linear: FakeLinearClient,
+        qa_state: str | None,
+        expected: bool,
     ) -> None:
-        """_fetch_triggered_issues does not add a None qa_state to active_states."""
-        config = _make_config(tmp_path)  # qa_state defaults to None
-        orch = Orchestrator(
-            config=config,
-            state=state_mgr,
-            tracker=LinearTracker(linear=linear, config=config.linear),
-            workspace=tmp_path / "ws",
-        )  # type: ignore[arg-type]
-        linear.set_response("list_triggered_issues", [])
-        orch._fetch_triggered_issues()
-        calls = linear.calls.get("list_triggered_issues", [])
-        assert len(calls) == 1
-        _, active_states = calls[0]
-        assert active_states == ["In Progress", "Needs Input"]
-
-    def test_is_still_triggered_true_for_qa_state(
-        self,
-        tmp_path: Path,
-        state_mgr: StateManager,
-        linear: FakeLinearClient,
-    ) -> None:
-        """_is_still_triggered returns True when issue is in qa_state."""
-        config = _make_config(tmp_path, linear={"qa_state": "In Review"})
+        config = _make_config(tmp_path, linear={"qa_state": qa_state})
         orch = Orchestrator(
             config=config,
             state=state_mgr,
@@ -5336,24 +4102,7 @@ class TestTick:
             workspace=tmp_path / "ws",
         )  # type: ignore[arg-type]
         issue = _make_issue(state="In Review", labels=["Agent"])
-        assert orch._is_still_triggered(issue) is True
-
-    def test_is_still_triggered_false_for_qa_state_when_unset(
-        self,
-        tmp_path: Path,
-        state_mgr: StateManager,
-        linear: FakeLinearClient,
-    ) -> None:
-        """_is_still_triggered returns False for 'In Review' when qa_state is not configured."""
-        config = _make_config(tmp_path)  # qa_state is None
-        orch = Orchestrator(
-            config=config,
-            state=state_mgr,
-            tracker=LinearTracker(linear=linear, config=config.linear),
-            workspace=tmp_path / "ws",
-        )  # type: ignore[arg-type]
-        issue = _make_issue(state="In Review", labels=["Agent"])
-        assert orch._is_still_triggered(issue) is False
+        assert orch._is_still_triggered(issue) is expected
 
     def test_qa_state_ticket_not_cleaned_up(
         self,
@@ -5404,68 +4153,13 @@ class TestTick:
     # and handles its own early-return. _rerun_interrupted_turn is still
     # skipped for QA tickets (it has no comment gating).
 
-    def test_stale_working_qa_ticket_repaired_without_scheduling(
+    def test_stale_working_qa_ticket_waits_for_human_reply(
         self,
         tmp_path: Path,
         state_mgr: StateManager,
         linear: FakeLinearClient,
     ) -> None:
-        """A stale working QA ticket waits for a human reply instead of a recovery turn."""
-        config = _make_config(tmp_path, linear={"qa_state": "In Review"})
-        orch = Orchestrator(
-            config=config,
-            state=state_mgr,
-            tracker=LinearTracker(linear=linear, config=config.linear),
-            workspace=tmp_path / "ws",
-        )  # type: ignore[arg-type]
-
-        ts = TicketState(
-            ticket_id="ticket-1",
-            ticket_identifier="TEAM-1",
-            repo_url="https://x",
-            workspace_path="/tmp/ws/TEAM-1",
-            branch="main",
-            status=TicketStatus.working,
-            session_id="ses-abc",
-            last_seen_comment_id="cmt-seen-1",
-        )
-        orch._state.upsert(ts)
-
-        qa_issue = _make_issue(id="ticket-1", state="In Review", labels=["Agent"])
-        linear.set_response("list_triggered_issues", [qa_issue])
-
-        with (
-            mock.patch.object(orch, "_reconcile_serve"),
-            mock.patch.object(orch, "_schedule_task") as m_schedule,
-        ):
-            orch._tick()
-
-        m_schedule.assert_not_called()
-        updated = orch._state.get("ticket-1")
-        assert updated is not None
-        assert updated.status == TicketStatus.needs_input
-        # The notice becomes the new anchor: earlier comments are not replayed.
-        assert updated.last_seen_comment_id == "cmt-ticket-1-2"
-        posted = [
-            body
-            for ticket_id, body in linear.calls.get("post_comment", [])
-            if ticket_id == "ticket-1"
-        ]
-        assert len(posted) == 1
-        assert (
-            "The daemon restarted during a turn, and this ticket is now in QA"
-            in posted[0]
-        )
-        assert "*Symphony · qa*" in posted[0]
-
-    def test_stale_working_qa_ticket_next_tick_does_not_resume(
-        self,
-        tmp_path: Path,
-        state_mgr: StateManager,
-        linear: FakeLinearClient,
-    ) -> None:
-        """A repaired stale QA ticket stays parked: the repair notice anchors
-        last_seen, so no earlier comment re-enters the work."""
+        """A repaired stale QA ticket stays parked until a new human comment."""
         config = _make_config(tmp_path, linear={"qa_state": "In Review"})
         orch = Orchestrator(
             config=config,
@@ -5526,6 +4220,17 @@ class TestTick:
         assert updated is not None
         assert updated.status == TicketStatus.needs_input
         assert updated.last_seen_comment_id == "cmt-ticket-1-2"
+        posted = [
+            body
+            for ticket_id, body in linear.calls.get("post_comment", [])
+            if ticket_id == "ticket-1"
+        ]
+        assert len(posted) == 1
+        assert (
+            "The daemon restarted during a turn, and this ticket is now in QA"
+            in posted[0]
+        )
+        assert "*Symphony · qa*" in posted[0]
 
     def test_stale_working_qa_ticket_human_reply_resumes(
         self,
@@ -5621,84 +4326,49 @@ class TestTick:
 
         m_resume.assert_called_once()
 
-    def test_qa_ticket_no_new_comments_no_resume(
-        self,
-        tmp_path: Path,
-        state_mgr: StateManager,
-        linear: FakeLinearClient,
-    ) -> None:
-        """QA ticket with no new comments → _resume_pipeline scheduled but run_resume not called."""
-        config = _make_config(tmp_path, linear={"qa_state": "In Review"})
-        orch = Orchestrator(
-            config=config,
-            state=state_mgr,
-            tracker=LinearTracker(linear=linear, config=config.linear),
-            workspace=tmp_path / "ws",
-        )  # type: ignore[arg-type]
-
-        ts = TicketState(
-            ticket_id="ticket-1",
-            ticket_identifier="TEAM-1",
-            repo_url="https://x",
-            workspace_path="/tmp/ws/TEAM-1",
-            branch="main",
-            status=TicketStatus.needs_input,
-            session_id="ses-abc",
-            last_seen_comment_id="cmt-seen-1",
-        )
-        orch._state.upsert(ts)
-
-        qa_issue = _make_issue(id="ticket-1", state="In Review", labels=["Agent"])
-        linear.set_response("list_triggered_issues", [qa_issue])
-        linear.set_response("list_comments_since", [])  # no new comments
-
-        with mock.patch(
-            "symphony_linear.orchestrator.start_serve", return_value=_make_fake_proc()
-        ):
-            with mock.patch("symphony_linear.orchestrator.run_resume") as m_run_resume:
-                orch._tick()
-                time.sleep(0.2)
-
-        m_run_resume.assert_not_called()
-
-    def test_qa_ticket_bot_comment_only_no_resume(
-        self,
-        tmp_path: Path,
-        state_mgr: StateManager,
-        linear: FakeLinearClient,
-    ) -> None:
-        """QA ticket with only a bot comment → run_resume not called."""
-
-        config = _make_config(tmp_path, linear={"qa_state": "In Review"})
-        orch = Orchestrator(
-            config=config,
-            state=state_mgr,
-            tracker=LinearTracker(linear=linear, config=config.linear),
-            workspace=tmp_path / "ws",
-        )  # type: ignore[arg-type]
-
-        ts = TicketState(
-            ticket_id="ticket-1",
-            ticket_identifier="TEAM-1",
-            repo_url="https://x",
-            workspace_path="/tmp/ws/TEAM-1",
-            branch="main",
-            status=TicketStatus.needs_input,
-            session_id="ses-abc",
-            last_seen_comment_id="cmt-seen-1",
-        )
-        orch._state.upsert(ts)
-
-        qa_issue = _make_issue(id="ticket-1", state="In Review", labels=["Agent"])
-        linear.set_response("list_triggered_issues", [qa_issue])
-        linear.set_response(
-            "list_comments_since",
+    @pytest.mark.parametrize(
+        "comments",
+        [
+            [],
             [
                 _make_comment(
                     "c1", "Bot message\n\n*Symphony · error*", user_id="usr-bot"
-                ),
+                )
             ],
+        ],
+        ids=["no-comments", "bot-only"],
+    )
+    def test_qa_ticket_without_human_comment_does_not_resume(
+        self,
+        tmp_path: Path,
+        state_mgr: StateManager,
+        linear: FakeLinearClient,
+        comments: list[Comment],
+    ) -> None:
+        """A QA ticket resumes only for a new human comment."""
+        config = _make_config(tmp_path, linear={"qa_state": "In Review"})
+        orch = Orchestrator(
+            config=config,
+            state=state_mgr,
+            tracker=LinearTracker(linear=linear, config=config.linear),
+            workspace=tmp_path / "ws",
+        )  # type: ignore[arg-type]
+
+        ts = TicketState(
+            ticket_id="ticket-1",
+            ticket_identifier="TEAM-1",
+            repo_url="https://x",
+            workspace_path="/tmp/ws/TEAM-1",
+            branch="main",
+            status=TicketStatus.needs_input,
+            session_id="ses-abc",
+            last_seen_comment_id="cmt-seen-1",
         )
+        orch._state.upsert(ts)
+
+        qa_issue = _make_issue(id="ticket-1", state="In Review", labels=["Agent"])
+        linear.set_response("list_triggered_issues", [qa_issue])
+        linear.set_response("list_comments_since", comments)
 
         with mock.patch(
             "symphony_linear.orchestrator.start_serve", return_value=_make_fake_proc()
@@ -5739,18 +4409,27 @@ class TestTick:
 
     # --- Session snapshotting during cleanup ---
 
+    @pytest.mark.parametrize("has_prior_snapshot", [False, True])
     def test_cleanup_snapshots_session_on_untrigger(
         self,
         orchestrator: Orchestrator,
         linear: FakeLinearClient,
         tmp_path: Path,
+        has_prior_snapshot: bool,
     ) -> None:
-        """Untriggered ticket with session_id → snapshot saved to sessions map."""
+        """An untriggered ticket snapshots its live session, replacing an older one."""
+        from symphony_linear.state import SessionRecord
+
         ws_root = tmp_path / "workspaces"
         ws_dir = ws_root / "TEAM-1" / "repo"
         ws_dir.mkdir(parents=True)
         (ws_dir / "sentinel").write_text("x")
 
+        if has_prior_snapshot:
+            orchestrator._state.set_session(
+                "ticket-1",
+                SessionRecord(session_id="ses-old", last_seen_comment_id="cmt-old"),
+            )
         self._add_state(
             orchestrator,
             workspace_path=str(ws_dir),
@@ -5763,9 +4442,7 @@ class TestTick:
         orchestrator._tick()
         time.sleep(0.2)
 
-        # State entry removed.
         assert orchestrator._state.get("ticket-1") is None
-        # Session snapshot persisted.
         sr = orchestrator._state.get_session("ticket-1")
         assert sr is not None
         assert sr.session_id == "ses-abc"
@@ -5832,43 +4509,6 @@ class TestTick:
         assert orchestrator._state.get("ticket-1") is None
         assert orchestrator._state.get_session("ticket-1") is None
 
-    def test_cleanup_snapshots_overwrite_prior_session(
-        self,
-        orchestrator: Orchestrator,
-        linear: FakeLinearClient,
-        tmp_path: Path,
-    ) -> None:
-        """Repeated trigger→cleanup cycles overwrite the session record with fresh values."""
-        from symphony_linear.state import SessionRecord
-
-        ws_root = tmp_path / "workspaces"
-        ws_dir = ws_root / "TEAM-1" / "repo"
-        ws_dir.mkdir(parents=True)
-        (ws_dir / "sentinel").write_text("x")
-
-        # Pre-populate an old session.
-        orchestrator._state.set_session(
-            "ticket-1",
-            SessionRecord(session_id="ses-old", last_seen_comment_id="cmt-old"),
-        )
-
-        self._add_state(
-            orchestrator,
-            workspace_path=str(ws_dir),
-            session_id="ses-new",
-            last_seen_comment_id="cmt-new",
-        )
-        linear.set_response("list_triggered_issues", [])
-        linear.set_response("get_issue", _make_issue(labels=[]))
-
-        orchestrator._tick()
-        time.sleep(0.2)
-
-        sr = orchestrator._state.get_session("ticket-1")
-        assert sr is not None
-        assert sr.session_id == "ses-new"
-        assert sr.last_seen_comment_id == "cmt-new"
-
     # --- Mid-turn comment warnings (step-4 working branch) ---
 
     def _simulate_in_flight(
@@ -5911,11 +4551,15 @@ class TestTick:
         self._simulate_in_flight(orchestrator)
 
         with mock.patch.object(orchestrator, "_rerun_interrupted_turn") as m_rerun:
+            # The marker advance must silence the following tick for the same input.
+            orchestrator._tick()
+            time.sleep(0.2)
             orchestrator._tick()
             time.sleep(0.2)
 
         m_rerun.assert_not_called()
-        # Exactly one warning, verbatim body with the 'ignored' footer kind.
+        # Exactly one warning across both ticks, verbatim body with the
+        # 'ignored' footer kind.
         posts = self._posted_bodies(linear)
         assert posts == [_IGNORED_COMMENT_BODY + "\n\n*Symphony · ignored*"]
         # Only the in-memory turn marker advances to the *newest* human
@@ -6083,46 +4727,6 @@ class TestTick:
         ts = orchestrator._state.get("ticket-1")
         assert ts is not None
         assert ts.last_seen_comment_id == "cmt-seen-1"
-
-    def test_working_in_flight_no_second_warning_on_next_tick(
-        self, orchestrator: Orchestrator, linear: FakeLinearClient
-    ) -> None:
-        """The marker advance silences the following tick for the same input."""
-        self._add_state(
-            orchestrator,
-            status=TicketStatus.working,
-            session_id="ses-abc",
-            last_seen_comment_id="cmt-seen-1",
-        )
-        linear.set_response("list_triggered_issues", [_make_issue()])
-        human = _make_comment("cmt-human", "mid-turn comment")
-        # Emulate the tracker's positional semantics: the comment is only
-        # "new" while the since point sits before it.  The first tick warns
-        # (since = the turn marker), and the warning advances the turn
-        # marker past the comment, so the second tick fetches since the
-        # comment and finds nothing.
-        linear.list_comments_since = mock.Mock(  # type: ignore[method-assign]
-            side_effect=lambda _issue_id, comment_id: (
-                [human] if comment_id == "cmt-trigger" else []
-            )
-        )
-        self._simulate_in_flight(orchestrator)
-
-        orchestrator._tick()
-        time.sleep(0.2)
-        orchestrator._tick()
-        time.sleep(0.2)
-
-        # One warning total across both ticks.
-        assert self._posted_bodies(linear) == [
-            _IGNORED_COMMENT_BODY + "\n\n*Symphony · ignored*"
-        ]
-        ts = orchestrator._state.get("ticket-1")
-        assert ts is not None
-        # The warning is read-only: last_seen stays untouched; only the
-        # in-memory turn marker advances (that is the re-warn guard).
-        assert ts.last_seen_comment_id == "cmt-seen-1"
-        assert orchestrator._turn_input_marker["ticket-1"] == "cmt-human"
 
     def test_working_in_flight_warn_post_failure_still_advances(
         self, orchestrator: Orchestrator, linear: FakeLinearClient
@@ -6343,15 +4947,6 @@ class TestTick:
         assert ts.last_seen_comment_id == "cmt-seen-1"
         assert "ticket-1" not in orchestrator._turn_input_marker
 
-    def test_task_wrapper_pops_turn_input_marker(
-        self, orchestrator: Orchestrator, linear: FakeLinearClient
-    ) -> None:
-        """_task_wrapper cleans up the turn-input marker with the task, so a
-        stale marker can never leak into the next turn."""
-        orchestrator._turn_input_marker["ticket-1"] = "cmt-trigger"
-        orchestrator._task_wrapper("ticket-1", lambda: None)
-        assert "ticket-1" not in orchestrator._turn_input_marker
-
 
 # ---------------------------------------------------------------------------
 # Startup recovery
@@ -6375,19 +4970,6 @@ class TestStartupRecovery:
         ts = TicketState(**defaults)
         orchestrator._state.upsert(ts)
         return ts
-
-    def test_bootstrapping_dropped(self, orchestrator: Orchestrator) -> None:
-        ts = TicketState(
-            ticket_id="ticket-1",
-            ticket_identifier="TEAM-1",
-            repo_url="https://x",
-            workspace_path="/tmp/x",
-            branch="main",
-            status=TicketStatus.bootstrapping,
-        )
-        orchestrator._state.upsert(ts)
-        orchestrator._recover_state()
-        assert orchestrator._state.get("ticket-1") is None
 
     def test_working_left_alone_by_recover_state(
         self, orchestrator: Orchestrator, linear: FakeLinearClient
@@ -6538,29 +5120,6 @@ class TestRerunInterruptedTurn:
         # The replay path fixed its input via a fresh baseline fetch: the
         # turn marker is the newest comment id at that moment.
         assert orchestrator._turn_input_marker.get("ticket-1") == "cmt-new"
-
-    def test_resume_rerun_mocked_pipeline(
-        self, orchestrator: Orchestrator, linear: FakeLinearClient
-    ) -> None:
-        """_resume_pipeline is invoked with the precomputed replay message.
-
-        The per-issue model override is resolved from the issue's labels and
-        passed positionally; the default issue has no Model: label, so it is
-        None here.
-        """
-        self._add_working(orchestrator)
-        pending_comment = _make_comment("cmt-new", "please continue")
-        linear.set_response("list_comments_since", [pending_comment])
-        with mock.patch.object(orchestrator, "_resume_pipeline") as m_resume:
-            orchestrator._rerun_interrupted_turn(
-                orchestrator._state.get("ticket-1"), _make_issue()
-            )
-        ts = orchestrator._state.get("ticket-1")
-        assert ts is not None
-        assert ts.interrupted_turns == 1
-        m_resume.assert_called_once_with(
-            ts, None, replay_message=_format_comments_message([pending_comment])
-        )
 
     def test_resume_rerun_resolves_model_from_labels(
         self, orchestrator: Orchestrator, linear: FakeLinearClient
@@ -7070,67 +5629,66 @@ class TestCancellation:
 
 
 class TestHidePaths:
-    def test_hide_paths_passed_to_run_initial(
-        self, orchestrator: Orchestrator, linear: FakeLinearClient
+    @pytest.mark.parametrize("pipeline", ["initial", "resume"])
+    def test_hide_paths_passed_to_agent_turn(
+        self,
+        orchestrator: Orchestrator,
+        linear: FakeLinearClient,
+        pipeline: Literal["initial", "resume"],
     ) -> None:
-        linear.set_response(
-            "get_project",
-            Project(
-                id="proj-1",
-                name="Test",
-                links=[
-                    ProjectLink(label="Repo", url="https://github.com/org/repo.git")
-                ],
-            ),
-        )
-        linear.set_response("get_issue", _make_issue(description="Fix"))
-        with (
-            mock.patch(
-                "symphony_linear.orchestrator.clone_workspace",
-                return_value=("/tmp/ws/TEAM-1", False),
-            ),
-            mock.patch(
-                "symphony_linear.orchestrator.finalize_workspace",
-            ),
-            mock.patch(
-                "symphony_linear.orchestrator.load_project_config",
-                return_value=ProjectConfig(),
-            ),
-            mock.patch(
-                "symphony_linear.orchestrator.run_initial",
-                return_value=("ses", "msg", None),
-            ) as m_oc,
-        ):
-            orchestrator._new_ticket_pipeline(_make_issue())
-        _, kwargs = m_oc.call_args
-        assert kwargs.get("hide_paths") == ["/fake/secret"]
-
-    def test_hide_paths_passed_to_run_resume(
-        self, orchestrator: Orchestrator, linear: FakeLinearClient
-    ) -> None:
-        ts = TicketState(
-            ticket_id="ticket-1",
-            ticket_identifier="TEAM-1",
-            repo_url="https://x",
-            workspace_path=str(orchestrator._workspace / "TEAM-1" / "repo"),
-            branch="main",
-            status=TicketStatus.needs_input,
-            session_id="ses-abc",
-            last_seen_comment_id="cmt-seen-1",
-        )
-        orchestrator._state.upsert(ts)
-        linear.set_response("list_comments_since", [_make_comment("c1", "Go")])
-        with (
-            mock.patch(
-                "symphony_linear.orchestrator.load_project_config",
-                return_value=ProjectConfig(),
-            ),
-            mock.patch(
-                "symphony_linear.orchestrator.run_resume", return_value=("Done!", None)
-            ) as m_oc,
-        ):
-            orchestrator._resume_pipeline(ts)
-        _, kwargs = m_oc.call_args
+        if pipeline == "initial":
+            linear.set_response(
+                "get_project",
+                Project(
+                    id="proj-1",
+                    name="Test",
+                    links=[
+                        ProjectLink(label="Repo", url="https://github.com/org/repo.git")
+                    ],
+                ),
+            )
+            linear.set_response("get_issue", _make_issue(description="Fix"))
+            with (
+                mock.patch(
+                    "symphony_linear.orchestrator.clone_workspace",
+                    return_value=("/tmp/ws/TEAM-1", False),
+                ),
+                mock.patch("symphony_linear.orchestrator.finalize_workspace"),
+                mock.patch(
+                    "symphony_linear.orchestrator.load_project_config",
+                    return_value=ProjectConfig(),
+                ),
+                mock.patch(
+                    "symphony_linear.orchestrator.run_initial",
+                    return_value=("ses", "msg", None),
+                ) as launch,
+            ):
+                orchestrator._new_ticket_pipeline(_make_issue())
+        else:
+            ts = TicketState(
+                ticket_id="ticket-1",
+                ticket_identifier="TEAM-1",
+                repo_url="https://x",
+                workspace_path=str(orchestrator._workspace / "TEAM-1" / "repo"),
+                branch="main",
+                status=TicketStatus.needs_input,
+                session_id="ses-abc",
+                last_seen_comment_id="cmt-seen-1",
+            )
+            orchestrator._state.upsert(ts)
+            linear.set_response("list_comments_since", [_make_comment("c1", "Go")])
+            with (
+                mock.patch(
+                    "symphony_linear.orchestrator.load_project_config",
+                    return_value=ProjectConfig(),
+                ),
+                mock.patch(
+                    "symphony_linear.orchestrator.run_resume",
+                    return_value=("Done!", None),
+                ) as launch,
+            ):
+                orchestrator._resume_pipeline(ts)
+        _, kwargs = launch.call_args
         assert kwargs.get("hide_paths") == ["/fake/secret"]
 
 
@@ -7371,153 +5929,109 @@ class TestWorkspaceRootMasking:
         m_finalize.assert_not_called()
         m_oc.assert_not_called()
 
-    def test_root_masked_for_finalize_workspace(
-        self, tmp_path: Path, state_mgr: StateManager, linear: FakeLinearClient
+    @pytest.mark.parametrize("launch_point", ["initial", "resume", "serve"])
+    def test_root_masked_at_every_launch_point(
+        self,
+        tmp_path: Path,
+        state_mgr: StateManager,
+        linear: FakeLinearClient,
+        launch_point: Literal["initial", "resume", "serve"],
     ) -> None:
-        """The .symphony/setup sandbox is masked too."""
-        orch = self._make_orchestrator(tmp_path, state_mgr, linear)
-        root = orch._workspace
-        root.mkdir()
-        (root / "TEAM-2").mkdir()
-        (root / "config.yaml").write_text("api_key: super-secret\n")
-        linear.set_response(
-            "get_project",
-            Project(
-                id="proj-1",
-                name="Test",
-                links=[
-                    ProjectLink(label="Repo", url="https://github.com/org/repo.git")
-                ],
-            ),
+        """Every sandbox launch hides the workspace root's secrets and siblings."""
+        orch = self._make_orchestrator(
+            tmp_path, state_mgr, linear, qa=launch_point == "serve"
         )
-        linear.set_response("get_issue", _make_issue(description="Fix"))
-        with (
-            mock.patch(
-                "symphony_linear.orchestrator.clone_workspace",
-                return_value=("/tmp/ws/TEAM-1", False),
-            ),
-            mock.patch(
-                "symphony_linear.orchestrator.finalize_workspace",
-            ) as m_finalize,
-            mock.patch(
-                "symphony_linear.orchestrator.load_project_config",
-                return_value=ProjectConfig(),
-            ),
-            mock.patch(
-                "symphony_linear.orchestrator.run_initial",
-                return_value=("ses", "msg", None),
-            ),
-        ):
-            orch._new_ticket_pipeline(_make_issue())
-        _, kwargs = m_finalize.call_args
-        hide = kwargs["sandbox_hide_paths"]
-        assert str(root / "TEAM-2") in hide
-        assert str(root / "config.yaml") in hide
-        assert str(root / "TEAM-1") not in hide
-
-    def test_root_masked_for_run_initial(
-        self, tmp_path: Path, state_mgr: StateManager, linear: FakeLinearClient
-    ) -> None:
-        orch = self._make_orchestrator(tmp_path, state_mgr, linear)
         root = orch._workspace
         root.mkdir()
         (root / "TEAM-2").mkdir()
-        (root / "config.yaml").write_text("api_key: super-secret\n")
-        linear.set_response(
-            "get_project",
-            Project(
-                id="proj-1",
-                name="Test",
-                links=[
-                    ProjectLink(label="Repo", url="https://github.com/org/repo.git")
-                ],
-            ),
-        )
-        linear.set_response("get_issue", _make_issue(description="Fix"))
-        with (
-            mock.patch(
-                "symphony_linear.orchestrator.clone_workspace",
-                return_value=("/tmp/ws/TEAM-1", False),
-            ),
-            mock.patch(
-                "symphony_linear.orchestrator.finalize_workspace",
-            ),
-            mock.patch(
-                "symphony_linear.orchestrator.load_project_config",
-                return_value=ProjectConfig(),
-            ),
-            mock.patch(
-                "symphony_linear.orchestrator.run_initial",
-                return_value=("ses", "msg", None),
-            ) as m_oc,
-        ):
-            orch._new_ticket_pipeline(_make_issue())
-        _, kwargs = m_oc.call_args
-        hide = kwargs["hide_paths"]
+        if launch_point == "resume":
+            (root / "TEAM-1").mkdir()
+            (root / "state.json").write_text('{"secret": true}')
+            secret = root / "state.json"
+        else:
+            (root / "config.yaml").write_text("api_key: super-secret\n")
+            secret = root / "config.yaml"
+
+        if launch_point == "serve":
+            _add_ticket_state(orch, workspace_path=str(root / "TEAM-1" / "repo"))
+            issue = _make_qa_issue()
+            with mock.patch(
+                "symphony_linear.orchestrator.start_serve",
+                return_value=_make_fake_proc(returncode=None),
+            ) as m_serve:
+                orch._reconcile_serve([issue], {issue.id: issue})
+            m_serve.assert_called_once()
+            _, kwargs = m_serve.call_args
+            hide = kwargs["hide_paths"]
+        elif launch_point == "resume":
+            ts = TicketState(
+                ticket_id="ticket-1",
+                ticket_identifier="TEAM-1",
+                repo_url="https://x",
+                workspace_path=str(root / "TEAM-1"),
+                branch="main",
+                status=TicketStatus.needs_input,
+                session_id="ses-abc",
+                last_seen_comment_id="cmt-seen-1",
+            )
+            orch._state.upsert(ts)
+            linear.set_response("list_comments_since", [_make_comment("c1", "Go")])
+            with (
+                mock.patch(
+                    "symphony_linear.orchestrator.load_project_config",
+                    return_value=ProjectConfig(),
+                ),
+                mock.patch(
+                    "symphony_linear.orchestrator.run_resume",
+                    return_value=("Done!", None),
+                ) as m_resume,
+            ):
+                orch._resume_pipeline(ts)
+            _, kwargs = m_resume.call_args
+            hide = kwargs["hide_paths"]
+        else:
+            linear.set_response(
+                "get_project",
+                Project(
+                    id="proj-1",
+                    name="Test",
+                    links=[
+                        ProjectLink(label="Repo", url="https://github.com/org/repo.git")
+                    ],
+                ),
+            )
+            linear.set_response("get_issue", _make_issue(description="Fix"))
+            with (
+                mock.patch(
+                    "symphony_linear.orchestrator.clone_workspace",
+                    return_value=("/tmp/ws/TEAM-1", False),
+                ),
+                mock.patch(
+                    "symphony_linear.orchestrator.finalize_workspace",
+                ) as m_finalize,
+                mock.patch(
+                    "symphony_linear.orchestrator.load_project_config",
+                    return_value=ProjectConfig(),
+                ),
+                mock.patch(
+                    "symphony_linear.orchestrator.run_initial",
+                    return_value=("ses", "msg", None),
+                ) as m_initial,
+            ):
+                orch._new_ticket_pipeline(_make_issue())
+            hide = m_finalize.call_args.kwargs["sandbox_hide_paths"]
+            initial_hide = m_initial.call_args.kwargs["hide_paths"]
+            # The setup sandbox and the agent turn get the same mask, which
+            # includes the configured hide paths.
+            assert "/fake/secret" in hide
+            assert "/fake/secret" in initial_hide
+            assert str(root / "TEAM-2") in initial_hide
+            assert str(secret) in initial_hide
+            assert str(root / "TEAM-1") not in initial_hide
+
+        assert "/fake/secret" in hide
         assert str(root / "TEAM-2") in hide
-        assert str(root / "config.yaml") in hide
-        assert str(root / "TEAM-1") not in hide
-
-    def test_root_masked_for_run_resume(
-        self, tmp_path: Path, state_mgr: StateManager, linear: FakeLinearClient
-    ) -> None:
-        orch = self._make_orchestrator(tmp_path, state_mgr, linear)
-        root = orch._workspace
-        root.mkdir()
-        (root / "TEAM-1").mkdir()
-        (root / "TEAM-2").mkdir()
-        (root / "state.json").write_text('{"secret": true}')
-        ts = TicketState(
-            ticket_id="ticket-1",
-            ticket_identifier="TEAM-1",
-            repo_url="https://x",
-            workspace_path=str(root / "TEAM-1"),
-            branch="main",
-            status=TicketStatus.needs_input,
-            session_id="ses-abc",
-            last_seen_comment_id="cmt-seen-1",
-        )
-        orch._state.upsert(ts)
-        linear.set_response("list_comments_since", [_make_comment("c1", "Go")])
-        with (
-            mock.patch(
-                "symphony_linear.orchestrator.load_project_config",
-                return_value=ProjectConfig(),
-            ),
-            mock.patch(
-                "symphony_linear.orchestrator.run_resume", return_value=("Done!", None)
-            ) as m_oc,
-        ):
-            orch._resume_pipeline(ts)
-        _, kwargs = m_oc.call_args
-        hide = kwargs["hide_paths"]
-        assert str(root / "TEAM-2") in hide
-        assert str(root / "state.json") in hide
-        assert str(root / "TEAM-1") not in hide
-
-    def test_root_masked_for_start_serve(
-        self, tmp_path: Path, state_mgr: StateManager, linear: FakeLinearClient
-    ) -> None:
-        orch = self._make_orchestrator(tmp_path, state_mgr, linear, qa=True)
-        root = orch._workspace
-        root.mkdir()
-        (root / "TEAM-2").mkdir()
-        (root / "config.yaml").write_text("api_key: super-secret\n")
-        _add_ticket_state(orch, workspace_path=str(root / "TEAM-1" / "repo"))
-
-        issue = _make_qa_issue()
-        fake_proc = _make_fake_proc(returncode=None)
-
-        with mock.patch(
-            "symphony_linear.orchestrator.start_serve", return_value=fake_proc
-        ) as m_serve:
-            orch._reconcile_serve([issue], {issue.id: issue})
-
-        m_serve.assert_called_once()
-        _, kwargs = m_serve.call_args
-        hide = kwargs["hide_paths"]
-        assert str(root / "TEAM-2") in hide
-        assert str(root / "config.yaml") in hide
+        assert str(secret) in hide
         assert str(root / "TEAM-1") not in hide
 
     def test_start_serve_excludes_checkout_when_identifier_changed(
@@ -7711,103 +6225,72 @@ class TestWorkspaceRootMaskingIntegration:
 
 
 class TestExtraRWPaths:
-    def test_extra_rw_passed_to_finalize(
-        self, orchestrator: Orchestrator, linear: FakeLinearClient
+    @pytest.mark.parametrize("pipeline", ["initial", "resume"])
+    def test_extra_rw_paths_passed_to_launches(
+        self,
+        orchestrator: Orchestrator,
+        linear: FakeLinearClient,
+        pipeline: Literal["initial", "resume"],
     ) -> None:
-        """finalize_workspace is called with sandbox_extra_rw_paths from config."""
-        linear.set_response(
-            "get_project",
-            Project(
-                id="proj-1",
-                name="Test",
-                links=[
-                    ProjectLink(label="Repo", url="https://github.com/org/repo.git")
-                ],
-            ),
-        )
-        linear.set_response("get_issue", _make_issue(description="Fix"))
-        with (
-            mock.patch(
-                "symphony_linear.orchestrator.clone_workspace",
-                return_value=("/tmp/ws/TEAM-1", False),
-            ),
-            mock.patch(
-                "symphony_linear.orchestrator.finalize_workspace",
-            ) as m_finalize,
-            mock.patch(
-                "symphony_linear.orchestrator.load_project_config",
-                return_value=ProjectConfig(),
-            ),
-            mock.patch(
-                "symphony_linear.orchestrator.run_initial",
-                return_value=("ses", "msg", None),
-            ),
-        ):
-            orchestrator._new_ticket_pipeline(_make_issue())
-        _, kwargs = m_finalize.call_args
-        assert kwargs.get("sandbox_extra_rw_paths") == ["/fake/rw"]
-
-    def test_extra_rw_passed_to_run_initial(
-        self, orchestrator: Orchestrator, linear: FakeLinearClient
-    ) -> None:
-        linear.set_response(
-            "get_project",
-            Project(
-                id="proj-1",
-                name="Test",
-                links=[
-                    ProjectLink(label="Repo", url="https://github.com/org/repo.git")
-                ],
-            ),
-        )
-        linear.set_response("get_issue", _make_issue(description="Fix"))
-        with (
-            mock.patch(
-                "symphony_linear.orchestrator.clone_workspace",
-                return_value=("/tmp/ws/TEAM-1", False),
-            ),
-            mock.patch(
-                "symphony_linear.orchestrator.finalize_workspace",
-            ),
-            mock.patch(
-                "symphony_linear.orchestrator.load_project_config",
-                return_value=ProjectConfig(),
-            ),
-            mock.patch(
-                "symphony_linear.orchestrator.run_initial",
-                return_value=("ses", "msg", None),
-            ) as m_oc,
-        ):
-            orchestrator._new_ticket_pipeline(_make_issue())
-        _, kwargs = m_oc.call_args
-        assert kwargs.get("extra_rw_paths") == ["/fake/rw"]
-
-    def test_extra_rw_passed_to_run_resume(
-        self, orchestrator: Orchestrator, linear: FakeLinearClient
-    ) -> None:
-        ts = TicketState(
-            ticket_id="ticket-1",
-            ticket_identifier="TEAM-1",
-            repo_url="https://x",
-            workspace_path="/tmp/x",
-            branch="main",
-            status=TicketStatus.needs_input,
-            session_id="ses-abc",
-            last_seen_comment_id="cmt-seen-1",
-        )
-        orchestrator._state.upsert(ts)
-        linear.set_response("list_comments_since", [_make_comment("c1", "Go")])
-        with (
-            mock.patch(
-                "symphony_linear.orchestrator.load_project_config",
-                return_value=ProjectConfig(),
-            ),
-            mock.patch(
-                "symphony_linear.orchestrator.run_resume", return_value=("Done!", None)
-            ) as m_oc,
-        ):
-            orchestrator._resume_pipeline(ts)
-        _, kwargs = m_oc.call_args
+        if pipeline == "initial":
+            linear.set_response(
+                "get_project",
+                Project(
+                    id="proj-1",
+                    name="Test",
+                    links=[
+                        ProjectLink(label="Repo", url="https://github.com/org/repo.git")
+                    ],
+                ),
+            )
+            linear.set_response("get_issue", _make_issue(description="Fix"))
+            with (
+                mock.patch(
+                    "symphony_linear.orchestrator.clone_workspace",
+                    return_value=("/tmp/ws/TEAM-1", False),
+                ),
+                mock.patch(
+                    "symphony_linear.orchestrator.finalize_workspace",
+                ) as m_finalize,
+                mock.patch(
+                    "symphony_linear.orchestrator.load_project_config",
+                    return_value=ProjectConfig(),
+                ),
+                mock.patch(
+                    "symphony_linear.orchestrator.run_initial",
+                    return_value=("ses", "msg", None),
+                ) as m_initial,
+            ):
+                orchestrator._new_ticket_pipeline(_make_issue())
+            assert m_finalize.call_args.kwargs.get("sandbox_extra_rw_paths") == [
+                "/fake/rw"
+            ]
+            kwargs = m_initial.call_args.kwargs
+        else:
+            ts = TicketState(
+                ticket_id="ticket-1",
+                ticket_identifier="TEAM-1",
+                repo_url="https://x",
+                workspace_path="/tmp/x",
+                branch="main",
+                status=TicketStatus.needs_input,
+                session_id="ses-abc",
+                last_seen_comment_id="cmt-seen-1",
+            )
+            orchestrator._state.upsert(ts)
+            linear.set_response("list_comments_since", [_make_comment("c1", "Go")])
+            with (
+                mock.patch(
+                    "symphony_linear.orchestrator.load_project_config",
+                    return_value=ProjectConfig(),
+                ),
+                mock.patch(
+                    "symphony_linear.orchestrator.run_resume",
+                    return_value=("Done!", None),
+                ) as m_resume,
+            ):
+                orchestrator._resume_pipeline(ts)
+            kwargs = m_resume.call_args.kwargs
         assert kwargs.get("extra_rw_paths") == ["/fake/rw"]
 
 
@@ -7842,145 +6325,98 @@ class TestDirMapPlumbing:
             workspace=tmp_path / "ws",
         )
 
-    def test_dir_map_passed_to_finalize(
-        self, tmp_path: Path, state_mgr: StateManager, linear: FakeLinearClient
+    @pytest.mark.parametrize("launch_point", ["initial", "resume", "serve"])
+    def test_dir_map_passed_to_every_launch(
+        self,
+        tmp_path: Path,
+        state_mgr: StateManager,
+        linear: FakeLinearClient,
+        launch_point: Literal["initial", "resume", "serve"],
     ) -> None:
-        """finalize_workspace receives the resolved dir_map pairs."""
-        orch = self._make_orchestrator(tmp_path, state_mgr, linear)
-        linear.set_response(
-            "get_project",
-            Project(
-                id="proj-1",
-                name="Test",
-                links=[
-                    ProjectLink(label="Repo", url="https://github.com/org/repo.git")
-                ],
-            ),
+        orch = self._make_orchestrator(
+            tmp_path, state_mgr, linear, qa=launch_point == "serve"
         )
-        linear.set_response("get_issue", _make_issue(description="Fix"))
-        with (
-            mock.patch(
-                "symphony_linear.orchestrator.clone_workspace",
-                return_value=("/tmp/ws/TEAM-1", False),
-            ),
-            mock.patch(
-                "symphony_linear.orchestrator.ensure_dir_map",
-                return_value=self.PAIRS,
-            ) as m_ensure,
-            mock.patch(
-                "symphony_linear.orchestrator.finalize_workspace",
-            ) as m_finalize,
-            mock.patch(
-                "symphony_linear.orchestrator.load_project_config",
-                return_value=ProjectConfig(),
-            ),
-            mock.patch(
-                "symphony_linear.orchestrator.run_initial",
-                return_value=("ses", "msg", None),
-            ),
-        ):
-            orch._new_ticket_pipeline(_make_issue())
-        _, kwargs = m_finalize.call_args
-        assert kwargs.get("sandbox_dir_map") == self.PAIRS
-        assert m_ensure.call_args.args[0] == orch._config.sandbox.dir_map
-
-    def test_dir_map_passed_to_run_initial(
-        self, tmp_path: Path, state_mgr: StateManager, linear: FakeLinearClient
-    ) -> None:
-        linear.set_response(
-            "get_project",
-            Project(
-                id="proj-1",
-                name="Test",
-                links=[
-                    ProjectLink(label="Repo", url="https://github.com/org/repo.git")
-                ],
-            ),
-        )
-        linear.set_response("get_issue", _make_issue(description="Fix"))
-        orch = self._make_orchestrator(tmp_path, state_mgr, linear)
-        with (
-            mock.patch(
-                "symphony_linear.orchestrator.clone_workspace",
-                return_value=("/tmp/ws/TEAM-1", False),
-            ),
-            mock.patch(
-                "symphony_linear.orchestrator.ensure_dir_map",
-                return_value=self.PAIRS,
-            ),
-            mock.patch(
-                "symphony_linear.orchestrator.finalize_workspace",
-            ),
-            mock.patch(
-                "symphony_linear.orchestrator.load_project_config",
-                return_value=ProjectConfig(),
-            ),
-            mock.patch(
-                "symphony_linear.orchestrator.run_initial",
-                return_value=("ses", "msg", None),
-            ) as m_oc,
-        ):
-            orch._new_ticket_pipeline(_make_issue())
-        _, kwargs = m_oc.call_args
-        assert kwargs.get("dir_map") == self.PAIRS
-
-    def test_dir_map_passed_to_run_resume(
-        self, tmp_path: Path, state_mgr: StateManager, linear: FakeLinearClient
-    ) -> None:
-        orch = self._make_orchestrator(tmp_path, state_mgr, linear)
-        ts = TicketState(
-            ticket_id="ticket-1",
-            ticket_identifier="TEAM-1",
-            repo_url="https://x",
-            workspace_path="/tmp/x",
-            branch="main",
-            status=TicketStatus.needs_input,
-            session_id="ses-abc",
-            last_seen_comment_id="cmt-seen-1",
-        )
-        orch._state.upsert(ts)
-        linear.set_response("list_comments_since", [_make_comment("c1", "Go")])
-        with (
-            mock.patch(
-                "symphony_linear.orchestrator.load_project_config",
-                return_value=ProjectConfig(),
-            ),
-            mock.patch(
-                "symphony_linear.orchestrator.ensure_dir_map",
-                return_value=self.PAIRS,
-            ) as m_ensure,
-            mock.patch(
-                "symphony_linear.orchestrator.run_resume", return_value=("Done!", None)
-            ) as m_oc,
-        ):
-            orch._resume_pipeline(ts)
-        _, kwargs = m_oc.call_args
-        assert kwargs.get("dir_map") == self.PAIRS
-        assert m_ensure.call_args.args[0] == orch._config.sandbox.dir_map
-
-    def test_dir_map_passed_to_start_serve(
-        self, tmp_path: Path, state_mgr: StateManager, linear: FakeLinearClient
-    ) -> None:
-        orch = self._make_orchestrator(tmp_path, state_mgr, linear, qa=True)
-        _add_ticket_state(orch)
-
-        issue = _make_qa_issue()
-        fake_proc = _make_fake_proc(returncode=None)
-
-        with (
-            mock.patch(
-                "symphony_linear.orchestrator.ensure_dir_map",
-                return_value=self.PAIRS,
-            ) as m_ensure,
-            mock.patch(
-                "symphony_linear.orchestrator.start_serve",
-                return_value=fake_proc,
-            ) as m_serve,
-        ):
-            orch._reconcile_serve([issue], {issue.id: issue})
-
-        m_serve.assert_called_once()
-        _, kwargs = m_serve.call_args
+        if launch_point == "serve":
+            _add_ticket_state(orch)
+            issue = _make_qa_issue()
+            with (
+                mock.patch(
+                    "symphony_linear.orchestrator.ensure_dir_map",
+                    return_value=self.PAIRS,
+                ) as m_ensure,
+                mock.patch(
+                    "symphony_linear.orchestrator.start_serve",
+                    return_value=_make_fake_proc(returncode=None),
+                ) as m_serve,
+            ):
+                orch._reconcile_serve([issue], {issue.id: issue})
+            m_serve.assert_called_once()
+            kwargs = m_serve.call_args.kwargs
+        elif launch_point == "resume":
+            ts = TicketState(
+                ticket_id="ticket-1",
+                ticket_identifier="TEAM-1",
+                repo_url="https://x",
+                workspace_path="/tmp/x",
+                branch="main",
+                status=TicketStatus.needs_input,
+                session_id="ses-abc",
+                last_seen_comment_id="cmt-seen-1",
+            )
+            orch._state.upsert(ts)
+            linear.set_response("list_comments_since", [_make_comment("c1", "Go")])
+            with (
+                mock.patch(
+                    "symphony_linear.orchestrator.load_project_config",
+                    return_value=ProjectConfig(),
+                ),
+                mock.patch(
+                    "symphony_linear.orchestrator.ensure_dir_map",
+                    return_value=self.PAIRS,
+                ) as m_ensure,
+                mock.patch(
+                    "symphony_linear.orchestrator.run_resume",
+                    return_value=("Done!", None),
+                ) as m_resume,
+            ):
+                orch._resume_pipeline(ts)
+            kwargs = m_resume.call_args.kwargs
+        else:
+            linear.set_response(
+                "get_project",
+                Project(
+                    id="proj-1",
+                    name="Test",
+                    links=[
+                        ProjectLink(label="Repo", url="https://github.com/org/repo.git")
+                    ],
+                ),
+            )
+            linear.set_response("get_issue", _make_issue(description="Fix"))
+            with (
+                mock.patch(
+                    "symphony_linear.orchestrator.clone_workspace",
+                    return_value=("/tmp/ws/TEAM-1", False),
+                ),
+                mock.patch(
+                    "symphony_linear.orchestrator.ensure_dir_map",
+                    return_value=self.PAIRS,
+                ) as m_ensure,
+                mock.patch(
+                    "symphony_linear.orchestrator.finalize_workspace",
+                ) as m_finalize,
+                mock.patch(
+                    "symphony_linear.orchestrator.load_project_config",
+                    return_value=ProjectConfig(),
+                ),
+                mock.patch(
+                    "symphony_linear.orchestrator.run_initial",
+                    return_value=("ses", "msg", None),
+                ) as m_initial,
+            ):
+                orch._new_ticket_pipeline(_make_issue())
+            assert m_finalize.call_args.kwargs.get("sandbox_dir_map") == self.PAIRS
+            kwargs = m_initial.call_args.kwargs
         assert kwargs.get("dir_map") == self.PAIRS
         assert m_ensure.call_args.args[0] == orch._config.sandbox.dir_map
 
@@ -8029,227 +6465,184 @@ class TestSecretsPlumbing:
             ),
         )
 
-    def test_secrets_file_passed_to_finalize(
-        self, tmp_path: Path, state_mgr: StateManager, linear: FakeLinearClient
+    @pytest.mark.parametrize("launch_point", ["initial", "resume", "serve"])
+    def test_secrets_file_passed_to_every_launch(
+        self,
+        tmp_path: Path,
+        state_mgr: StateManager,
+        linear: FakeLinearClient,
+        launch_point: Literal["initial", "resume", "serve"],
     ) -> None:
-        """finalize_workspace receives the secrets file for the setup script."""
-        orch = self._make_orchestrator(tmp_path, state_mgr, linear)
-        self._set_repo_link(linear)
-        linear.set_response("get_issue", _make_issue(description="Fix"))
-        with (
-            mock.patch(
-                "symphony_linear.orchestrator.clone_workspace",
-                return_value=("/tmp/ws/TEAM-1", False),
-            ),
-            mock.patch(
-                "symphony_linear.orchestrator.ensure_secrets_file",
-                return_value=self.SECRETS,
-            ) as m_secrets,
-            mock.patch("symphony_linear.orchestrator.finalize_workspace") as m_finalize,
-            mock.patch(
-                "symphony_linear.orchestrator.load_project_config",
-                return_value=ProjectConfig(),
-            ),
-            mock.patch(
-                "symphony_linear.orchestrator.run_initial",
-                return_value=("ses", "msg", None),
-            ),
-        ):
-            orch._new_ticket_pipeline(_make_issue())
-        _, kwargs = m_finalize.call_args
-        assert kwargs.get("sandbox_secrets_file") == self.SECRETS
-        assert m_secrets.call_args.args[3] == "/host/secrets"
-
-    def test_secrets_file_passed_to_run_initial(
-        self, tmp_path: Path, state_mgr: StateManager, linear: FakeLinearClient
-    ) -> None:
-        self._set_repo_link(linear)
-        linear.set_response("get_issue", _make_issue(description="Fix"))
-        orch = self._make_orchestrator(tmp_path, state_mgr, linear)
-        with (
-            mock.patch(
-                "symphony_linear.orchestrator.clone_workspace",
-                return_value=("/tmp/ws/TEAM-1", False),
-            ),
-            mock.patch(
-                "symphony_linear.orchestrator.ensure_secrets_file",
-                return_value=self.SECRETS,
-            ),
-            mock.patch("symphony_linear.orchestrator.finalize_workspace"),
-            mock.patch(
-                "symphony_linear.orchestrator.load_project_config",
-                return_value=ProjectConfig(),
-            ),
-            mock.patch(
-                "symphony_linear.orchestrator.run_initial",
-                return_value=("ses", "msg", None),
-            ) as m_oc,
-        ):
-            orch._new_ticket_pipeline(_make_issue())
-        _, kwargs = m_oc.call_args
-        assert kwargs.get("secrets_file") == self.SECRETS
-
-    def test_secrets_file_passed_to_run_resume(
-        self, tmp_path: Path, state_mgr: StateManager, linear: FakeLinearClient
-    ) -> None:
-        orch = self._make_orchestrator(tmp_path, state_mgr, linear)
-        ts = TicketState(
-            ticket_id="ticket-1",
-            ticket_identifier="TEAM-1",
-            repo_url="https://github.com/org/repo.git",
-            workspace_path="/tmp/x",
-            branch="main",
-            status=TicketStatus.needs_input,
-            session_id="ses-abc",
-            last_seen_comment_id="cmt-seen-1",
+        orch = self._make_orchestrator(
+            tmp_path, state_mgr, linear, qa=launch_point == "serve"
         )
-        orch._state.upsert(ts)
-        linear.set_response("list_comments_since", [_make_comment("c1", "Go")])
-        with (
-            mock.patch(
-                "symphony_linear.orchestrator.load_project_config",
-                return_value=ProjectConfig(),
-            ),
-            mock.patch(
-                "symphony_linear.orchestrator.ensure_secrets_file",
-                return_value=self.SECRETS,
-            ) as m_secrets,
-            mock.patch(
-                "symphony_linear.orchestrator.run_resume", return_value=("Done!", None)
-            ) as m_oc,
-        ):
-            orch._resume_pipeline(ts)
-        _, kwargs = m_oc.call_args
+        if launch_point == "serve":
+            _add_ticket_state(orch)
+            issue = _make_qa_issue()
+            with (
+                mock.patch(
+                    "symphony_linear.orchestrator.ensure_secrets_file",
+                    return_value=self.SECRETS,
+                ) as m_secrets,
+                mock.patch(
+                    "symphony_linear.orchestrator.start_serve",
+                    return_value=_make_fake_proc(returncode=None),
+                ) as m_serve,
+            ):
+                orch._reconcile_serve([issue], {issue.id: issue})
+            m_serve.assert_called_once()
+            kwargs = m_serve.call_args.kwargs
+        elif launch_point == "resume":
+            ts = TicketState(
+                ticket_id="ticket-1",
+                ticket_identifier="TEAM-1",
+                repo_url="https://github.com/org/repo.git",
+                workspace_path="/tmp/x",
+                branch="main",
+                status=TicketStatus.needs_input,
+                session_id="ses-abc",
+                last_seen_comment_id="cmt-seen-1",
+            )
+            orch._state.upsert(ts)
+            linear.set_response("list_comments_since", [_make_comment("c1", "Go")])
+            with (
+                mock.patch(
+                    "symphony_linear.orchestrator.load_project_config",
+                    return_value=ProjectConfig(),
+                ),
+                mock.patch(
+                    "symphony_linear.orchestrator.ensure_secrets_file",
+                    return_value=self.SECRETS,
+                ) as m_secrets,
+                mock.patch(
+                    "symphony_linear.orchestrator.run_resume",
+                    return_value=("Done!", None),
+                ) as m_resume,
+            ):
+                orch._resume_pipeline(ts)
+            kwargs = m_resume.call_args.kwargs
+        else:
+            self._set_repo_link(linear)
+            linear.set_response("get_issue", _make_issue(description="Fix"))
+            with (
+                mock.patch(
+                    "symphony_linear.orchestrator.clone_workspace",
+                    return_value=("/tmp/ws/TEAM-1", False),
+                ),
+                mock.patch(
+                    "symphony_linear.orchestrator.ensure_secrets_file",
+                    return_value=self.SECRETS,
+                ) as m_secrets,
+                mock.patch(
+                    "symphony_linear.orchestrator.finalize_workspace"
+                ) as m_finalize,
+                mock.patch(
+                    "symphony_linear.orchestrator.load_project_config",
+                    return_value=ProjectConfig(),
+                ),
+                mock.patch(
+                    "symphony_linear.orchestrator.run_initial",
+                    return_value=("ses", "msg", None),
+                ) as m_initial,
+            ):
+                orch._new_ticket_pipeline(_make_issue())
+            assert m_finalize.call_args.kwargs.get("sandbox_secrets_file") == (
+                self.SECRETS
+            )
+            kwargs = m_initial.call_args.kwargs
         assert kwargs.get("secrets_file") == self.SECRETS
         assert m_secrets.call_args.args[3] == "/host/secrets"
 
-    def test_secrets_file_passed_to_start_serve(
-        self, tmp_path: Path, state_mgr: StateManager, linear: FakeLinearClient
+    @pytest.mark.parametrize("launch_point", ["initial", "resume", "serve"])
+    def test_secrets_error_reports_failure(
+        self,
+        tmp_path: Path,
+        state_mgr: StateManager,
+        linear: FakeLinearClient,
+        launch_point: Literal["initial", "resume", "serve"],
     ) -> None:
-        orch = self._make_orchestrator(tmp_path, state_mgr, linear, qa=True)
-        _add_ticket_state(orch)
-
-        issue = _make_qa_issue()
-        fake_proc = _make_fake_proc(returncode=None)
-
-        with (
-            mock.patch(
-                "symphony_linear.orchestrator.ensure_secrets_file",
-                return_value=self.SECRETS,
-            ) as m_secrets,
-            mock.patch(
-                "symphony_linear.orchestrator.start_serve",
-                return_value=fake_proc,
-            ) as m_serve,
-        ):
-            orch._reconcile_serve([issue], {issue.id: issue})
-
-        m_serve.assert_called_once()
-        _, kwargs = m_serve.call_args
-        assert kwargs.get("secrets_file") == self.SECRETS
-        assert m_secrets.call_args.args[3] == "/host/secrets"
-
-    def test_secrets_error_on_initial_turn_reports_failure(
-        self, tmp_path: Path, state_mgr: StateManager, linear: FakeLinearClient
-    ) -> None:
-        """A SecretsError installing the initial-turn secrets file is reported
-        like any other workspace-prep failure, not merely logged by
-        _task_wrapper."""
-        orch = self._make_orchestrator(tmp_path, state_mgr, linear)
-        self._set_repo_link(linear)
-        linear.set_response("get_issue", _make_issue(description="Fix"))
-        with (
-            mock.patch(
-                "symphony_linear.orchestrator.clone_workspace",
-                return_value=("/tmp/ws/TEAM-1", False),
-            ),
-            mock.patch(
-                "symphony_linear.orchestrator.ensure_secrets_file",
-                side_effect=[self.SECRETS, SecretsError("traversal refused")],
-            ),
-            mock.patch("symphony_linear.orchestrator.finalize_workspace"),
-            mock.patch(
-                "symphony_linear.orchestrator.load_project_config",
-                return_value=ProjectConfig(),
-            ),
-            mock.patch(
-                "symphony_linear.orchestrator.run_initial",
-                return_value=("ses", "msg", None),
-            ) as m_oc,
-        ):
-            orch._new_ticket_pipeline(_make_issue())
-
-        m_oc.assert_not_called()
-        assert ("ticket-1", "Needs Input") in linear.calls.get(
-            "transition_to_state", []
+        """A SecretsError on any launch is reported, not merely logged."""
+        orch = self._make_orchestrator(
+            tmp_path, state_mgr, linear, qa=launch_point == "serve"
         )
-        bodies = [c[1] for c in linear.calls.get("post_comment", [])]
-        assert any("traversal refused" in b for b in bodies)
-        ts = orch._state.get("ticket-1")
-        assert ts is not None
-        assert ts.status == TicketStatus.failed
-        assert ts.setup_error is not None
-
-    def test_secrets_error_on_resume_reports_failure(
-        self, tmp_path: Path, state_mgr: StateManager, linear: FakeLinearClient
-    ) -> None:
-        """A SecretsError installing the resume secrets file marks the ticket
-        failed and posts an error comment instead of leaking through
-        _task_wrapper."""
-        orch = self._make_orchestrator(tmp_path, state_mgr, linear)
-        ts = TicketState(
-            ticket_id="ticket-1",
-            ticket_identifier="TEAM-1",
-            repo_url="https://github.com/org/repo.git",
-            workspace_path="/tmp/x",
-            branch="main",
-            status=TicketStatus.needs_input,
-            session_id="ses-abc",
-            last_seen_comment_id="cmt-seen-1",
-        )
-        orch._state.upsert(ts)
-        linear.set_response("list_comments_since", [_make_comment("c1", "Go")])
-        with (
-            mock.patch(
-                "symphony_linear.orchestrator.ensure_secrets_file",
-                side_effect=SecretsError("traversal refused"),
-            ),
-            mock.patch(
-                "symphony_linear.orchestrator.run_resume", return_value=("Done!", None)
-            ) as m_oc,
-        ):
-            orch._resume_pipeline(ts)
-
-        m_oc.assert_not_called()
-        assert ("ticket-1", "Needs Input") in linear.calls.get(
-            "transition_to_state", []
-        )
-        bodies = [c[1] for c in linear.calls.get("post_comment", [])]
-        assert any("traversal refused" in b for b in bodies)
-        saved = orch._state.get("ticket-1")
-        assert saved is not None
-        assert saved.status == TicketStatus.failed
-
-    def test_secrets_error_on_qa_serve_reports_failure(
-        self, tmp_path: Path, state_mgr: StateManager, linear: FakeLinearClient
-    ) -> None:
-        """The QA serve path already catches WorkspaceError, so a SecretsError
-        there is reported rather than escaping the reconciliation loop."""
-        orch = self._make_orchestrator(tmp_path, state_mgr, linear, qa=True)
-        _add_ticket_state(orch)
-
-        issue = _make_qa_issue()
-        with (
-            mock.patch(
-                "symphony_linear.orchestrator.ensure_secrets_file",
-                side_effect=SecretsError("traversal refused"),
-            ),
-            mock.patch("symphony_linear.orchestrator.start_serve") as m_serve,
-        ):
-            orch._reconcile_serve([issue], {issue.id: issue})
-
-        m_serve.assert_not_called()
-        assert (issue.id, "Needs Input") in linear.calls.get("transition_to_state", [])
+        error = SecretsError("traversal refused")
+        if launch_point == "serve":
+            _add_ticket_state(orch)
+            issue = _make_qa_issue()
+            with (
+                mock.patch(
+                    "symphony_linear.orchestrator.ensure_secrets_file",
+                    side_effect=error,
+                ),
+                mock.patch("symphony_linear.orchestrator.start_serve") as m_start,
+            ):
+                orch._reconcile_serve([issue], {issue.id: issue})
+            m_start.assert_not_called()
+            assert (issue.id, "Needs Input") in linear.calls.get(
+                "transition_to_state", []
+            )
+        elif launch_point == "resume":
+            ts = TicketState(
+                ticket_id="ticket-1",
+                ticket_identifier="TEAM-1",
+                repo_url="https://github.com/org/repo.git",
+                workspace_path="/tmp/x",
+                branch="main",
+                status=TicketStatus.needs_input,
+                session_id="ses-abc",
+                last_seen_comment_id="cmt-seen-1",
+            )
+            orch._state.upsert(ts)
+            linear.set_response("list_comments_since", [_make_comment("c1", "Go")])
+            with (
+                mock.patch(
+                    "symphony_linear.orchestrator.ensure_secrets_file",
+                    side_effect=error,
+                ),
+                mock.patch(
+                    "symphony_linear.orchestrator.run_resume",
+                    return_value=("Done!", None),
+                ) as m_resume,
+            ):
+                orch._resume_pipeline(ts)
+            m_resume.assert_not_called()
+            assert ("ticket-1", "Needs Input") in linear.calls.get(
+                "transition_to_state", []
+            )
+            saved = orch._state.get("ticket-1")
+            assert saved is not None
+            assert saved.status == TicketStatus.failed
+        else:
+            self._set_repo_link(linear)
+            linear.set_response("get_issue", _make_issue(description="Fix"))
+            with (
+                mock.patch(
+                    "symphony_linear.orchestrator.clone_workspace",
+                    return_value=("/tmp/ws/TEAM-1", False),
+                ),
+                mock.patch(
+                    "symphony_linear.orchestrator.ensure_secrets_file",
+                    side_effect=[self.SECRETS, error],
+                ),
+                mock.patch("symphony_linear.orchestrator.finalize_workspace"),
+                mock.patch(
+                    "symphony_linear.orchestrator.load_project_config",
+                    return_value=ProjectConfig(),
+                ),
+                mock.patch(
+                    "symphony_linear.orchestrator.run_initial",
+                    return_value=("ses", "msg", None),
+                ) as m_initial,
+            ):
+                orch._new_ticket_pipeline(_make_issue())
+            m_initial.assert_not_called()
+            assert ("ticket-1", "Needs Input") in linear.calls.get(
+                "transition_to_state", []
+            )
+            saved = orch._state.get("ticket-1")
+            assert saved is not None
+            assert saved.status == TicketStatus.failed
+            assert saved.setup_error is not None
         bodies = [c[1] for c in linear.calls.get("post_comment", [])]
         assert any("traversal refused" in b for b in bodies)
 
@@ -8283,118 +6676,68 @@ class TestDirMapConfigExposureWarning:
             workspace=workspace if workspace is not None else tmp_path / "ws",
         )
 
-    def test_workspace_root_itself_warns(
+    @pytest.mark.parametrize(
+        ("case", "source_is_workspace"),
+        [("workspace-root", True), ("ancestor", False)],
+        ids=["workspace-root", "ancestor"],
+    )
+    def test_covering_source_warns(
         self,
         tmp_path: Path,
         state_mgr: StateManager,
         linear: FakeLinearClient,
         caplog: pytest.LogCaptureFixture,
+        case: str,
+        source_is_workspace: bool,
     ) -> None:
-        workspace = tmp_path / "ws"
-        workspace.mkdir()
+        if source_is_workspace:
+            workspace = tmp_path / "ws"
+            workspace.mkdir()
+            source = workspace
+        else:
+            # The operator maps their home directory, which contains the workspace.
+            source = tmp_path / "home"
+            workspace = source / "user" / "ws"
+            workspace.mkdir(parents=True)
         orch = self._make_orchestrator(
             tmp_path,
             state_mgr,
             linear,
-            {"/sandbox/root": str(workspace)},
+            {f"/sandbox/{case}": str(source)},
             workspace=workspace,
         )
 
         with caplog.at_level(logging.WARNING, logger="symphony_linear.orchestrator"):
             orch._warn_if_dir_map_exposes_config()
 
-        assert "/sandbox/root" in caplog.text
-        assert str(workspace) in caplog.text
-        assert "config.yaml" in caplog.text
-        assert "API token" in caplog.text
-
-    def test_ancestor_of_workspace_root_warns(
-        self,
-        tmp_path: Path,
-        state_mgr: StateManager,
-        linear: FakeLinearClient,
-        caplog: pytest.LogCaptureFixture,
-    ) -> None:
-        # The operator maps their home directory, which contains the workspace.
-        home = tmp_path / "home"
-        workspace = home / "user" / "ws"
-        workspace.mkdir(parents=True)
-        orch = self._make_orchestrator(
-            tmp_path,
-            state_mgr,
-            linear,
-            {"/sandbox/home": str(home)},
-            workspace=workspace,
-        )
-
-        with caplog.at_level(logging.WARNING, logger="symphony_linear.orchestrator"):
-            orch._warn_if_dir_map_exposes_config()
-
-        assert str(home) in caplog.text
+        assert str(source) in caplog.text
         assert "readable inside the sandbox" in caplog.text
 
-    def test_unrelated_source_does_not_warn(
+    @pytest.mark.parametrize(
+        "case", ["unrelated", "inside-workspace", "relative"], ids=lambda case: case
+    )
+    def test_non_covering_source_does_not_warn(
         self,
         tmp_path: Path,
         state_mgr: StateManager,
         linear: FakeLinearClient,
         caplog: pytest.LogCaptureFixture,
+        case: str,
     ) -> None:
         workspace = tmp_path / "ws"
         workspace.mkdir()
-        other = tmp_path / "other"
-        other.mkdir()
+        if case == "unrelated":
+            other = tmp_path / "other"
+            other.mkdir()
+            dir_map = {"/sandbox/other": str(other)}
+        elif case == "inside-workspace":
+            inside = workspace / "sub"
+            inside.mkdir()
+            dir_map = {"/sandbox/sub": str(inside)}
+        else:
+            dir_map = {"/sandbox/npm": "npm"}
         orch = self._make_orchestrator(
-            tmp_path,
-            state_mgr,
-            linear,
-            {"/sandbox/other": str(other)},
-            workspace=workspace,
-        )
-
-        with caplog.at_level(logging.WARNING, logger="symphony_linear.orchestrator"):
-            orch._warn_if_dir_map_exposes_config()
-
-        assert caplog.text == ""
-
-    def test_source_inside_workspace_does_not_warn(
-        self,
-        tmp_path: Path,
-        state_mgr: StateManager,
-        linear: FakeLinearClient,
-        caplog: pytest.LogCaptureFixture,
-    ) -> None:
-        workspace = tmp_path / "ws"
-        inside = workspace / "sub"
-        inside.mkdir(parents=True)
-        orch = self._make_orchestrator(
-            tmp_path,
-            state_mgr,
-            linear,
-            {"/sandbox/sub": str(inside)},
-            workspace=workspace,
-        )
-
-        with caplog.at_level(logging.WARNING, logger="symphony_linear.orchestrator"):
-            orch._warn_if_dir_map_exposes_config()
-
-        assert caplog.text == ""
-
-    def test_relative_source_does_not_warn(
-        self,
-        tmp_path: Path,
-        state_mgr: StateManager,
-        linear: FakeLinearClient,
-        caplog: pytest.LogCaptureFixture,
-    ) -> None:
-        workspace = tmp_path / "ws"
-        workspace.mkdir()
-        orch = self._make_orchestrator(
-            tmp_path,
-            state_mgr,
-            linear,
-            {"/sandbox/npm": "npm"},
-            workspace=workspace,
+            tmp_path, state_mgr, linear, dir_map, workspace=workspace
         )
 
         with caplog.at_level(logging.WARNING, logger="symphony_linear.orchestrator"):
@@ -8463,31 +6806,6 @@ class TestConcurrency:
         with orchestrator._task_lock:
             count = sum(1 for tid in orchestrator._active_tasks if tid == "ticket-1")
         assert count == 1
-
-    def test_concurrent_saves_dont_lose_updates(
-        self, orchestrator: Orchestrator
-    ) -> None:
-        def worker(i: int) -> None:
-            ts = TicketState(
-                ticket_id=f"ticket-{i}",
-                ticket_identifier=f"TEAM-{i}",
-                repo_url="https://x",
-                workspace_path=f"/tmp/{i}",
-                branch="main",
-                status=TicketStatus.needs_input,
-            )
-            with orchestrator._state_lock:
-                orchestrator._state.upsert(ts)
-                orchestrator._state.save()
-
-        threads = [threading.Thread(target=worker, args=(i,)) for i in range(10)]
-        for t in threads:
-            t.start()
-        for t in threads:
-            t.join()
-        mgr2 = StateManager(orchestrator._state._path)  # type: ignore[attr-defined]
-        mgr2.load()
-        assert len(mgr2.tickets) == 10
 
 
 # ---------------------------------------------------------------------------
@@ -8581,19 +6899,6 @@ def _make_active_serve(
 
 
 class TestReconcileServe:
-    def test_noop_when_qa_state_unset(
-        self,
-        orchestrator: Orchestrator,
-        linear: FakeLinearClient,
-    ) -> None:
-        """When qa_state is not configured, _reconcile_serve is a no-op."""
-        assert orchestrator._tracker.qa_enabled is False
-        issue = _make_issue(state="In Review")
-        with mock.patch("symphony_linear.orchestrator.start_serve") as m:
-            orchestrator._reconcile_serve([issue], {issue.id: issue})
-        m.assert_not_called()
-        assert orchestrator._active_serve is None
-
     def test_single_ticket_enters_qa_starts_serve(
         self,
         tmp_path: Path,
@@ -8622,6 +6927,7 @@ class TestReconcileServe:
         assert orch._active_serve is not None
         assert orch._active_serve.ticket_id == "ticket-1"
         assert orch._active_serve.proc is fake_proc
+        assert not orch._is_cancelled("ticket-1")
 
     def test_owner_leaves_qa_kills_serve(
         self,
@@ -8745,13 +7051,17 @@ class TestReconcileServe:
         # (c) _active_serve cleared.
         assert orch._active_serve is None
 
-    def test_second_ticket_enters_qa_bumps_incumbent(
+    @pytest.mark.parametrize(
+        "with_incumbent", [False, True], ids=["no-active-serve", "bumps-incumbent"]
+    )
+    def test_newest_qa_ticket_wins(
         self,
         tmp_path: Path,
         state_mgr: StateManager,
         linear: FakeLinearClient,
+        with_incumbent: bool,
     ) -> None:
-        """Newer ticket (by updated_at) entering QA bumps the incumbent and takes over serving."""
+        """The newest QA ticket wins, bumping either an incumbent or the loser."""
         config = _make_qa_config(tmp_path)
         orch = Orchestrator(
             config=config,
@@ -8763,13 +7073,11 @@ class TestReconcileServe:
         _add_ticket_state(orch, ticket_id="ticket-2", identifier="TEAM-2")
 
         old_proc = _make_fake_proc(returncode=None)
-        orch._active_serve = _make_active_serve(proc=old_proc)
+        if with_incumbent:
+            orch._active_serve = _make_active_serve(proc=old_proc)
 
-        # ticket-1 has an older updated_at; ticket-2 is newer → ticket-2 wins.
+        # ticket-1 is older, ticket-2 is newer → ticket-2 wins.
         issue1 = _make_qa_issue(ticket_id="ticket-1", identifier="TEAM-1")
-        issue1 = issue1.model_copy(
-            update={"updated_at": issue1.updated_at}
-        )  # keep old timestamp
         issue2 = _make_issue(
             id="ticket-2",
             identifier="TEAM-2",
@@ -8785,8 +7093,8 @@ class TestReconcileServe:
         ) as m_serve:
             orch._reconcile_serve([issue1, issue2], issues_by_id)
 
-        # Old serve was killed, new serve started for ticket-2.
-        old_proc.kill.assert_called_once()
+        if with_incumbent:
+            old_proc.kill.assert_called_once()
         m_serve.assert_called_once()
         assert orch._active_serve is not None
         assert orch._active_serve.ticket_id == "ticket-2"
@@ -8795,49 +7103,6 @@ class TestReconcileServe:
         assert any("ticket-1" == tid for tid, _ in post_calls)
         transition_calls = linear.calls.get("transition_to_state", [])
         assert any("ticket-1" == tid for tid, _ in transition_calls)
-
-    def test_new_winner_when_no_active_serve(
-        self,
-        tmp_path: Path,
-        state_mgr: StateManager,
-        linear: FakeLinearClient,
-    ) -> None:
-        """Two QA tickets, no active serve → newest updated_at wins, loser is bumped."""
-        config = _make_qa_config(tmp_path)
-        orch = Orchestrator(
-            config=config,
-            state=state_mgr,
-            tracker=LinearTracker(linear=linear, config=config.linear),
-            workspace=tmp_path / "ws",
-        )  # type: ignore[arg-type]
-        _add_ticket_state(orch, ticket_id="ticket-1", identifier="TEAM-1")
-        _add_ticket_state(orch, ticket_id="ticket-2", identifier="TEAM-2")
-
-        # ticket-1 is older, ticket-2 is newer → ticket-2 wins.
-        issue1 = _make_qa_issue(ticket_id="ticket-1", identifier="TEAM-1")
-        issue2 = _make_issue(
-            id="ticket-2",
-            identifier="TEAM-2",
-            state="In Review",
-            labels=["Agent"],
-            updatedAt="2025-07-01T00:00:00Z",  # newer than issue1's default 2025-06-01
-        )
-        issues_by_id = {"ticket-1": issue1, "ticket-2": issue2}
-
-        fake_proc = _make_fake_proc(returncode=None)
-        with mock.patch(
-            "symphony_linear.orchestrator.start_serve", return_value=fake_proc
-        ) as m_serve:
-            orch._reconcile_serve([issue1, issue2], issues_by_id)
-
-        # start_serve called once for the winner.
-        m_serve.assert_called_once()
-        # Winner is ticket-2 (newer updated_at).
-        assert orch._active_serve is not None
-        assert orch._active_serve.ticket_id == "ticket-2"
-        # ticket-1 was bumped.
-        post_calls = linear.calls.get("post_comment", [])
-        assert any("ticket-1" == tid for tid, _ in post_calls)
 
     def test_qa_ticket_with_human_comment_resumes_to_in_progress(
         self,
@@ -8881,15 +7146,21 @@ class TestReconcileServe:
             "transition_to_state", []
         )
 
-    def test_start_serve_raises_serve_script_missing(
+    @pytest.mark.parametrize(
+        "error",
+        [
+            pytest.param(ServeScriptMissing("no serve script"), id="missing-script"),
+            pytest.param(FileNotFoundError("bwrap not found"), id="file-not-found"),
+        ],
+    )
+    def test_start_serve_failure_transitions_then_comments(
         self,
         tmp_path: Path,
         state_mgr: StateManager,
         linear: FakeLinearClient,
+        error: Exception,
     ) -> None:
-        """ServeScriptMissing → ticket is transitioned, then comment is posted."""
-        from symphony_linear.workspace import ServeScriptMissing
-
+        """A serve that cannot start is transitioned out of QA, then reported."""
         config = _make_qa_config(tmp_path)
         orch = Orchestrator(
             config=config,
@@ -8901,8 +7172,7 @@ class TestReconcileServe:
 
         issue = _make_qa_issue()
         with mock.patch(
-            "symphony_linear.orchestrator.start_serve",
-            side_effect=ServeScriptMissing("no serve script"),
+            "symphony_linear.orchestrator.start_serve", side_effect=error
         ) as m_start_serve:
             orch._reconcile_serve([issue], {issue.id: issue})
             # The successful transition removes the issue from the QA set on
@@ -8927,8 +7197,6 @@ class TestReconcileServe:
         linear: FakeLinearClient,
     ) -> None:
         """A failed transition suppresses the serve-start failure comment."""
-        from symphony_linear.workspace import ServeScriptMissing
-
         config = _make_qa_config(tmp_path)
         orch = Orchestrator(
             config=config,
@@ -8997,14 +7265,17 @@ class TestReconcileServe:
         assert len(ticket_comments) == 1
         assert "QA serve failed to start" in ticket_comments[0][1]
 
-    def test_winner_with_snapshot_no_state_entry_transitions_then_posts_comment(
+    @pytest.mark.parametrize(
+        "winner_kind", ["snapshot", "empty-path"], ids=["snapshot", "empty-path"]
+    )
+    def test_winner_without_workspace_bails(
         self,
         tmp_path: Path,
         state_mgr: StateManager,
         linear: FakeLinearClient,
+        winner_kind: str,
     ) -> None:
-        """QA winner with a session snapshot but no state entry → bail (a lost
-        local clone cannot be re-cloned safely, so no workspace setup runs)."""
+        """A QA winner with no usable workspace is transitioned out and reported."""
         config = _make_qa_config(tmp_path)
         orch = Orchestrator(
             config=config,
@@ -9012,12 +7283,16 @@ class TestReconcileServe:
             tracker=LinearTracker(linear=linear, config=config.linear),
             workspace=tmp_path / "ws",
         )  # type: ignore[arg-type]
-        # Deliberately do NOT call _add_ticket_state — state entry is missing —
-        # but a durable session snapshot exists.
-        orch._state.set_session(
-            "ticket-1",
-            SessionRecord(session_id="ses-abc", workspace_path="/tmp/ws/TEAM-1"),
-        )
+        if winner_kind == "snapshot":
+            # No state entry, but a durable session snapshot exists: a lost
+            # local clone cannot be re-cloned safely, so no setup runs.
+            orch._state.set_session(
+                "ticket-1",
+                SessionRecord(session_id="ses-abc", workspace_path="/tmp/ws/TEAM-1"),
+            )
+        else:
+            # State exists but workspace_path is empty.
+            _add_ticket_state(orch, workspace_path="")
 
         issue = _make_qa_issue()
         with (
@@ -9028,46 +7303,6 @@ class TestReconcileServe:
 
         m_serve.assert_not_called()
         m_schedule.assert_not_called()
-        assert orch._active_serve is None
-        transition_calls = linear.calls.get("transition_to_state", [])
-        assert any(
-            tid == "ticket-1" and state == "Needs Input"
-            for tid, state in transition_calls
-        ), f"Expected transition for ticket-1 to Needs Input, got {transition_calls}"
-        post_calls = linear.calls.get("post_comment", [])
-        assert any(
-            "Can't start QA" in body and "no workspace exists" in body
-            for _, body in post_calls
-        ), (
-            f"Expected comment with 'Can't start QA' and 'no workspace exists', got {post_calls}"
-        )
-        assert any("ticket-1" == tid for tid, _ in post_calls), (
-            f"Expected post_comment for ticket-1, got {post_calls}"
-        )
-
-    def test_winner_has_empty_workspace_path_transitions_then_posts_comment(
-        self,
-        tmp_path: Path,
-        state_mgr: StateManager,
-        linear: FakeLinearClient,
-    ) -> None:
-        """QA winner with empty workspace_path → transitioned to needs_input, then comment posted."""
-        config = _make_qa_config(tmp_path)
-        orch = Orchestrator(
-            config=config,
-            state=state_mgr,
-            tracker=LinearTracker(linear=linear, config=config.linear),
-            workspace=tmp_path / "ws",
-        )  # type: ignore[arg-type]
-        _add_ticket_state(
-            orch, workspace_path=""
-        )  # state exists but workspace_path is empty
-
-        issue = _make_qa_issue()
-        with mock.patch("symphony_linear.orchestrator.start_serve") as m_serve:
-            orch._reconcile_serve([issue], {issue.id: issue})
-
-        m_serve.assert_not_called()
         assert orch._active_serve is None
         transition_calls = linear.calls.get("transition_to_state", [])
         assert any(
@@ -9444,90 +7679,6 @@ class TestFix2CancelledAgentGuards:
         # edit_comment must NOT have been called (cancelled before that point).
         assert "edit_comment" not in linear.calls
 
-    def test_new_pipeline_skips_final_message_when_cancelled(
-        self,
-        orchestrator: Orchestrator,
-        linear: FakeLinearClient,
-    ) -> None:
-        """Fix 2: if cancelled before _post_final_message, no final comment is posted."""
-        linear.set_response(
-            "get_project",
-            Project(
-                id="proj-1",
-                name="Test",
-                links=[
-                    ProjectLink(label="Repo", url="https://github.com/org/repo.git")
-                ],
-            ),
-        )
-        linear.set_response("get_issue", _make_issue(description="Fix"))
-
-        def cancel_then_return(*a: Any, **kw: Any) -> tuple[str, str, int | None]:
-            orchestrator._cancel_ticket("ticket-1")
-            return ("ses-abc", "Done!", None)
-
-        with (
-            mock.patch(
-                "symphony_linear.orchestrator.clone_workspace",
-                return_value=("/tmp/ws/TEAM-1", False),
-            ),
-            mock.patch(
-                "symphony_linear.orchestrator.finalize_workspace",
-            ),
-            mock.patch(
-                "symphony_linear.orchestrator.load_project_config",
-                return_value=ProjectConfig(),
-            ),
-            mock.patch(
-                "symphony_linear.orchestrator.run_initial",
-                side_effect=cancel_then_return,
-            ),
-        ):
-            orchestrator._new_ticket_pipeline(_make_issue())
-
-        # No final message comment (only the metadata comment and error comments are allowed).
-        post_calls = linear.calls.get("post_comment", [])
-        # The final "Done!" message must not appear.
-        assert not any("Done!" in body for _, body in post_calls)
-
-    def test_resume_pipeline_skips_final_message_when_cancelled(
-        self,
-        orchestrator: Orchestrator,
-        linear: FakeLinearClient,
-    ) -> None:
-        """Fix 2: _resume_pipeline skips _post_final_message when cancelled."""
-        ts = TicketState(
-            ticket_id="ticket-1",
-            ticket_identifier="TEAM-1",
-            repo_url="https://x",
-            workspace_path="/tmp/x",
-            branch="main",
-            status=TicketStatus.needs_input,
-            session_id="ses-abc",
-            last_seen_comment_id="cmt-seen-1",
-        )
-        orchestrator._state.upsert(ts)
-        linear.set_response("list_comments_since", [_make_comment("c1", "Go")])
-
-        def cancel_then_return(*a: Any, **kw: Any) -> tuple[str, int | None]:
-            orchestrator._cancel_ticket("ticket-1")
-            return ("Done!", None)
-
-        with (
-            mock.patch(
-                "symphony_linear.orchestrator.load_project_config",
-                return_value=ProjectConfig(),
-            ),
-            mock.patch(
-                "symphony_linear.orchestrator.run_resume",
-                side_effect=cancel_then_return,
-            ),
-        ):
-            orchestrator._resume_pipeline(ts)
-
-        post_calls = linear.calls.get("post_comment", [])
-        assert not any("Done!" in body for _, body in post_calls)
-
 
 # ---------------------------------------------------------------------------
 # Fix 3: transition-first in loser bump loop
@@ -9535,13 +7686,15 @@ class TestFix2CancelledAgentGuards:
 
 
 class TestFix3TransitionFirst:
-    def test_transition_fails_no_bump_comment(
+    @pytest.mark.parametrize("transition_fails", [False, True])
+    def test_bump_comment_only_after_successful_transition(
         self,
         tmp_path: Path,
         state_mgr: StateManager,
         linear: FakeLinearClient,
+        transition_fails: bool,
     ) -> None:
-        """Fix 3: if transition_to_state fails for a loser, no bump comment is posted."""
+        """Fix 3: a loser gets a bump comment only if its transition succeeded."""
         config = _make_qa_config(tmp_path)
         orch = Orchestrator(
             config=config,
@@ -9562,8 +7715,9 @@ class TestFix3TransitionFirst:
         )
         issues_by_id = {"ticket-1": issue1, "ticket-2": issue2}
 
-        # Make transition_to_state fail for the loser (ticket-1).
-        linear.set_response("transition_to_state", LinearError("transition failed"))
+        if transition_fails:
+            # Fail the loser's (ticket-1) transition to Needs Input.
+            linear.set_response("transition_to_state", LinearError("transition failed"))
 
         fake_proc = _make_fake_proc(returncode=None)
         with mock.patch(
@@ -9571,50 +7725,13 @@ class TestFix3TransitionFirst:
         ):
             orch._reconcile_serve([issue1, issue2], issues_by_id)
 
-        # No bump comment for ticket-1 (transition failed → skip comment).
         post_calls = linear.calls.get("post_comment", [])
-        assert not any(
-            "ticket-1" == tid and "Bumped out of QA" in body for tid, body in post_calls
-        )
-
-    def test_transition_succeeds_bump_comment_posted(
-        self,
-        tmp_path: Path,
-        state_mgr: StateManager,
-        linear: FakeLinearClient,
-    ) -> None:
-        """Fix 3: if transition_to_state succeeds for a loser, bump comment IS posted."""
-        config = _make_qa_config(tmp_path)
-        orch = Orchestrator(
-            config=config,
-            state=state_mgr,
-            tracker=LinearTracker(linear=linear, config=config.linear),
-            workspace=tmp_path / "ws",
-        )  # type: ignore[arg-type]
-        _add_ticket_state(orch, ticket_id="ticket-1", identifier="TEAM-1")
-        _add_ticket_state(orch, ticket_id="ticket-2", identifier="TEAM-2")
-
-        issue1 = _make_qa_issue(ticket_id="ticket-1", identifier="TEAM-1")
-        issue2 = _make_issue(
-            id="ticket-2",
-            identifier="TEAM-2",
-            state="In Review",
-            labels=["Agent"],
-            updatedAt="2025-07-01T00:00:00Z",
-        )
-        issues_by_id = {"ticket-1": issue1, "ticket-2": issue2}
-
-        fake_proc = _make_fake_proc(returncode=None)
-        with mock.patch(
-            "symphony_linear.orchestrator.start_serve", return_value=fake_proc
-        ):
-            orch._reconcile_serve([issue1, issue2], issues_by_id)
-
-        # Bump comment posted for ticket-1 (transition succeeded).
-        post_calls = linear.calls.get("post_comment", [])
-        assert any(
-            "ticket-1" == tid and "Bumped out of QA" in body for tid, body in post_calls
-        )
+        bump_comments = [
+            (tid, body)
+            for tid, body in post_calls
+            if tid == "ticket-1" and "Bumped out of QA" in body
+        ]
+        assert len(bump_comments) == (0 if transition_fails else 1)
 
 
 # ---------------------------------------------------------------------------
@@ -9623,13 +7740,13 @@ class TestFix3TransitionFirst:
 
 
 class TestFix4Drainer:
-    def test_drainer_captures_up_to_cap(
+    def test_drainer_caps_buffer_and_reads_all_data(
         self,
         tmp_path: Path,
         state_mgr: StateManager,
         linear: FakeLinearClient,
     ) -> None:
-        """Fix 4: drainer fills buffer up to _DRAINER_CAP bytes and stops appending."""
+        """Fix 4: the drainer caps the buffer but consumes the whole pipe."""
         import io
         from symphony_linear.orchestrator import _DRAINER_CAP
 
@@ -9641,44 +7758,17 @@ class TestFix4Drainer:
             workspace=tmp_path / "ws",
         )  # type: ignore[arg-type]
 
-        # 2000 bytes of data — more than the cap.
-        data = b"x" * 2000
+        # More data than the cap: it must all be read without blocking.
+        data = b"x" * (_DRAINER_CAP * 3)
         pipe = io.BytesIO(data)
         buf: bytearray = bytearray()
 
         orch._pipe_drainer(pipe, buf)
 
+        # Pipe fully consumed (BytesIO position at end) and buffer capped.
+        assert pipe.tell() == len(data)
         assert len(buf) == _DRAINER_CAP
         assert buf == bytearray(b"x" * _DRAINER_CAP)
-
-    def test_drainer_reads_all_data_past_cap(
-        self,
-        tmp_path: Path,
-        state_mgr: StateManager,
-        linear: FakeLinearClient,
-    ) -> None:
-        """Fix 4: drainer reads all data even past the cap (no blocking)."""
-        import io
-
-        config = _make_qa_config(tmp_path)
-        orch = Orchestrator(
-            config=config,
-            state=state_mgr,
-            tracker=LinearTracker(linear=linear, config=config.linear),
-            workspace=tmp_path / "ws",
-        )  # type: ignore[arg-type]
-
-        # 3000 bytes — drainer must consume all of it without blocking.
-        data = b"y" * 3000
-        pipe = io.BytesIO(data)
-        buf: bytearray = bytearray()
-
-        orch._pipe_drainer(pipe, buf)
-
-        # Pipe fully consumed (BytesIO position at end).
-        assert pipe.tell() == 3000
-        # Buffer capped.
-        assert len(buf) == 1000
 
     def test_drainers_started_immediately_after_start_serve(
         self,
@@ -9770,14 +7860,19 @@ class TestQaWorkspaceSetup:
             tid == "ticket-1" for tid, _ in linear.calls.get("post_comment", [])
         )
 
-    def test_in_flight_task_leaves_no_setup_id(
+    @pytest.mark.parametrize("setup_tracked", [False, True])
+    def test_in_flight_tasks_block_qa_serve(
         self,
         tmp_path: Path,
         state_mgr: StateManager,
         linear: FakeLinearClient,
+        setup_tracked: bool,
     ) -> None:
-        """An in-flight task blocks the submit, so no id is left in the set."""
+        """An in-flight agent task or setup task leaves the QA winner untouched."""
         orch = self._make_orch(tmp_path, state_mgr, linear)
+        if setup_tracked:
+            with orch._task_lock:
+                orch._qa_setup_tasks.add("ticket-1")
         not_done: mock.MagicMock = mock.MagicMock()
         not_done.done.return_value = False
         with orch._task_lock:
@@ -9787,47 +7882,19 @@ class TestQaWorkspaceSetup:
         with (
             mock.patch("symphony_linear.orchestrator.start_serve") as m_serve,
             mock.patch.object(orch, "_qa_setup_pipeline") as m_pipeline,
-        ):
-            orch._reconcile_serve([issue], {issue.id: issue})
-
-        m_serve.assert_not_called()
-        m_pipeline.assert_not_called()
-        assert "ticket-1" not in orch._qa_setup_tasks
-        assert orch._active_tasks["ticket-1"] is not_done
-        assert linear.calls.get("transition_to_state", []) == []
-        assert not any(
-            tid == "ticket-1" for tid, _ in linear.calls.get("post_comment", [])
-        )
-
-    def test_setup_in_flight_returns_without_cancel_or_bail(
-        self,
-        tmp_path: Path,
-        state_mgr: StateManager,
-        linear: FakeLinearClient,
-    ) -> None:
-        """A winner whose setup task is in flight is left completely untouched."""
-        orch = self._make_orch(tmp_path, state_mgr, linear)
-        with orch._task_lock:
-            orch._qa_setup_tasks.add("ticket-1")
-        not_done: mock.MagicMock = mock.MagicMock()
-        not_done.done.return_value = False
-        with orch._task_lock:
-            orch._active_tasks["ticket-1"] = not_done  # type: ignore[assignment]
-
-        issue = _make_qa_issue()
-        with (
-            mock.patch("symphony_linear.orchestrator.start_serve") as m_serve,
             mock.patch.object(orch, "_cancel_ticket") as m_cancel,
         ):
             orch._reconcile_serve([issue], {issue.id: issue})
 
         m_serve.assert_not_called()
+        m_pipeline.assert_not_called()
         m_cancel.assert_not_called()
+        assert ("ticket-1" in orch._qa_setup_tasks) is setup_tracked
+        assert orch._active_tasks["ticket-1"] is not_done
         assert linear.calls.get("transition_to_state", []) == []
         assert not any(
             tid == "ticket-1" for tid, _ in linear.calls.get("post_comment", [])
         )
-        assert orch._active_tasks["ticket-1"] is not_done
 
     def test_setup_prepares_workspace_then_serve_starts_on_later_tick(
         self,
@@ -9835,8 +7902,8 @@ class TestQaWorkspaceSetup:
         state_mgr: StateManager,
         linear: FakeLinearClient,
     ) -> None:
-        """Setup run directly: state parked in needs_input, tracker untouched,
-        then the next reconcile tick starts the serve."""
+        """Setup is driven by _reconcile_serve: the guard is set while the
+        scheduled task runs, then the next reconcile tick starts the serve."""
         orch = self._make_orch(tmp_path, state_mgr, linear)
         self._set_repo_link(linear)
         linear.set_response(
@@ -9851,14 +7918,19 @@ class TestQaWorkspaceSetup:
                 "symphony_linear.orchestrator.load_project_config"
             ) as m_load_config,
             mock.patch("symphony_linear.orchestrator.run_initial") as m_run_initial,
+            mock.patch.object(orch, "_submit_task_locked", return_value=True),
         ):
             m_clone.return_value = ("/tmp/workspaces/TEAM-1", False)
             m_load_config.return_value = ProjectConfig()
-            orch._qa_setup_pipeline(issue)
+            orch._reconcile_serve([issue], {issue.id: issue})
+            assert "ticket-1" in orch._qa_setup_tasks
+            # _reconcile_serve released _task_lock; run the scheduled task.
+            orch._task_wrapper("ticket-1", orch._qa_setup_pipeline, issue)
 
         # No agent turn runs.
         m_run_initial.assert_not_called()
-        # The tracker stays in QA: no transitions at all.
+        # The guard is cleared and the tracker stays in QA: no transitions.
+        assert "ticket-1" not in orch._qa_setup_tasks
         assert linear.calls.get("transition_to_state", []) == []
 
         ts = orch._state.get("ticket-1")
@@ -9868,7 +7940,6 @@ class TestQaWorkspaceSetup:
         assert ts.agent is None
         assert ts.workspace_path == "/tmp/workspaces/TEAM-1"
         assert ts.last_seen_comment_id == "cmt-1"
-        assert "ticket-1" not in orch._qa_setup_tasks
 
         post_calls = linear.calls.get("post_comment", [])
         assert any(
@@ -9951,41 +8022,6 @@ class TestQaWorkspaceSetup:
         assert not any(
             tid == "ticket-1" for tid, _ in linear.calls.get("post_comment", [])
         )
-
-    def test_reconcile_serve_bootstraps_never_worked_winner_end_to_end(
-        self,
-        tmp_path: Path,
-        state_mgr: StateManager,
-        linear: FakeLinearClient,
-    ) -> None:
-        """Full path through _reconcile_serve + the scheduled task: workspace
-        prepped, state parked, no agent turn, tracker left in QA, guard cleared."""
-        orch = self._make_orch(tmp_path, state_mgr, linear)
-        self._set_repo_link(linear)
-        issue = _make_qa_issue()
-
-        with (
-            mock.patch("symphony_linear.orchestrator.clone_workspace") as m_clone,
-            mock.patch("symphony_linear.orchestrator.finalize_workspace"),
-            mock.patch(
-                "symphony_linear.orchestrator.load_project_config"
-            ) as m_load_config,
-            mock.patch("symphony_linear.orchestrator.run_initial") as m_run_initial,
-            mock.patch.object(orch, "_submit_task_locked", return_value=True),
-        ):
-            m_clone.return_value = ("/tmp/workspaces/TEAM-1", False)
-            m_load_config.return_value = ProjectConfig()
-            orch._reconcile_serve([issue], {issue.id: issue})
-            # _reconcile_serve released _task_lock; run the scheduled task.
-            orch._task_wrapper("ticket-1", orch._qa_setup_pipeline, issue)
-
-        m_run_initial.assert_not_called()
-        ts = orch._state.get("ticket-1")
-        assert ts is not None
-        assert ts.status == TicketStatus.needs_input
-        assert ts.session_id is None
-        assert "ticket-1" not in orch._qa_setup_tasks
-        assert linear.calls.get("transition_to_state", []) == []
 
 
 # ---------------------------------------------------------------------------
@@ -10236,135 +8272,6 @@ class TestCorrection3:
         assert updated is not None
         assert updated.status == TicketStatus.needs_input
         assert updated.last_seen_comment_id == "cmt-latest"
-
-    def test_no_inflight_task_serve_starts_normally(
-        self,
-        tmp_path: Path,
-        state_mgr: StateManager,
-        linear: FakeLinearClient,
-    ) -> None:
-        """When there is no in-flight task, _reconcile_serve starts the serve without cancelling."""
-        config = _make_qa_config(tmp_path)
-        orch = Orchestrator(
-            config=config,
-            state=state_mgr,
-            tracker=LinearTracker(linear=linear, config=config.linear),
-            workspace=tmp_path / "ws",
-        )  # type: ignore[arg-type]
-        _add_ticket_state(orch)
-
-        issue = _make_qa_issue()
-        new_proc = _make_fake_proc(returncode=None)
-
-        with mock.patch(
-            "symphony_linear.orchestrator.start_serve", return_value=new_proc
-        ) as m_serve:
-            orch._reconcile_serve([issue], {issue.id: issue})
-
-        m_serve.assert_called_once()
-        assert not orch._is_cancelled("ticket-1")
-
-    def test_new_ticket_pipeline_skips_transition_when_cancelled(
-        self,
-        orchestrator: Orchestrator,
-        linear: FakeLinearClient,
-    ) -> None:
-        """_new_ticket_pipeline does not call transition_to_state if cancelled after final message."""
-        linear.set_response(
-            "get_project",
-            Project(
-                id="proj-1",
-                name="Test",
-                links=[
-                    ProjectLink(label="Repo", url="https://github.com/org/repo.git")
-                ],
-            ),
-        )
-        linear.set_response("get_issue", _make_issue(description="Fix"))
-
-        # Cancel the ticket after run_initial returns but before transition.
-        def cancel_then_return(*a: Any, **kw: Any) -> tuple[str, str, int | None]:
-            orchestrator._cancel_ticket("ticket-1")
-            return ("ses-abc", "Done!", None)
-
-        with (
-            mock.patch(
-                "symphony_linear.orchestrator.clone_workspace",
-                return_value=("/tmp/ws/TEAM-1", False),
-            ),
-            mock.patch(
-                "symphony_linear.orchestrator.finalize_workspace",
-            ),
-            mock.patch(
-                "symphony_linear.orchestrator.load_project_config",
-                return_value=ProjectConfig(),
-            ),
-            mock.patch(
-                "symphony_linear.orchestrator.run_initial",
-                side_effect=cancel_then_return,
-            ),
-        ):
-            orchestrator._new_ticket_pipeline(_make_issue())
-
-        # transition_to_state should NOT have been called with needs_input_state
-        # after the final message (the cancel happened mid-run).
-        transition_calls = linear.calls.get("transition_to_state", [])
-        # The only allowed transition is the early "In Progress" one; needs_input must not appear.
-        needs_input_name = orchestrator._tracker.transition_name_for(
-            TransitionTarget.needs_input
-        )
-        needs_input_transitions = [
-            (tid, state) for tid, state in transition_calls if state == needs_input_name
-        ]
-        assert needs_input_transitions == [], (
-            f"Expected no needs_input transition after cancellation, got: {needs_input_transitions}"
-        )
-
-    def test_resume_pipeline_skips_transition_when_cancelled(
-        self,
-        orchestrator: Orchestrator,
-        linear: FakeLinearClient,
-    ) -> None:
-        """_resume_pipeline does not call transition_to_state if cancelled after final message."""
-        ts = TicketState(
-            ticket_id="ticket-1",
-            ticket_identifier="TEAM-1",
-            repo_url="https://x",
-            workspace_path="/tmp/x",
-            branch="main",
-            status=TicketStatus.needs_input,
-            session_id="ses-abc",
-            last_seen_comment_id="cmt-seen-1",
-        )
-        orchestrator._state.upsert(ts)
-        linear.set_response("list_comments_since", [_make_comment("c1", "Go")])
-
-        def cancel_then_return(*a: Any, **kw: Any) -> tuple[str, int | None]:
-            orchestrator._cancel_ticket("ticket-1")
-            return ("Done!", None)
-
-        with (
-            mock.patch(
-                "symphony_linear.orchestrator.load_project_config",
-                return_value=ProjectConfig(),
-            ),
-            mock.patch(
-                "symphony_linear.orchestrator.run_resume",
-                side_effect=cancel_then_return,
-            ),
-        ):
-            orchestrator._resume_pipeline(ts)
-
-        transition_calls = linear.calls.get("transition_to_state", [])
-        needs_input_name = orchestrator._tracker.transition_name_for(
-            TransitionTarget.needs_input
-        )
-        needs_input_transitions = [
-            (tid, state) for tid, state in transition_calls if state == needs_input_name
-        ]
-        assert needs_input_transitions == [], (
-            f"Expected no needs_input transition after cancellation, got: {needs_input_transitions}"
-        )
 
 
 # ---------------------------------------------------------------------------
@@ -10854,16 +8761,6 @@ class TestTickLock:
 
 
 class TestCheckoutRestart:
-    def test_unchanged_head_does_not_restart(self, orchestrator: Orchestrator) -> None:
-        orchestrator._checkout_watcher = _FakeCheckoutWatcher("aaa", "aaa")
-
-        with mock.patch(
-            "symphony_linear.orchestrator.validate_checkout"
-        ) as mock_validate:
-            assert orchestrator._checkout_restart_due() is False
-
-        mock_validate.assert_not_called()
-
     def test_changed_while_task_in_flight_waits_until_idle(
         self, orchestrator: Orchestrator
     ) -> None:
@@ -10888,53 +8785,6 @@ class TestCheckoutRestart:
         ):
             assert orchestrator._checkout_restart_due() is True
         assert watcher.head == "bbb"
-
-    def test_deferred_restart_logs_once_per_new_head(
-        self, orchestrator: Orchestrator, caplog: pytest.LogCaptureFixture
-    ) -> None:
-        watcher = _FakeCheckoutWatcher("aaaaaaaaaaaa", "bbbbbbbbbbbb")
-        orchestrator._checkout_watcher = watcher
-        with orchestrator._task_lock:
-            orchestrator._active_tasks["ticket-1"] = Future()
-
-        with (
-            mock.patch(
-                "symphony_linear.orchestrator.validate_checkout"
-            ) as mock_validate,
-            caplog.at_level(logging.INFO, logger="symphony_linear.orchestrator"),
-        ):
-            assert orchestrator._checkout_restart_due() is False
-            assert orchestrator._checkout_restart_due() is False
-
-        # One line for the new HEAD, not one per tick; the baseline is left
-        # untouched so the deferred change is still pending.
-        assert caplog.text.count("restart deferred until 1 active task(s) finish") == 1
-        assert "Checkout changed (aaaaaaaaaaaa -> bbbbbbbbbbbb)" in caplog.text
-        mock_validate.assert_not_called()
-        assert watcher.head == "aaaaaaaaaaaa"
-
-    def test_deferred_restart_logs_again_for_a_new_head(
-        self, orchestrator: Orchestrator, caplog: pytest.LogCaptureFixture
-    ) -> None:
-        watcher = _FakeCheckoutWatcher("aaaaaaaaaaaa", "bbbbbbbbbbbb")
-        orchestrator._checkout_watcher = watcher
-        with orchestrator._task_lock:
-            orchestrator._active_tasks["ticket-1"] = Future()
-
-        with (
-            mock.patch(
-                "symphony_linear.orchestrator.validate_checkout"
-            ) as mock_validate,
-            caplog.at_level(logging.INFO, logger="symphony_linear.orchestrator"),
-        ):
-            assert orchestrator._checkout_restart_due() is False
-            watcher.current = "cccccccccccc"
-            assert orchestrator._checkout_restart_due() is False
-
-        assert caplog.text.count("restart deferred until 1 active task(s) finish") == 2
-        assert "Checkout changed (aaaaaaaaaaaa -> bbbbbbbbbbbb)" in caplog.text
-        assert "Checkout changed (aaaaaaaaaaaa -> cccccccccccc)" in caplog.text
-        mock_validate.assert_not_called()
 
     def test_changed_idle_and_valid_requests_restart(
         self, orchestrator: Orchestrator, caplog: pytest.LogCaptureFixture
@@ -11050,15 +8900,6 @@ class TestCheckoutRestart:
         assert shutdown_called.is_set()
         assert ticks == []
 
-    def test_run_returns_false_on_plain_shutdown(
-        self, orchestrator: Orchestrator
-    ) -> None:
-        orchestrator._install_signal_handlers = lambda: None  # type: ignore[method-assign]
-        orchestrator._checkout_watcher = _FakeCheckoutWatcher("aaa", "bbb")
-        orchestrator._shutdown.set()
-
-        assert orchestrator.run() is False
-
     def test_run_does_not_restart_when_signal_lands_during_validation(
         self, orchestrator: Orchestrator, linear: FakeLinearClient
     ) -> None:
@@ -11100,24 +8941,6 @@ class TestCheckoutRestart:
             "symphony_linear.orchestrator.validate_checkout", return_value=True
         ):
             assert orchestrator.run() is False
-
-    def test_signal_handler_still_exits_loop(self, orchestrator: Orchestrator) -> None:
-        import signal
-
-        orchestrator._config.poll_interval_seconds = 30
-        orchestrator._checkout_watcher = _FakeCheckoutWatcher("aaa", "aaa")
-        orchestrator._install_signal_handlers = lambda: None  # type: ignore[method-assign]
-
-        ran = threading.Event()
-
-        def tick() -> None:
-            ran.set()
-            orchestrator._signal_handler(signal.SIGTERM, None)
-
-        orchestrator._tick = tick  # type: ignore[method-assign]
-
-        assert orchestrator.run() is False
-        assert ran.is_set()
 
 
 # ---------------------------------------------------------------------------
@@ -11166,55 +8989,6 @@ class TestWebhookServerIntegration:
         # start() must have been called after _recover_state (which always runs first).
         mock_ws.start.assert_called_once()
         # stop() must have been called by _shutdown_handler.
-        mock_ws.stop.assert_called_once()
-
-    def test_no_webhook_server_does_not_crash(
-        self,
-        tmp_config: AppConfig,
-        state_mgr: StateManager,
-        linear: FakeLinearClient,
-        tmp_path: Path,
-    ) -> None:
-        """Without webhook_server (default), run() and _shutdown_handler() work fine."""
-        orch = Orchestrator(
-            config=tmp_config,
-            state=state_mgr,
-            tracker=LinearTracker(linear=linear, config=tmp_config.linear),
-            workspace=tmp_path / "ws",
-        )  # type: ignore[arg-type]
-        assert orch._webhook_server is None  # default
-
-        linear.set_response("list_triggered_issues", [])
-        orch._install_signal_handlers = lambda: None  # type: ignore[method-assign]
-
-        def do_run_then_shutdown() -> None:
-            orch.run()
-
-        t = threading.Thread(target=do_run_then_shutdown, daemon=True)
-        t.start()
-
-        time.sleep(0.15)
-        orch._shutdown.set()
-        orch._wake.set()
-        t.join(timeout=2)
-
-    def test_stop_called_during_shutdown(
-        self,
-        tmp_config: AppConfig,
-        state_mgr: StateManager,
-        linear: FakeLinearClient,
-        tmp_path: Path,
-    ) -> None:
-        """_shutdown_handler calls webhook_server.stop() when configured."""
-        mock_ws = mock.MagicMock(spec=WebhookServer)
-        orch = Orchestrator(
-            config=tmp_config,
-            state=state_mgr,
-            tracker=LinearTracker(linear=linear, config=tmp_config.linear),
-            workspace=tmp_path / "ws",
-            webhook_server=mock_ws,
-        )  # type: ignore[arg-type]
-        orch._shutdown_handler()
         mock_ws.stop.assert_called_once()
 
 

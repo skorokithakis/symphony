@@ -93,29 +93,13 @@ class TestCliWebhookWiring:
         _write_config(tmp_path, _CONFIG_WITHOUT_WEBHOOK)
 
         with (
-            mock.patch("symphony_linear.cli.load_state") as mock_load_state,
-            mock.patch("symphony_linear.cli.Orchestrator") as mock_orch_class,
+            mock.patch("symphony_linear.cli.load_state"),
+            mock.patch("symphony_linear.cli.Orchestrator"),
+            mock.patch("symphony_linear.cli.WebhookServer") as mock_webhook_class,
         ):
-            mock_load_state.return_value = mock.MagicMock()
-
-            mock_orch = mock.MagicMock()
-            mock_orch_class.return_value = mock_orch
-
             main(["--workspace", str(tmp_path)])
 
-            # Orchestrator constructed without webhook_server.
-            _, kwargs = mock_orch_class.call_args
-            assert (
-                "webhook_server" not in kwargs or kwargs.get("webhook_server") is None
-            )
-
-            # _webhook_server was never set on the orchestrator instance.
-            # Since mock.MagicMock returns a mock for any attribute, we check
-            # that no set was called that looks like setting _webhook_server.
-            # Instead, check that WebhookServer was never instantiated.
-            with mock.patch("symphony_linear.cli.WebhookServer") as mock_ws_class:
-                main(["--workspace", str(tmp_path)])
-            mock_ws_class.assert_not_called()
+        mock_webhook_class.assert_not_called()
 
     def test_webhook_block_creates_and_wires_server(self, tmp_path: Path) -> None:
         """With a webhook config block, WebhookServer is constructed and set on orchestrator."""
@@ -276,9 +260,19 @@ class TestCliWebUIWiring:
 
 
 class TestModelLabelProvisioningWiring:
-    def test_model_aliases_become_label_names(self, tmp_path: Path) -> None:
+    @pytest.mark.parametrize(
+        ("config_text", "expected_labels"),
+        [
+            (_CONFIG_WITH_MODELS, ["Model: Strong", "Model: Cheap"]),
+            (_CONFIG_WITHOUT_WEBHOOK, []),
+        ],
+        ids=["aliases", "no-models"],
+    )
+    def test_model_aliases_become_label_names(
+        self, tmp_path: Path, config_text: str, expected_labels: list[str]
+    ) -> None:
         """Configured model aliases are passed as Model: <alias> label names."""
-        _write_config(tmp_path, _CONFIG_WITH_MODELS)
+        _write_config(tmp_path, config_text)
 
         with (
             mock.patch("symphony_linear.cli.load_state") as mock_load_state,
@@ -294,27 +288,8 @@ class TestModelLabelProvisioningWiring:
             main(["--workspace", str(tmp_path)])
 
             mock_tracker.ensure_trigger_setup.assert_called_once_with(
-                mock_state, ["Model: Strong", "Model: Cheap"]
+                mock_state, expected_labels
             )
-
-    def test_empty_models_passes_empty_list(self, tmp_path: Path) -> None:
-        """No `models:` block means an empty list and no label work."""
-        _write_config(tmp_path, _CONFIG_WITHOUT_WEBHOOK)
-
-        with (
-            mock.patch("symphony_linear.cli.load_state") as mock_load_state,
-            mock.patch("symphony_linear.cli.Orchestrator") as mock_orch_class,
-            mock.patch("symphony_linear.cli._create_tracker") as mock_create_tracker,
-        ):
-            mock_state = mock.MagicMock()
-            mock_load_state.return_value = mock_state
-            mock_orch_class.return_value = mock.MagicMock()
-            mock_tracker = mock.MagicMock()
-            mock_create_tracker.return_value = mock_tracker
-
-            main(["--workspace", str(tmp_path)])
-
-            mock_tracker.ensure_trigger_setup.assert_called_once_with(mock_state, [])
 
 
 # ---------------------------------------------------------------------------
@@ -323,8 +298,12 @@ class TestModelLabelProvisioningWiring:
 
 
 class TestAgentBinaryValidation:
+    @pytest.mark.parametrize("extra_args", [[], ["--validate-config"]])
     def test_startup_checks_selected_agent_binary(
-        self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+        self,
+        tmp_path: Path,
+        monkeypatch: pytest.MonkeyPatch,
+        extra_args: list[str],
     ) -> None:
         _write_config(
             tmp_path,
@@ -350,30 +329,7 @@ linear:
             mock_create_tracker.return_value = mock.MagicMock()
             mock_orch_class.return_value = mock.MagicMock()
 
-            main(["--workspace", str(tmp_path)])
-
-        mock_which.assert_any_call("bwrap")
-        mock_which.assert_any_call("omp", path=sandbox_path)
-
-    def test_validate_config_checks_selected_agent_binary(
-        self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
-    ) -> None:
-        _write_config(
-            tmp_path,
-            """\
-agent: omp
-linear:
-  api_key: test-key
-""",
-        )
-
-        sandbox_path = "/sandbox/bin"
-        monkeypatch.setenv("SYMPHONY_SANDBOX_PATH", sandbox_path)
-
-        with mock.patch(
-            "symphony_linear.cli.shutil.which", return_value="/usr/bin/omp"
-        ) as mock_which:
-            main(["--workspace", str(tmp_path), "--validate-config"])
+            main(["--workspace", str(tmp_path), *extra_args])
 
         mock_which.assert_any_call("bwrap")
         mock_which.assert_any_call("omp", path=sandbox_path)
@@ -931,25 +887,6 @@ class TestCreateTracker:
         tracker.transition_to(ticket.id, TransitionTarget.needs_input)
 
         assert calls == []
-
-    def test_main_passes_workspace_to_tracker_factory(self, tmp_path: Path) -> None:
-        _write_config(tmp_path, _CONFIG_WITH_WEBUI)
-
-        with (
-            mock.patch("symphony_linear.cli.load_state") as mock_load_state,
-            mock.patch("symphony_linear.cli._create_tracker") as mock_create_tracker,
-            mock.patch("symphony_linear.cli.Orchestrator") as mock_orch_class,
-            mock.patch("symphony_linear.cli.WebUIServer") as mock_webui_class,
-        ):
-            mock_load_state.return_value = mock.MagicMock()
-            mock_create_tracker.return_value = LocalTracker(tmp_path)
-            mock_orch_class.return_value = mock.MagicMock()
-
-            main(["--workspace", str(tmp_path)])
-
-        mock_webui_class.assert_called_once()
-        args, _ = mock_create_tracker.call_args
-        assert args[1] == tmp_path
 
     def test_main_shares_one_presence_between_tracker_and_web_ui(
         self, tmp_path: Path

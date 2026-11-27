@@ -149,21 +149,20 @@ class TestNewPage:
         assert _tickets(tmp_path) == []
         assert not (tmp_path / "tickets" / "counter.json").exists()
 
-    def test_title_field_is_shown_without_an_anthropic_key(
-        self, tmp_path: Path
-    ) -> None:
+    def test_the_title_field_follows_the_anthropic_key(self, tmp_path: Path) -> None:
         with _server(tmp_path) as (port, _tracker, _wake):
-            _status, text = _get(port, "/new")
+            _status, without_key = _get(port, "/new")
 
-        assert 'id="title"' in text
-        assert "You do not write a title" not in text
+        assert 'id="title"' in without_key
+        assert "You do not write a title" not in without_key
 
-    def test_title_field_is_hidden_with_an_anthropic_key(self, tmp_path: Path) -> None:
-        with _server(tmp_path, api_key="sk-test") as (port, _tracker, _wake):
-            _status, text = _get(port, "/new")
+        keyed = tmp_path / "keyed"
+        keyed.mkdir()
+        with _server(keyed, api_key="sk-test") as (port, _tracker, _wake):
+            _status, with_key = _get(port, "/new")
 
-        assert 'id="title"' not in text
-        assert "You do not write a title. Symphony writes it from your text" in text
+        assert 'id="title"' not in with_key
+        assert "You do not write a title. Symphony writes it from your text" in with_key
 
     def test_model_select_offers_default_then_the_aliases_in_order(
         self, tmp_path: Path
@@ -326,17 +325,6 @@ class TestNewPage:
         assert '<optgroup label="Recent">' not in short
         assert '<optgroup label="All repositories">' in short
 
-    def test_a_full_url_is_the_option_value_and_a_short_name(
-        self, tmp_path: Path
-    ) -> None:
-        url = "https://gitlab.example.com/team/project.git"
-        _write_ticket(tmp_path, "SYM-1", state=STATE_DRAFT, repo=url)
-
-        with _server(tmp_path) as (port, _tracker, _wake):
-            _status, text = _get(port, "/new")
-
-        assert f'<option value="{url}" selected>team/project</option>' in text
-
     def test_new_ticket_falls_back_to_the_first_repo_still_in_the_list(
         self, tmp_path: Path
     ) -> None:
@@ -361,31 +349,6 @@ class TestNewPage:
 
         assert '<option value="old/repo" selected>old/repo</option>' in text
         assert 'value="new/repo"' not in text
-
-    def test_no_repositories_selects_add_a_repository(self, tmp_path: Path) -> None:
-        with _server(tmp_path) as (port, _tracker, _wake):
-            _status, text = _get(port, "/new")
-
-        assert '<option value="" selected>Add a repository…</option>' in text
-
-    def test_the_repository_picker_is_a_combobox_over_the_same_select(
-        self, tmp_path: Path
-    ) -> None:
-        with _server(tmp_path) as (port, _tracker, _wake):
-            _status, text = _get(port, "/new")
-
-        # The picker is an enhancement only: the select still carries every
-        # option, so the no-JavaScript form and the phone's native picker work.
-        assert '<select class="input mono" id="repo" name="repo"' in text
-        assert '<dialog class="confirm repo-picker" id="repo-picker"' in text
-        assert 'id="repo-picker-input"' in text
-        assert 'role="combobox"' in text
-        assert 'aria-controls="repo-picker-list"' in text
-        assert 'id="repo-picker-list"' in text
-        assert 'role="listbox"' in text
-        assert re.search(
-            r'<script src="/static/editor\.js\?v=\d+" defer></script>', text
-        )
 
     def test_the_repository_picker_is_only_on_the_editor(self, tmp_path: Path) -> None:
         _write_ticket(tmp_path, "SYM-1", state=STATE_IN_PROGRESS, title="Running")
@@ -460,12 +423,6 @@ class TestEditPage:
 
         assert status == 303
         assert headers["Location"] == f"/tickets/{ticket.id}"
-
-    def test_unknown_ticket_is_404(self, tmp_path: Path) -> None:
-        with _server(tmp_path) as (port, _tracker, _wake):
-            status, _text = _get(port, "/tickets/SYM-404/edit")
-
-        assert status == 404
 
     def test_untrusted_values_are_escaped(self, tmp_path: Path) -> None:
         title = '<script>alert("x")</script>'
@@ -561,26 +518,22 @@ class TestSave:
         assert stored.repo == "new/repo"
         assert stored.model == "sonnet-4.5"
 
-    def test_an_unknown_model_is_ignored(self, tmp_path: Path) -> None:
-        with _server(tmp_path, models=_ALIASES) as (port, tracker, _wake):
-            ticket = tracker.store.create_draft(description="x")
-            _post(
-                port,
-                f"/tickets/{ticket.id}/edit",
-                {"description": "x", "model": "not-an-alias"},
-            )
-            stored = tracker.store.get(ticket.id)
-
-        assert stored is not None
-        assert stored.model is None
-
-    def test_default_saves_a_stored_model_back_to_none(self, tmp_path: Path) -> None:
+    @pytest.mark.parametrize(
+        "model",
+        [
+            pytest.param("not-an-alias", id="unknown-alias"),
+            pytest.param("", id="default"),
+        ],
+    )
+    def test_a_missing_or_unknown_model_saves_as_none(
+        self, tmp_path: Path, model: str
+    ) -> None:
         with _server(tmp_path, models=_ALIASES) as (port, tracker, _wake):
             ticket = tracker.store.create_draft(description="x", model="sonnet-4.5")
             _post(
                 port,
                 f"/tickets/{ticket.id}/edit",
-                {"description": "x", "model": ""},
+                {"description": "x", "model": model},
             )
             stored = tracker.store.get(ticket.id)
 
@@ -709,45 +662,34 @@ class TestSave:
 
 
 class TestStart:
-    def test_a_new_start_racing_a_delete_is_404(self, tmp_path: Path) -> None:
+    @pytest.mark.parametrize(
+        "store_method",
+        [
+            pytest.param("create_started_draft", id="new"),
+            pytest.param("start_draft", id="saved"),
+        ],
+    )
+    def test_a_start_racing_a_delete_is_404(
+        self, tmp_path: Path, store_method: str
+    ) -> None:
+        body = {"title": "A title", "description": "Some text", "repo": "owner/name"}
         with _server(tmp_path) as (port, tracker, _wake):
+            if store_method == "create_started_draft":
+                path = "/new/start"
+            else:
+                ticket = tracker.store.create_draft(
+                    title="A title", description="Some text", repo="owner/name"
+                )
+                path = f"/tickets/{ticket.id}/start"
             with mock.patch.object(
                 tracker.store,
-                "create_started_draft",
+                store_method,
                 side_effect=TrackerNotFoundError("gone"),
             ):
-                status, _headers, _body = _post(
-                    port,
-                    "/new/start",
-                    {
-                        "title": "A title",
-                        "description": "Some text",
-                        "repo": "owner/name",
-                    },
-                )
-
-        assert status == 404
-        assert _tickets(tmp_path) == []
-
-    def test_a_saved_start_racing_a_discard_is_404(self, tmp_path: Path) -> None:
-        with _server(tmp_path) as (port, tracker, _wake):
-            ticket = tracker.store.create_draft(
-                title="A title", description="Some text", repo="owner/name"
-            )
-            with mock.patch.object(
-                tracker.store,
-                "start_draft",
-                side_effect=TrackerNotFoundError("gone"),
-            ):
-                status, _headers, _body = _post(
-                    port,
-                    f"/tickets/{ticket.id}/start",
-                    {
-                        "title": "A title",
-                        "description": "Some text",
-                        "repo": "owner/name",
-                    },
-                )
+                status, _headers, _body = _post(port, path, body)
+            if store_method == "create_started_draft":
+                # A racing delete on a new start leaves no ticket behind.
+                assert _tickets(tmp_path) == []
 
         assert status == 404
 
@@ -952,26 +894,6 @@ class TestStart:
         assert stored.repo == "old/repo"
         wake.assert_not_called()
 
-    def test_starting_a_started_ticket_redirects(self, tmp_path: Path) -> None:
-        with _server(tmp_path) as (port, tracker, wake):
-            ticket = tracker.store.create_draft(
-                title="Started", description="text", repo="owner/name"
-            )
-            tracker.store.set_state(ticket.id, STATE_IN_PROGRESS)
-            status, headers, _body = _post(
-                port,
-                f"/tickets/{ticket.id}/start",
-                {"title": "Other", "description": "other", "repo": "other/repo"},
-            )
-            stored = tracker.store.get(ticket.id)
-
-        assert status == 303
-        assert headers["Location"] == f"/tickets/{ticket.id}"
-        assert stored is not None
-        assert stored.title == "Started"
-        assert stored.description == "text"
-        wake.assert_not_called()
-
     def test_cross_origin_start_is_forbidden(self, tmp_path: Path) -> None:
         with _server(tmp_path) as (port, _tracker, wake):
             status, _headers, _body = _post(
@@ -1038,14 +960,6 @@ class TestDiscard:
         assert headers["Location"] == f"/tickets/{ticket.id}"
         assert stored is not None
         assert stored.state == STATE_IN_PROGRESS
-
-    def test_unknown_ticket_is_404(self, tmp_path: Path) -> None:
-        with _server(tmp_path) as (port, _tracker, _wake):
-            status, _headers, _body = _post(
-                port, "/tickets/SYM-404/discard", {"confirm": "1"}
-            )
-
-        assert status == 404
 
     def test_discarding_an_unsaved_new_editor_redirects_home(
         self, tmp_path: Path

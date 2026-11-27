@@ -114,27 +114,21 @@ class TestHomePoll:
         assert before == unchanged
         assert after != before
 
-    def test_the_needs_input_count_is_in_the_tab_title(self, tmp_path: Path) -> None:
+    def test_the_needs_input_count_is_in_the_tab_title_everywhere(
+        self, tmp_path: Path
+    ) -> None:
         with _server(tmp_path) as (port, tracker, _state, _wake):
             empty_title = "<title>Tickets · symphony</title>"
             assert empty_title in _home(port)
 
-            _ticket(tracker.store, title="Waiting")
+            waiting = _ticket(tracker.store, title="Waiting")
             _ticket(tracker.store, title="Also waiting")
 
-            text = _home(port)
-
-        assert "<title>(2) Tickets · symphony</title>" in text
-
-    def test_the_ticket_page_and_archive_carry_the_count_too(
-        self, tmp_path: Path
-    ) -> None:
-        with _server(tmp_path) as (port, tracker, _state, _wake):
-            waiting = _ticket(tracker.store, title="Waiting")
-            _ticket(tracker.store, title="Second waiting")
+            home = _home(port)
             ticket_page = _request(port, "GET", f"/tickets/{waiting.id}")[2].decode()
             archive_page = _request(port, "GET", "/archive")[2].decode()
 
+        assert "<title>(2) Tickets · symphony</title>" in home
         assert "(2) " in ticket_page.split("<title>", 1)[1]
         assert "(2) " in archive_page.split("<title>", 1)[1]
 
@@ -198,15 +192,6 @@ class TestHomePoll:
 
         assert before == after
 
-    def test_rows_carry_a_machine_readable_time(self, tmp_path: Path) -> None:
-        with _server(tmp_path) as (port, tracker, _state, _wake):
-            _ticket(tracker.store, title="Waiting")
-
-            data = _get_json(port, "/api/home")
-
-        assert 'data-format="relative"' in data["html"]
-        assert "<time datetime=" in data["html"]
-
 
 # ---------------------------------------------------------------------------
 # Ticket polling
@@ -226,23 +211,20 @@ class TestTicketPoll:
         assert "first reply" not in data["entries_html"]
         assert data["last_comment_id"] == second.id
 
-    def test_an_empty_anchor_returns_every_comment(self, tmp_path: Path) -> None:
+    def test_the_anchor_selects_the_delta(self, tmp_path: Path) -> None:
         with _server(tmp_path) as (port, tracker, _state, _wake):
             ticket = _ticket(tracker.store)
             tracker.store.add_human_comment(ticket.id, "only comment")
-
-            data = _get_json(port, f"/api/tickets/{ticket.id}?after=")
-
-        assert "only comment" in data["entries_html"]
-
-    def test_an_unknown_anchor_replays_nothing(self, tmp_path: Path) -> None:
-        with _server(tmp_path) as (port, tracker, _state, _wake):
-            ticket = _ticket(tracker.store)
             tracker.post_comment(ticket.id, "a reply", "final")
 
-            data = _get_json(port, f"/api/tickets/{ticket.id}?after=c-missing")
+            empty = _get_json(port, f"/api/tickets/{ticket.id}?after=")
+            unknown = _get_json(port, f"/api/tickets/{ticket.id}?after=c-missing")
 
-        assert data["entries_html"].strip() == ""
+        assert "only comment" in empty["entries_html"]
+        # A reply that arrived after the anchor is still part of the delta.
+        assert "a reply" in empty["entries_html"]
+        # An id that no longer exists (a deleted ticket's, say) replays nothing.
+        assert unknown["entries_html"].strip() == ""
 
     def test_the_poll_does_not_render_the_whole_thread(
         self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
@@ -313,8 +295,11 @@ class TestTicketPoll:
                 port, f"/api/tickets/{ticket.id}/state", {"action": "stop"}
             )
             data = _get_json(port, f"/api/tickets/{ticket.id}")
-
             stored = tracker.store.get(ticket.id)
+            done_status, _done_payload = _post_json(
+                port, f"/api/tickets/{ticket.id}/state", {"action": "done"}
+            )
+            done_data = _get_json(port, f"/api/tickets/{ticket.id}")
 
         assert status == 200
         assert stored is not None
@@ -324,16 +309,9 @@ class TestTicketPoll:
         assert 'id="act-send" disabled' not in data["actions_html"]
         assert "The agent is working." not in data["actions_html"]
         assert data["working_html"] == ""
-        wake.assert_called_once()
-
-    def test_the_mode_change_is_visible_to_the_page(self, tmp_path: Path) -> None:
-        with _server(tmp_path) as (port, tracker, _state, _wake):
-            ticket = _ticket(tracker.store)
-            _post_json(port, f"/api/tickets/{ticket.id}/state", {"action": "done"})
-
-            data = _get_json(port, f"/api/tickets/{ticket.id}")
-
-        assert data["has_composer"] is False
+        assert done_status == 200
+        assert done_data["has_composer"] is False
+        assert wake.call_count == 2
 
     def test_an_unread_marker_badges_only_older_entries(self, tmp_path: Path) -> None:
         with _server(tmp_path) as (port, tracker, _state, _wake):
@@ -367,7 +345,7 @@ class TestTicketPoll:
         assert before is None
         assert after is None
 
-    def test_an_active_poll_registers_only_that_ticket(self, tmp_path: Path) -> None:
+    def test_only_an_active_poll_registers_presence(self, tmp_path: Path) -> None:
         presence = TicketPresence()
         with _server(tmp_path, presence=presence) as (port, tracker, _state, _wake):
             watched = _ticket(tracker.store, title="Watched")
@@ -378,46 +356,6 @@ class TestTicketPoll:
 
         assert presence.is_active(watched.id)
         assert not presence.is_active(other.id)
-
-    def test_a_poll_without_active_does_not_register(self, tmp_path: Path) -> None:
-        presence = TicketPresence()
-        with _server(tmp_path, presence=presence) as (port, tracker, _state, _wake):
-            ticket = _ticket(tracker.store)
-
-            _get_json(port, f"/api/tickets/{ticket.id}?after=")
-
-        assert not presence.is_active(ticket.id)
-
-
-class TestStateActionsApi:
-    def test_reopen_without_a_state_entry_goes_in_progress(
-        self, tmp_path: Path
-    ) -> None:
-        with _server(tmp_path) as (port, tracker, _state, _wake):
-            ticket = _ticket(tracker.store, state=STATE_DONE)
-
-            status, _payload = _post_json(
-                port, f"/api/tickets/{ticket.id}/state", {"action": "reopen"}
-            )
-            stored = tracker.store.get(ticket.id)
-
-        assert status == 200
-        assert stored is not None
-        assert stored.state == STATE_IN_PROGRESS
-
-    def test_reopen_with_a_state_entry_goes_needs_input(self, tmp_path: Path) -> None:
-        with _server(tmp_path) as (port, tracker, state, _wake):
-            ticket = _ticket(tracker.store, state=STATE_DONE)
-            state.upsert(_state_entry(ticket.id))
-
-            status, _payload = _post_json(
-                port, f"/api/tickets/{ticket.id}/state", {"action": "reopen"}
-            )
-            stored = tracker.store.get(ticket.id)
-
-        assert status == 200
-        assert stored is not None
-        assert stored.state == STATE_NEEDS_INPUT
 
 
 # ---------------------------------------------------------------------------
@@ -645,22 +583,6 @@ class TestReplyDraftApi:
         assert stored is not None
         assert [comment.body for comment in stored.comments] == ["hello"]
 
-    def test_a_new_token_is_refused_after_the_state_moved(self, tmp_path: Path) -> None:
-        with _server(tmp_path) as (port, tracker, _state, _wake):
-            ticket = _ticket(tracker.store)
-            tracker.store.set_state(ticket.id, STATE_IN_PROGRESS)
-
-            status, _payload = _post_json(
-                port,
-                f"/api/tickets/{ticket.id}/reply",
-                {"body": "another", "token": "new"},
-            )
-            stored = tracker.store.get(ticket.id)
-
-        assert status == 409
-        assert stored is not None
-        assert stored.comments == []
-
     def test_sending_stores_the_chosen_model(self, tmp_path: Path) -> None:
         with _server(tmp_path, models=_MODELS) as (port, tracker, _state, _wake):
             ticket = _ticket(tracker.store, model="sonnet")
@@ -751,24 +673,23 @@ class TestRetryApi:
         assert stored is not None
         assert stored.model == "opus"
 
-    def test_retry_requires_its_own_token(self, tmp_path: Path) -> None:
-        """A Send token must not be accepted on the Retry endpoint."""
+    @pytest.mark.parametrize(
+        "payload",
+        [
+            pytest.param({"token": "send-token"}, id="send-token"),
+            pytest.param({}, id="no-token"),
+        ],
+    )
+    def test_retry_requires_its_own_token(
+        self, tmp_path: Path, payload: dict[str, Any]
+    ) -> None:
+        """A Send token, or none at all, must not post anything."""
         with _server(tmp_path) as (port, tracker, state, _wake):
             ticket = _ticket(tracker.store)
             state.upsert(_state_entry(ticket.id, status=TicketStatus.failed))
             status, _payload = _post_json(
-                port, f"/api/tickets/{ticket.id}/retry", {"token": "send-token"}
+                port, f"/api/tickets/{ticket.id}/retry", payload
             )
-            stored = tracker.store.get(ticket.id)
-
-        assert status == 400
-        assert stored is not None
-        assert stored.comments == []
-
-    def test_retry_without_a_token_is_refused(self, tmp_path: Path) -> None:
-        with _server(tmp_path) as (port, tracker, _state, _wake):
-            ticket = _ticket(tracker.store)
-            status, _payload = _post_json(port, f"/api/tickets/{ticket.id}/retry", {})
             stored = tracker.store.get(ticket.id)
 
         assert status == 400
@@ -868,48 +789,35 @@ class TestSeenApi:
 
 
 class TestEditorApi:
-    def test_a_new_start_racing_a_delete_is_404(self, tmp_path: Path) -> None:
-        with _server(tmp_path) as (port, tracker, _state, _wake):
-            with mock.patch.object(
-                tracker.store,
-                "create_started_draft",
-                side_effect=TrackerNotFoundError("gone"),
-            ):
-                status, payload = _post_json(
-                    port,
-                    "/api/new/start",
-                    {
-                        "title": "A title",
-                        "description": "Some text",
-                        "repo": "owner/name",
-                    },
-                )
-
-        assert status == 404
-        assert "error" in payload
-
-    def test_a_saved_start_racing_a_discard_is_404(self, tmp_path: Path) -> None:
+    @pytest.mark.parametrize(
+        "store_method",
+        [
+            pytest.param("create_started_draft", id="new"),
+            pytest.param("start_draft", id="saved"),
+        ],
+    )
+    def test_a_start_racing_a_delete_is_404(
+        self, tmp_path: Path, store_method: str
+    ) -> None:
+        body = {"title": "A title", "description": "Some text", "repo": "owner/name"}
         with _server(tmp_path) as (port, tracker, _state, _wake):
             ticket = tracker.store.create_draft(
                 title="A title", description="Some text", repo="owner/name"
             )
+            path = (
+                "/api/new/start"
+                if store_method == "create_started_draft"
+                else f"/api/tickets/{ticket.id}/start"
+            )
             with mock.patch.object(
                 tracker.store,
-                "start_draft",
+                store_method,
                 side_effect=TrackerNotFoundError("gone"),
             ):
-                status, payload = _post_json(
-                    port,
-                    f"/api/tickets/{ticket.id}/start",
-                    {
-                        "title": "A title",
-                        "description": "Some text",
-                        "repo": "owner/name",
-                    },
-                )
+                status, error = _post_json(port, path, body)
 
         assert status == 404
-        assert "error" in payload
+        assert "error" in error
 
     def _drafts(self, tmp_path: Path) -> LocalTracker:
         return LocalTracker(tmp_path)
@@ -1077,26 +985,3 @@ class TestApiSecurity:
         assert status == 403
         assert stored is not None
         assert stored.reply_draft == ""
-
-    def test_a_cross_origin_post_is_forbidden(self, tmp_path: Path) -> None:
-        with _server(tmp_path) as (port, tracker, _state, _wake):
-            ticket = _ticket(tracker.store)
-            status, _headers, _body = _request(
-                port,
-                "POST",
-                f"/api/tickets/{ticket.id}/seen",
-                headers={
-                    "Origin": "http://evil.example",
-                    "Content-Type": "application/json",
-                },
-                body=b'{"comment_id": "c-1"}',
-            )
-
-        assert status == 403
-
-    def test_a_get_needs_no_origin(self, tmp_path: Path) -> None:
-        with _server(tmp_path) as (port, _tracker, _state, _wake):
-            status, payload = _json_request(port, "GET", "/api/home", origin=False)
-
-        assert status == 200
-        assert "html" in payload

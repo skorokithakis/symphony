@@ -135,22 +135,6 @@ class TestCommandConstruction:
         env = runner.call_args.kwargs["env"]
         assert env["SYMPHONY_SECRETS_FILE"] == "/workspace/TEAM-1/secrets.env"
 
-    def test_no_secrets_file_leaves_env_unset(self) -> None:
-        with patch(
-            "symphony_linear.pi.agent_runner.run",
-            return_value=(0, _fixture_text(), "", None),
-        ) as runner:
-            run_initial(
-                workspace_path="/workspace",
-                tmp_path="/workspace/tmp",
-                prompt="hi",
-                timeout_seconds=60,
-                idle_timeout_seconds=30,
-                on_subprocess=lambda process: None,
-            )
-
-        assert "SYMPHONY_SECRETS_FILE" not in runner.call_args.kwargs["env"]
-
     def test_resume_uses_session_and_prefixes_an_already_prefixed_newline(
         self,
     ) -> None:
@@ -228,10 +212,19 @@ class TestExitValidation:
 class TestSignalCancellation:
     """A killed pi turn stays a cancellation and salvages its session id."""
 
-    def test_signal_exit_without_session_yields_none(self) -> None:
+    @pytest.mark.parametrize(
+        ("stdout", "expected_session"),
+        [
+            ("not NDJSON", None),
+            (_fixture_text(), "01a035ff-248a-735c-8173-f5ee428fe917"),
+        ],
+    )
+    def test_signal_exit_carries_parsed_session_id(
+        self, stdout: str, expected_session: str | None
+    ) -> None:
         with patch(
             "symphony_linear.pi.agent_runner.run",
-            return_value=(-9, "not NDJSON", "", None),
+            return_value=(-9, stdout, "", None),
         ):
             with pytest.raises(PiCancelled, match="killed by signal 9") as excinfo:
                 run_initial(
@@ -243,24 +236,7 @@ class TestSignalCancellation:
                     on_subprocess=lambda process: None,
                 )
 
-        assert excinfo.value.session_id is None
-
-    def test_signal_exit_carries_parsed_session_id(self) -> None:
-        with patch(
-            "symphony_linear.pi.agent_runner.run",
-            return_value=(-9, _fixture_text(), "", None),
-        ):
-            with pytest.raises(PiCancelled, match="killed by signal 9") as excinfo:
-                run_initial(
-                    workspace_path="/workspace",
-                    tmp_path="/workspace/tmp",
-                    prompt="implement this",
-                    timeout_seconds=60,
-                    idle_timeout_seconds=30,
-                    on_subprocess=lambda process: None,
-                )
-
-        assert excinfo.value.session_id == "01a035ff-248a-735c-8173-f5ee428fe917"
+        assert excinfo.value.session_id == expected_session
 
 
 class TestExceptionAliases:

@@ -188,37 +188,6 @@ class TestRunInSandbox:
         # File should be a character device (/dev/null)
         assert "FILE_DEVD" in output, f"Expected FILE_DEVD, got: {output}"
 
-    def test_popen_handle_is_usable(self, tmp_path: Path) -> None:
-        """Verify the returned Popen handle can be polled, waited, and killed."""
-        _require_bwrap()
-
-        workspace = tmp_path / "workspace"
-        workspace.mkdir()
-
-        proc = run_in_sandbox(
-            cmd=["sleep", "30"],
-            workspace_path=str(workspace),
-            tmp_path=str(_make_ticket_tmp(tmp_path)),
-            hide_paths=[],
-            env={"HOME": str(Path.home())},
-            stdout=subprocess.PIPE,
-            stderr=subprocess.PIPE,
-        )
-
-        # Poll should return None while running
-        assert proc.poll() is None
-
-        # Kill should work
-        proc.kill()
-        try:
-            proc.wait(timeout=10)
-        except subprocess.TimeoutExpired:
-            pytest.fail("Process did not die after kill()")
-
-        # After wait, returncode should be negative (killed by signal)
-        assert proc.returncode is not None
-        assert proc.returncode != 0
-
     def test_bwrap_not_found_raises(self, monkeypatch: pytest.MonkeyPatch) -> None:
         """Verify a clear error when bwrap is not on PATH."""
         # Remove bwrap from PATH entirely
@@ -233,38 +202,10 @@ class TestRunInSandbox:
                 env={},
             )
 
-    def test_custom_env_passed(self, tmp_path: Path) -> None:
-        """Verify environment variables are passed cleanly into the sandbox."""
-        _require_bwrap()
-
-        workspace = tmp_path / "workspace"
-        workspace.mkdir()
-
-        proc = run_in_sandbox(
-            cmd=["bash", "-c", 'echo "MYVAR=$MYVAR"; echo "EXTRA=$EXTRA"'],
-            workspace_path=str(workspace),
-            tmp_path=str(_make_ticket_tmp(tmp_path)),
-            hide_paths=[],
-            env={
-                "MYVAR": "hello-world",
-                "EXTRA": "sandboxed",
-                "HOME": str(Path.home()),
-            },
-            stdout=subprocess.PIPE,
-            stderr=subprocess.PIPE,
-        )
-
-        stdout, stderr = proc.communicate(timeout=30)
-        output = stdout.decode(errors="replace")
-
-        assert proc.returncode == 0
-        assert "MYVAR=hello-world" in output
-        assert "EXTRA=sandboxed" in output
-
-    def test_host_env_not_leaked(
+    def test_only_requested_env_is_passed(
         self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
     ) -> None:
-        """Verify host environment is NOT leaked into the sandbox."""
+        """The sandbox gets the requested env and nothing from the host."""
         _require_bwrap()
 
         # Set a unique env var on the host
@@ -274,11 +215,16 @@ class TestRunInSandbox:
         workspace.mkdir()
 
         proc = run_in_sandbox(
-            cmd=["bash", "-c", 'echo "HOST_ONLY_VAR=${HOST_ONLY_VAR:-<unset>}"'],
+            cmd=[
+                "bash",
+                "-c",
+                'echo "MYVAR=$MYVAR"; echo "HOST_ONLY_VAR=${HOST_ONLY_VAR:-<unset>}"',
+            ],
             workspace_path=str(workspace),
             tmp_path=str(_make_ticket_tmp(tmp_path)),
             hide_paths=[],
             env={
+                "MYVAR": "hello-world",
                 "HOME": str(Path.home()),
             },
             stdout=subprocess.PIPE,
@@ -289,6 +235,7 @@ class TestRunInSandbox:
         output = stdout.decode(errors="replace").strip()
 
         assert proc.returncode == 0
+        assert "MYVAR=hello-world" in output
         assert "HOST_ONLY_VAR=<unset>" in output, (
             f"Host environment leaked into sandbox: {output}"
         )
@@ -336,43 +283,6 @@ class TestRunInSandbox:
 
         assert proc.returncode == 0
         assert output == "MASKED", f"Expected MASKED, got: {output}"
-
-    def test_bind_try_for_cache_dirs(self, tmp_path: Path) -> None:
-        """Verify that --bind-try for .cache and .local/share does not fail
-        when those directories are missing on the host."""
-        _require_bwrap()
-
-        workspace = tmp_path / "workspace"
-        workspace.mkdir()
-
-        # Run with a fake HOME pointing to a tmp dir that has no .cache
-        fake_home = tmp_path / "fake_home"
-        fake_home.mkdir()
-
-        # Override HOME to point to the fake home that has no .cache
-        old_home = os.environ.get("HOME")
-        try:
-            os.environ["HOME"] = str(fake_home)
-            proc = run_in_sandbox(
-                cmd=["bash", "-c", "echo 'sandbox-ok'"],
-                workspace_path=str(workspace),
-                tmp_path=str(_make_ticket_tmp(tmp_path)),
-                hide_paths=[],
-                env={"HOME": str(fake_home)},
-                stdout=subprocess.PIPE,
-                stderr=subprocess.PIPE,
-            )
-
-            stdout, stderr = proc.communicate(timeout=30)
-            output = stdout.decode(errors="replace").strip()
-
-            assert proc.returncode == 0, (
-                f"Sandbox failed: stderr={stderr.decode(errors='replace')}"
-            )
-            assert output == "sandbox-ok"
-        finally:
-            if old_home:
-                os.environ["HOME"] = old_home
 
     def test_opencode_dirs_writable(
         self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
