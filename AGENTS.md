@@ -806,8 +806,9 @@ shutting down, or the ticket is no longer triggered — see `_is_still_triggered
   `data-question-index`; without an anchor the HTML is unchanged. When the
   reply's cards form two or more groups, it also emits
   `<nav class="qlist" aria-label="Questions"><ol>` of
-  `<li data-question-index="N"><a href="#<anchor>-qN">` items before all other
-  reply HTML. An item's text is the visible question, escaped as plain text.
+  `<li data-question-index="N"><a href="#<anchor>-qN">` items after all other
+  reply HTML, following the closing `secs` wrapper. An item's text is the
+  visible question, escaped as plain text.
   A group is a run of `question_card` tokens with no other token between them;
   `buildGroups` in `static/questions.js` joins direct element siblings, and
   the two rules must stay identical, because a mismatch would make the list

@@ -936,7 +936,7 @@
     });
   }
 
-  /* The server renders a list of the reply's questions at its top when its
+  /* The server renders a list of the reply's questions at its end when its
    * cards fall into two or more groups.  On the live reply each item gets a
    * check mark once its question is answered; older replies keep plain links.
    * The test is answerOf() alone: it is true in exactly the cases where

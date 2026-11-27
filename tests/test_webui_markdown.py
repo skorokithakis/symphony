@@ -316,7 +316,8 @@ def test_question_list_appears_when_prose_splits_groups() -> None:
     assert '<nav class="qlist" aria-label="Questions">' in rendered
     assert '<li data-question-index="0"><a href="#reply-7-q0">' in rendered
     assert '<li data-question-index="1"><a href="#reply-7-q1">' in rendered
-    assert rendered.index('class="qlist"') < rendered.index('class="qcard"')
+    assert rendered.index('class="qlist"') > rendered.index('class="qcard"')
+    assert rendered.endswith("</nav>")
 
 
 def test_question_list_appears_when_a_heading_splits_groups() -> None:
@@ -329,6 +330,8 @@ def test_question_list_appears_when_a_heading_splits_groups() -> None:
     assert 'class="qlist"' in rendered
     assert '<a href="#reply-7-q0">' in rendered
     assert '<a href="#reply-7-q1">' in rendered
+    # The list follows the closing section wrapper, not just the last card.
+    assert rendered.index('class="qlist"') > rendered.rindex("</div>")
 
 
 def test_question_list_items_escape_question_text() -> None:

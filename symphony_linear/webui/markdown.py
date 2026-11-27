@@ -917,8 +917,10 @@ def render_markdown_sections(text: str, anchor: str | None = None) -> str:
 
     ``anchor`` is the reply entry's id.  It gives every card a unique id and,
     when the reply's cards fall into two or more groups, puts a list of the
-    questions before the reply.  Without an anchor the output keeps its
-    previous HTML, links and list absent, because a link would have no target.
+    questions after the reply, where a phone reader finishes next to the
+    composer and the answered count; at the top it cost a scroll back.  Without
+    an anchor the output keeps its previous HTML, links and list absent,
+    because a link would have no target.
     """
     env: EnvType = {}
     tokens = _MD.parse(text, env)
@@ -926,7 +928,7 @@ def render_markdown_sections(text: str, anchor: str | None = None) -> str:
     question_list = _question_list_html(tokens, anchor) if anchor else ""
     levels = [level for token in tokens if (level := _heading_level(token)) is not None]
     if not levels:
-        return question_list + _MD.renderer.render(tokens, _MD.options, env)
+        return _MD.renderer.render(tokens, _MD.options, env) + question_list
 
     shallowest = min(levels)
     starts = [
@@ -936,7 +938,6 @@ def render_markdown_sections(text: str, anchor: str | None = None) -> str:
     ]
 
     rendered: list[str] = [
-        question_list,
         _MD.renderer.render(tokens[: starts[0]], _MD.options, env),
     ]
     rendered.append('<div class="secs">')
@@ -975,4 +976,5 @@ def render_markdown_sections(text: str, anchor: str | None = None) -> str:
             "</details>"
         )
     rendered.append("</div>")
+    rendered.append(question_list)
     return "".join(rendered)

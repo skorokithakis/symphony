@@ -764,14 +764,30 @@ body.sym { min-height: 100dvh; }
   border: 1px solid var(--rule); border-left: 3px solid var(--accent);
   border-radius: var(--r2); background: var(--surface);
 }
+/* The index closes the reply, after the bordered sections panel, so the plain
+   .md gap is too tight: two bordered boxes that close together read as one
+   cramped box on a phone, and the index belongs to the reply as a whole, not
+   to the last section. */
+.secs + .qlist { margin-top: var(--s1); }
 .md .qlist ol { display: flex; flex-direction: column; }
 .md .qlist li { margin: 0; }
 .md .qlist li + li { margin-top: 0; }
 .md .qlist a {
   display: flex; align-items: center; gap: var(--s2);
   min-height: var(--tap); padding: var(--s1) 0;
+  /* A link's underline reaches every flex item, so the check mark would get
+     one too.  Only the line is dropped: the text-decoration shorthand would
+     also reset the inherited thickness and offset the normal link sets. */
+  text-decoration-line: none;
 }
-.md .qlist-t { min-width: 0; }
+.md .qlist-t {
+  min-width: 0;
+  text-decoration-line: underline;
+  /* The global link rule's thickness is set on the anchor, and this property
+     does not inherit, so the span needs it to match every other link. */
+  text-decoration-thickness: 1px;
+}
+.md .qlist a:hover .qlist-t { text-decoration-thickness: 2px; }
 .md .qlist-check {
   flex: none; margin-left: auto; color: var(--ink-2); font-weight: 700;
 }
