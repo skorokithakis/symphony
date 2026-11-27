@@ -502,6 +502,13 @@ def _parse_question_card(tokens: Sequence[Token], start: int, end: int) -> _Card
     )
 
 
+#: Punctuation an agent puts between a bold option label and its detail
+#: (``**Redis**: survives a restart.``).  The card shows it because the label
+#: and detail sit side by side, but a JSON consumer gets them as separate
+#: fields, where a leading ``: `` is only noise.
+_DETAIL_SEPARATORS = " :;,-\u2013\u2014\u00b7|"
+
+
 def _to_question(card: _Card) -> Question:
     """Return the structured, render-free form of one parsed card."""
     return Question(
@@ -510,7 +517,7 @@ def _to_question(card: _Card) -> Question:
         options=tuple(
             QuestionOption(
                 label=_collapsed_text(option.label),
-                detail=_collapsed_text(option.detail),
+                detail=_collapsed_text(option.detail).lstrip(_DETAIL_SEPARATORS),
             )
             for option in card.options
         ),

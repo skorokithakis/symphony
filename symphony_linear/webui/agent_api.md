@@ -140,7 +140,7 @@ every comment:
           "kind": "choose-one",
           "question": "Which storage should the cache use?",
           "options": [
-            {"label": "Redis", "detail": ": survives a restart."},
+            {"label": "Redis", "detail": "survives a restart."},
             {"label": "In-memory", "detail": ""}
           ]
         }
@@ -171,7 +171,7 @@ reply's question cards in order, each as:
   "kind": "choose-many",
   "question": "Which should I remove?",
   "options": [
-    {"label": "The retry loop", "detail": ": it hides real failures."},
+    {"label": "The retry loop", "detail": "it hides real failures."},
     {"label": "The cron shim", "detail": ""}
   ]
 }
@@ -180,8 +180,9 @@ reply's question cards in order, each as:
 `kind` is `choose-one` (pick one of `options`), `choose-many` (pick any) or
 `free-text` (answer in your own words); a `free-text` question has
 `options: []`. `question` and the option fields are visible plain text without
-Markdown markup, and `detail` is `""` when the option has no leading bold
-label. Only well-formed `> [!QUESTION]` callouts are listed: a malformed one
+Markdown markup. `detail` is the text after a leading bold label, without the
+separator (`**Redis**: survives a restart.` gives `"survives a restart."`), and
+`""` when the option has no leading bold label. Only well-formed `> [!QUESTION]` callouts are listed: a malformed one
 stays an ordinary quote on the ticket page, and is absent here too.
 
 ### Answering questions

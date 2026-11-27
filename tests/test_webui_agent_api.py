@@ -371,7 +371,7 @@ class TestTicketsRead:
                 "kind": "choose-one",
                 "question": "Which storage should the cache use?",
                 "options": [
-                    {"label": "Redis", "detail": ": survives a restart."},
+                    {"label": "Redis", "detail": "survives a restart."},
                     {"label": "In-memory", "detail": ""},
                 ],
             },

@@ -291,7 +291,7 @@ def test_parse_questions_returns_a_choose_one_card() -> None:
             kind="choose-one",
             question="Which storage should the cache use?",
             options=(
-                QuestionOption(label="Redis", detail=": survives a restart."),
+                QuestionOption(label="Redis", detail="survives a restart."),
                 QuestionOption(label="In-memory", detail=""),
             ),
         )
@@ -311,7 +311,7 @@ def test_parse_questions_returns_a_choose_many_card() -> None:
             question="Which should I keep?",
             options=(
                 QuestionOption(
-                    label="The retry loop", detail=": it hides real failures."
+                    label="The retry loop", detail="it hides real failures."
                 ),
                 QuestionOption(label="The cron shim", detail=""),
             ),
