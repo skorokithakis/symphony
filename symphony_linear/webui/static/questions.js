@@ -47,6 +47,9 @@
    * keeps the cards static until the poll appends the human entry. */
   var sentReplies = {};
   var locked = false;
+  /* Set only by a real card change on this page.  A text-only autosave sends
+   * no answers key, so a stale page cannot overwrite another device's. */
+  var answersChanged = false;
   /* A pointer press that began inside a card may still be waiting for its
    * release; a close that shrinks a row must wait for the click first. */
   var pointerDown = false;
@@ -60,7 +63,12 @@
   function answerState(card) {
     var index = card.__qcardIndex;
     if (!state[index]) {
-      state[index] = { selected: [], edits: {}, other: "" };
+      state[index] = {
+        selected: [],
+        edits: {},
+        other: "",
+        otherChosen: false,
+      };
     }
     return state[index];
   }
@@ -74,25 +82,21 @@
   }
 
   /* The one derivation of a question's answer from the stored state.  Live
-   * rendering, hydration, the count and the comment all go through it, so a
-   * kept "Other" text cannot answer a choose-one question whose listed option
-   * is selected. */
+   * rendering, hydration, the count and the comment all go through it.  The
+   * answer is the chosen listed options plus the Other text when Other is
+   * chosen; Other's text alone does not answer a question. */
   function answerOf(card) {
     var answer = answerState(card);
     var selected = answer.selected.slice().sort(function (a, b) {
       return a - b;
     });
-    var other = "";
     if (card.__qcardKind === "free-text") {
-      selected = [];
+      return { selected: [], other: answer.other.trim() ? answer.other : "" };
     }
-    if (
-      (card.__qcardKind === "choose-many" ||
-        card.__qcardKind === "free-text" ||
-        !selected.length) &&
-      answer.other.trim()
-    ) {
-      other = answer.other;
+    var other =
+      answer.otherChosen && answer.other.trim() ? answer.other : "";
+    if (card.__qcardKind === "choose-one" && other) {
+      selected = [];
     }
     return { selected: selected, other: other };
   }
@@ -194,6 +198,7 @@
       row: row,
       plain: plain,
       index: index,
+      recommended: row.hasAttribute("data-recommended"),
       textElement: textElement,
       labelElement: labelElement,
       editedElement: editedElement,
@@ -213,7 +218,9 @@
     var editedElement = document.createElement("span");
     editedElement.className = "qcard-l qcard-l-edited";
     editedElement.hidden = true;
-    textElement.insertBefore(editedElement, row.querySelector(".qcard-d"));
+    /* After the original label, so an edited label stays before the
+     * recommendation tag rather than after it. */
+    textElement.insertBefore(editedElement, labelElement.nextSibling);
     card.__qcardRows[index] = wireRow(
       row,
       textElement,
@@ -347,15 +354,27 @@
   function startEdit(card, descriptor) {
     closeOpenEdit(card);
     var answer = answerState(card);
+    var changed = false;
     if (descriptor !== card.__qcardOther) {
       /* The pencil selects the option it belongs to, so the answer cannot be
        * edited while the option it replaces is not the answer. */
       if (card.__qcardKind === "choose-many") {
         if (answer.selected.indexOf(descriptor.index) === -1) {
           answer.selected.push(descriptor.index);
+          changed = true;
         }
       } else {
-        answer.selected = [descriptor.index];
+        if (
+          answer.selected.length !== 1 ||
+          answer.selected[0] !== descriptor.index
+        ) {
+          answer.selected = [descriptor.index];
+          changed = true;
+        }
+        if (answer.otherChosen) {
+          answer.otherChosen = false;
+          changed = true;
+        }
       }
       syncSelection(card);
     }
@@ -394,7 +413,9 @@
     reveal(field);
     updateCount();
     syncFormValidation();
-    notifyChange();
+    if (changed) {
+      notifyChange();
+    }
   }
 
   function pick(card, descriptor) {
@@ -406,21 +427,50 @@
       } else {
         answer.selected.splice(position, 1);
       }
+    } else if (
+      answer.selected.length === 1 &&
+      answer.selected[0] === descriptor.index
+    ) {
+      /* A second tap on the chosen option leaves the question unanswered, so
+       * a preselected recommendation can be cleared. */
+      answer.selected = [];
     } else {
       /* The listed option replaces the answer; kept Other text stays for the
        * pencil but no longer answers the question. */
       answer.selected = [descriptor.index];
     }
+    if (card.__qcardKind !== "choose-many") {
+      /* In a one-answer card a listed choice un-chooses Other; its text stays
+       * visible so a mis-tap does not destroy it. */
+      answer.otherChosen = false;
+    }
     syncSelection(card);
     updateCount();
     syncFormValidation();
     notifyChange();
-    if (card.__qcardKind === "choose-one") {
-      /* A picked option answers the question, so the reader moves on to the
-       * next question of the same group.  Choose-many, Other and an edit
-       * never move: their answer is not finished with a single pick. */
+    if (card.__qcardKind === "choose-one" && answersFor(card).length) {
+      /* A pick that answers the question moves the reader on to the next
+       * question of the same group.  A second tap clears the answer instead,
+       * so it must not advance, and choose-many, Other and an edit never move:
+       * their answer is not finished with a single pick. */
       moveTab(card.__qgroup, 1);
     }
+  }
+
+  function toggleOther(card) {
+    var answer = answerState(card);
+    if (!answer.other.trim()) {
+      startEdit(card, card.__qcardOther);
+      return;
+    }
+    answer.otherChosen = !answer.otherChosen;
+    if (answer.otherChosen && card.__qcardKind === "choose-one") {
+      answer.selected = [];
+    }
+    syncSelection(card);
+    updateCount();
+    syncFormValidation();
+    notifyChange();
   }
 
   function onInput(event) {
@@ -440,12 +490,13 @@
       answer.other = field.value;
     } else if (descriptor === card.__qcardOther) {
       answer.other = field.value;
-      if (
-        field.value.trim() &&
-        card.__qcardKind === "choose-one" &&
-        answer.selected.length
-      ) {
-        answer.selected = [];
+      if (field.value.trim()) {
+        answer.otherChosen = true;
+        if (card.__qcardKind === "choose-one" && answer.selected.length) {
+          answer.selected = [];
+        }
+      } else {
+        answer.otherChosen = false;
       }
       syncSelection(card);
     } else if (field.value === "") {
@@ -566,6 +617,36 @@
       if (typeof question.other === "string") {
         answer.other = question.other;
       }
+      if (question.other_chosen === true) {
+        answer.otherChosen = true;
+      }
+    });
+  }
+
+  /* Without a saved snapshot, the marked options are the starting answer:
+   * the first marked option of a choose-one card, every marked option of a
+   * choose-many card.  The card's tag stays visible even when the human
+   * clears the selection. */
+  function applyDefaults() {
+    cards.forEach(function (card) {
+      if (card.__qcardKind === "free-text") {
+        return;
+      }
+      var answer = answerState(card);
+      if (card.__qcardKind === "choose-one") {
+        for (var index = 0; index < card.__qcardRows.length; index += 1) {
+          if (card.__qcardRows[index].recommended) {
+            answer.selected = [index];
+            return;
+          }
+        }
+        return;
+      }
+      card.__qcardRows.forEach(function (descriptor) {
+        if (descriptor.recommended) {
+          answer.selected.push(descriptor.index);
+        }
+      });
     });
   }
 
@@ -830,6 +911,7 @@
     groups = [];
     targetGroup = null;
     state = {};
+    answersChanged = false;
     Array.prototype.forEach.call(
       entry.querySelectorAll(".qcard"),
       function (card) {
@@ -859,6 +941,14 @@
       }
     );
     hydrate();
+    /* The recommendations are only defaults.  A saved snapshot for this reply
+     * replaces them, including one whose questions are all empty, so a cleared
+     * answer cannot come back on the next load.  Apply them before the groups
+     * choose their opening tab, or the tab would open on an unanswered
+     * question the defaults have already answered. */
+    if (!saved || saved.comment_id !== activeCommentId) {
+      applyDefaults();
+    }
     buildGroups();
     cards.forEach(syncCard);
     syncTabs();
@@ -957,6 +1047,7 @@
   }
 
   function notifyChange() {
+    answersChanged = true;
     syncTabs();
     window.SymQuestions.onChange();
   }
@@ -1029,8 +1120,10 @@
     }
     event.preventDefault();
     var descriptor = row.__qcardDescriptor;
-    if (button.classList.contains("qcard-edit") || row === card.__qcardOther.row) {
+    if (button.classList.contains("qcard-edit")) {
       startEdit(card, descriptor);
+    } else if (row === card.__qcardOther.row) {
+      toggleOther(card);
     } else {
       pick(card, descriptor);
     }
@@ -1173,29 +1266,29 @@
   /* ---------- the interface ticket.js calls ---------- */
 
   function answers() {
-    if (!activeEntry) {
+    if (!activeEntry || !answersChanged) {
       return null;
     }
-    var questions = [];
-    cards.forEach(function (card) {
-      var answer = answerState(card);
-      var selected = answer.selected.slice().sort(function (a, b) {
-        return a - b;
-      });
-      var edits = Object.assign({}, answer.edits);
-      if (!selected.length && !Object.keys(edits).length && !answer.other) {
-        return;
-      }
-      questions.push({
-        question_index: card.__qcardIndex,
-        selected: selected,
-        edits: edits,
-        other: answer.other,
-      });
-    });
-    /* An active reply always returns the snapshot, even when every answer was
-     * cleared: the empty list is what removes them from the server. */
-    return { comment_id: activeCommentId, questions: questions };
+    /* Every question is in the snapshot, including one with no answer.  A
+     * stored snapshot suppresses the defaults, so leaving a cleared question
+     * out would let its recommendation come back on the next load.  The
+     * snapshot is sent only after a card change on this page: a text-only
+     * autosave must not write stale defaults over another tab's answers. */
+    return {
+      comment_id: activeCommentId,
+      questions: cards.map(function (card) {
+        var answer = answerState(card);
+        return {
+          question_index: card.__qcardIndex,
+          selected: answer.selected.slice().sort(function (a, b) {
+            return a - b;
+          }),
+          edits: Object.assign({}, answer.edits),
+          other: answer.other,
+          other_chosen: answer.otherChosen,
+        };
+      }),
+    };
   }
 
   function comment(text) {

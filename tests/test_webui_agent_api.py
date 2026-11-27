@@ -342,7 +342,7 @@ class TestTicketsRead:
                 ticket_id,
                 "Two choices and a name.\n\n"
                 "> [!QUESTION] Which storage should the cache use?\n"
-                "> - **Redis**: survives a restart.\n"
+                "> - **Redis (recommended)**: survives a restart.\n"
                 "> - In-memory\n"
                 "\n"
                 "> [!QUESTION] Which should I remove?\n"
@@ -371,16 +371,24 @@ class TestTicketsRead:
                 "kind": "choose-one",
                 "question": "Which storage should the cache use?",
                 "options": [
-                    {"label": "Redis", "detail": "survives a restart."},
-                    {"label": "In-memory", "detail": ""},
+                    {
+                        "label": "Redis",
+                        "detail": "survives a restart.",
+                        "recommended": True,
+                    },
+                    {"label": "In-memory", "detail": "", "recommended": False},
                 ],
             },
             {
                 "kind": "choose-many",
                 "question": "Which should I remove?",
                 "options": [
-                    {"label": "The retry loop", "detail": ""},
-                    {"label": "The cron shim", "detail": ""},
+                    {
+                        "label": "The retry loop",
+                        "detail": "",
+                        "recommended": False,
+                    },
+                    {"label": "The cron shim", "detail": "", "recommended": False},
                 ],
             },
             {

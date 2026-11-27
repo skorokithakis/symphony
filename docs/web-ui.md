@@ -163,19 +163,26 @@ that a question stands apart from the rest of the reply:
 
 ```markdown
 > [!QUESTION] Which database should the service use?
-> - **PostgreSQL**: already used by the other services.
+> - **PostgreSQL (recommended)**: already used by the other services.
 > - **SQLite**: no server to run.
 ```
 
-A plain list means one answer is expected, and the agent puts the option it
-recommends first. A list of `- [ ]` items means several answers may be chosen.
-A callout with no list is an open question.
+A plain list means one answer is expected, and the agent marks the option it
+recommends with `(recommended)` and puts it first. A list of `- [ ]` items means
+several answers may be chosen. A callout with no list is an open question.
 
 The ticket page shows each callout as a card: the question, then one row per
 option, with round markers when one answer is expected and square markers when
 several may be chosen. A section of the reply that holds a card starts open. A
 callout that does not have this exact shape (for example a numbered list of
 options) stays an ordinary quote, with all of its text.
+
+The marker becomes a small "recommended" tag on that option and is removed from
+the option's text, so it is never part of your answer. A marked option starts
+selected: the first marked option in a one-answer question, and every marked
+option when several may be chosen. The count next to Send includes them, and
+Send sends them like any other choice unless you change them; a tap on the
+selected option of a one-answer question clears it.
 
 When the newest reply has cards and no human message follows it, the cards are
 live. Tap an option to choose it; in a choose-many card a tap toggles it. The
@@ -189,22 +196,27 @@ unanswered questions never block Send.
 Cards that sit one after another with nothing between them share a tabbed
 panel: a numbered strip above them, with one question shown at a time. Each tab
 carries a check mark once its question has an answer, and the panel opens at
-the first unanswered question. A single card has no strip.
+the first unanswered question. Because a marked option starts selected, a
+recommended question already counts as answered, so the panel may open at a
+later question. A single card has no strip.
 
 On a device with a mouse or trackpad each option's marker shows its number.
 With no field focused, the number keys choose options on the visible card of
 the current group (1 to 9, then 0 for the tenth). On a choose-one card a pick
-moves to the next tab, and the last tab stays where it is. The number after the
-last option opens the **Other** field. ArrowLeft and ArrowRight change tabs. A
-digit on a free-text card, or one past the last option, starts a reply in the
-box as before. The keys act on the group you last clicked or typed in; before
-that, on the first group with an unanswered question.
+that answers moves to the next tab; a pick that clears the answer stays. The
+last tab stays where it is. The number after the last option opens the
+**Other** field. ArrowLeft and ArrowRight change tabs. A digit on a free-text
+card, or one past the last option, starts a reply in the box as before. The keys
+act on the group you last clicked or typed in; before that, on the first group
+with an unanswered question.
 
 Your answers are saved as you change them, beside the reply text, so a reload
-or another browser shows the same choices. They belong to that agent reply and
-are ignored once a newer reply arrives or a human message follows it. Send
-posts one comment: each answered question as a quote, then its answers, then
-whatever you wrote in the reply box. The box may be empty when at least one
+or another browser shows the same choices. The recommendations are only
+defaults: once you change anything, what you chose is what is saved, and a
+question you leave unanswered stays unanswered. Answers belong to that agent
+reply and are ignored once a newer reply arrives or a human message follows it.
+Send posts one comment: each answered question as a quote, then its answers,
+then whatever you wrote in the reply box. The box may be empty when at least one
 question is answered. Sending clears both the answers and the reply text, and
 the cards become static again until the agent replies.
 

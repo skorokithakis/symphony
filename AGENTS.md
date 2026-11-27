@@ -753,7 +753,10 @@ shutting down, or the ticket is no longer triggered — see `_is_still_triggered
   credentials or cookies, so a hostile page has no ambient credential to
   borrow. A forward-auth proxy in front must let unauthenticated `OPTIONS`
   under `/api/v1` through or the preflight never reaches the daemon. Without
-  a token the namespace still answers 404 with no CORS header.
+  a token the namespace still answers 404 with no CORS header. Agent replies
+  expose their parsed questions there: the `questions` list comes from the same
+  `parse_questions` the page renders, each option reports the `(recommended)`
+  marker as its `recommended` flag, and `label` has the marker removed.
 - **Only registered uploads are readable, and only four image types are
   inline.** `LocalTicketStore.read_file` serves a name only when it appears in
   the ticket's `files`, its `pending_files` or a comment's `files`;
@@ -787,37 +790,50 @@ shutting down, or the ticket is no longer triggered — see `_is_still_triggered
   `<div class="qcard" data-kind="choose-one|choose-many|free-text"
   data-question-index="N">` holding `<p class="qcard-q" data-text="...">`, an
   optional `<div class="qcard-prose">` and an optional `<ul class="qcard-opts">`
-  of `<li class="qcard-opt" data-text="...">`. The `data-text` forms are
-  single-line plain text with `*` replaced by U+2217; they are also escaped so
-  they stay literal Markdown at the start of a line (no link definitions,
-  headings, fences, emphasis, block markers or lists), because a later stage
-  copies them into a human comment and `*Symphony · ` is the bot footer marker.
+  of `<li class="qcard-opt" data-text="...">`. An option's first
+  `(recommended)` (any case) in a plain text token is removed from its label
+  and `data-text`; that `li` then carries `data-recommended` and a
+  `<span class="qcard-rec">recommended</span>` between the label and the
+  detail. A code span holding the same words is literal text, and an option
+  left empty falls back to a quote; the tag is display only. The `data-text`
+  forms are single-line plain text with `*` replaced by U+2217; they are also
+  escaped so they stay literal Markdown at the start of a line (no link
+  definitions, headings, fences, emphasis, block markers or lists), because a
+  later stage copies them into a human comment and `*Symphony · ` is the bot
+  footer marker.
   A section holding a card renders open. A malformed callout, a callout nested
   in a list or quote, and every callout in a human message or notice stay a
   quote.
 - **Question-card answers live beside the reply draft and are assembled in the
   browser at Send.** `LocalTicket.reply_answers` is a `ReplyAnswers` model: the
   agent comment id it belongs to and, per question, selected option indexes,
-  per-option edited text and the "Other" text. The draft endpoint writes it only
+  per-option edited text, the "Other" text and whether it is chosen. The "Other"
+  chosen bit is separate from the text, so text kept after choosing a listed
+  option stays visible but does not answer. The draft endpoint writes it only
   when the `answers` key is present, and the store keeps it only while its
   comment is the newest agent reply with no human comment after it, so a late
   save from a stale tab cannot restore consumed answers or overwrite the
   answers saved for a newer reply; a consuming Send clears it with
   `reply_draft`. The page receives it as escaped JSON in a data attribute.
-  `static/questions.js` adds controls to
-  the cards of the newest agent reply only while no human entry follows it
-  (never on Done, which has no composer), saves the snapshot through the same
-  debounced draft autosave, and exposes a small `window.SymQuestions` interface
-  to `ticket.js`. That interface retires only the answers of the reply a
-  committed body carried, so a duplicate response for an older send cannot
-  discard a newer reply's unsent answers, and it makes the cards inert while a
-  Send is in flight. The composer text and the answers stay separate until
-  Send: `ticket.js` still compares the textarea's own text when deciding whether
-  it may clear it, while the posted body is the assembled comment (quoted
-  question, answers, then the text). Adjacent live cards with nothing between
-  them are one tabbed panel. Digits `1`-`0` and Left/Right act on the target
-  group (the last clicked or typed-in group, else the first visible one with
-  an unanswered question), and app.js arbitrates those keys through
+  The page sends the snapshot only after a card change since the reply became
+  active; a text-only autosave omits the key and leaves the stored snapshot
+  alone. The snapshot covers every question, including one the human left
+  empty, so a saved empty answer suppresses the recommendation defaults; those
+  defaults are applied by the page only when no snapshot exists for the reply.
+  A choose-one tap on the selected option clears it. `static/questions.js` adds
+  controls to the cards of the newest agent reply only while no human entry
+  follows it (never on Done, which has no composer), saves the snapshot through
+  the same debounced draft autosave, and exposes a small `window.SymQuestions`
+  interface to `ticket.js`. That interface retires only the answers of the
+  reply a committed body carried, so a duplicate response for an older send
+  cannot discard a newer reply's unsent answers, and it makes the cards inert
+  while a Send is in flight. The composer text and the answers stay separate
+  until Send: `ticket.js` still compares the textarea's own text when deciding
+  whether it may clear it, while the posted body is the assembled comment
+  (quoted question, answers, then the text). Adjacent live cards with nothing
+  between them are one tabbed panel. Digits `1`-`0` and Left/Right act on the
+  target group (the last clicked or typed-in group, else the first visible one
+  with an unanswered question), and app.js arbitrates those keys through
   `SymQuestions.handleKey` so the `s`/`g` prefix sequences and type-to-reply
   keep priority.
 - **The web UI server is wired in `cli.py`, not the orchestrator.**
@@ -831,8 +847,12 @@ shutting down, or the ticket is no longer triggered — see `_is_still_triggered
   `LocalTracker.question_format_note` returns `QUESTION_FORMAT_NOTE`, a fixed
   sentence telling the agent to put each question for the human in a
   `> [!QUESTION] text` callout, with `> - a` (choose one) or `> - [ ] a`
-  (choose many) options and the recommended one first; the Linear and GitHub
-  adapters return `None`, so their prompts stay byte-identical.
+  (choose many) options, the recommended one first and marked
+  `(recommended)`; the Linear and GitHub adapters return `None`, so their
+  prompts stay byte-identical. The page turns that marker into a small tag on
+  the option and starts the marked option selected until a saved snapshot
+  exists for the reply; a reply without markers gets no tag and no
+  preselection.
   `Orchestrator._with_question_format_note` appends it after a blank line as
   the last text of both the initial prompt (after any `extra_context`) and the
   resume message (after attachment rewriting, which also covers the
@@ -844,9 +864,9 @@ shutting down, or the ticket is no longer triggered — see `_is_still_triggered
   note is never stored in a comment, shown in the UI, or returned by
   `/api/v1`. No config option controls the text, and it must stay about one
   sentence long: it costs context on every turn. Its wording is the contract
-  the renderer's question cards key on: the marker must stay exactly
-  `[!QUESTION]`, and the two option forms (`> - a` and `> - [ ] a`) are what
-  select choose-one and choose-many.
+  the renderer's question cards key on: `[!QUESTION]` and `(recommended)` must
+  stay exactly as written, and the two option forms (`> - a` and `> - [ ] a`)
+  are what select choose-one and choose-many.
 
 ## Running and testing
 

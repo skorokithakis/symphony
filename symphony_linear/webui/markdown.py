@@ -204,10 +204,13 @@ class QuestionOption:
     option has no such split.  Both fields are plain text with whitespace
     collapsed, not the escaped ``data-text`` form: a consumer that copies them
     into a comment must apply the escaping the renderer already applies.
+    ``recommended`` is the agent's marked recommendation and is independent of
+    the option's label text, which has no marker.
     """
 
     label: str
     detail: str
+    recommended: bool = False
 
 
 @dataclass(frozen=True)
@@ -230,6 +233,7 @@ class _CardOption:
 
     label: tuple[Token, ...]
     detail: tuple[Token, ...]
+    recommended: bool = False
 
 
 @dataclass(frozen=True)
@@ -242,6 +246,15 @@ class _Card:
     prose: tuple[Token, ...]
     prose_after: tuple[Token, ...]
     words: int
+
+
+#: The agent's recommendation marker in an option's text.  Only a plain text
+#: token can carry it; the same words in a code span are literal option text.
+_RECOMMENDED_MARKER_RE = re.compile(r"\(recommended\)", re.IGNORECASE)
+
+#: Punctuation that must not be separated from the preceding word when the
+#: recommendation marker is removed.
+_MARKER_PUNCTUATION = frozenset(",.;:!?)]}%")
 
 
 def _escape_underscores(text: str) -> str:
@@ -318,6 +331,114 @@ def _without_checkbox_prefix(children: Sequence[Token]) -> list[Token]:
     return ([first] if first.content else []) + list(children[1:])
 
 
+def _trim_trailing_whitespace(tokens: list[Token]) -> None:
+    """Remove whitespace at the end of *tokens*, crossing inline closers."""
+    index = len(tokens) - 1
+    while index >= 0:
+        token = tokens[index]
+        if token.type != "text":
+            index -= 1
+            continue
+        if not token.content.strip():
+            del tokens[index]
+            index -= 1
+            continue
+        token.content = token.content.rstrip()
+        return
+
+
+def _trim_leading_whitespace(tokens: list[Token]) -> None:
+    """Remove whitespace at the start of *tokens*, crossing inline openers."""
+    index = 0
+    while index < len(tokens):
+        token = tokens[index]
+        if token.type != "text":
+            index += 1
+            continue
+        if not token.content.strip():
+            del tokens[index]
+            continue
+        token.content = token.content.lstrip()
+        return
+
+
+def _strip_recommended(
+    children: Sequence[Token],
+) -> tuple[list[Token], bool]:
+    """Remove the first ``(recommended)`` marker from an option's tokens.
+
+    The agent may put the marker inside the bold label, after it, or at the end
+    of a plain option, so the whole inline run is searched rather than only the
+    label.  Only a plain text token counts: a code span holding the same words
+    is literal option text.
+
+    The marker is removed with the whitespace at the cut normalised across
+    token boundaries: exactly one space remains between two words (even when
+    the neighbour is inside emphasis, bold, a code span or a link), none remains
+    before punctuation, and a cut at the start or end of the option leaves no
+    leading or trailing space.  Returns the changed tokens and whether a marker
+    was found; a later marker is left alone.
+    """
+    for index, token in enumerate(children):
+        if token.type != "text":
+            continue
+        match = _RECOMMENDED_MARKER_RE.search(token.content)
+        if match is None:
+            continue
+        start, end = match.span()
+        before = token.content[:start]
+        after = token.content[end:]
+        before_tokens = list(children[:index])
+        after_tokens = list(children[index + 1 :])
+        if before:
+            prefix = copy.copy(token)
+            prefix.content = before
+            before_tokens.append(prefix)
+        if after:
+            suffix = copy.copy(token)
+            suffix.content = after
+            after_tokens.insert(0, suffix)
+
+        # Decide from the untrimmed visible text whether the cut had a space,
+        # then remove the whitespace from the two sides and put back exactly
+        # the space the new neighbours need.
+        before_visible = _inline_text(before_tokens)
+        after_visible = _inline_text(after_tokens)
+        had_space = before_visible != before_visible.rstrip() or (
+            after_visible != after_visible.lstrip()
+        )
+        _trim_trailing_whitespace(before_tokens)
+        _trim_leading_whitespace(after_tokens)
+        before_text = _inline_text(before_tokens).strip()
+        after_text = _inline_text(after_tokens).strip()
+        # A cut at the start or end of the option must not leave a line break
+        # either.
+        if not before_text:
+            while after_tokens and after_tokens[0].type in ("softbreak", "hardbreak"):
+                del after_tokens[0]
+        if not after_text:
+            while before_tokens and before_tokens[-1].type in (
+                "softbreak",
+                "hardbreak",
+            ):
+                before_tokens.pop()
+        add_space = False
+        if before_text and after_text:
+            if after_text[0] in _MARKER_PUNCTUATION:
+                add_space = False
+            elif before_text[-1].isalnum() and after_text[0].isalnum():
+                add_space = True
+            else:
+                add_space = had_space
+        if add_space:
+            space = Token("text", "", 0)
+            space.content = " "
+            space.level = token.level
+            before_tokens.append(space)
+        return before_tokens + after_tokens, True
+    return list(children), False
+
+
 def _leading_strong(
     children: Sequence[Token],
 ) -> tuple[list[Token], list[Token]] | None:
@@ -345,6 +466,38 @@ def _leading_strong(
         ):
             return list(children[start + 1 : index]), list(children[index + 1 :])
     return None
+
+
+def _split_option_label(
+    children: Sequence[Token],
+) -> tuple[list[Token], list[Token]]:
+    """Return an option's label and detail tokens.
+
+    A leading bold span is the label when it has visible text.  An empty span is
+    what remains when the bold text was only the recommendation marker: drop it
+    and the whitespace after it, then run the same split on what remains.  That
+    keeps every option on the normal leading-bold path, including one whose
+    real label is a second bold span.
+    """
+    current = list(children)
+    while True:
+        strong = _leading_strong(current)
+        if strong is None:
+            return current, []
+        label_tokens, detail_tokens = strong
+        if _inline_text(label_tokens).strip():
+            return label_tokens, detail_tokens
+        current = list(detail_tokens)
+        while current and current[0].type in ("softbreak", "hardbreak"):
+            current = current[1:]
+        while current and current[0].type == "text" and not current[0].content.strip():
+            current = current[1:]
+        if current and current[0].type == "text":
+            first = copy.copy(current[0])
+            first.content = first.content.lstrip()
+            current = ([first] if first.content else []) + list(current[1:])
+        if not current:
+            return [], []
 
 
 def _question_card_options(
@@ -476,21 +629,19 @@ def _parse_question_card(tokens: Sequence[Token], start: int, end: int) -> _Card
             return None
         kind = "choose-many" if all(checkboxes) else "choose-one"
         for item in item_tokens:
-            option_tokens = _without_checkbox_prefix(item)
+            option_tokens, recommended = _strip_recommended(
+                _without_checkbox_prefix(item)
+            )
             option_text = _inline_text(option_tokens)
             if not option_text.strip():
                 return None
             words += len(option_text.split())
-            strong = _leading_strong(option_tokens)
-            label_tokens: list[Token]
-            detail_tokens: list[Token]
-            if strong is None:
-                label_tokens, detail_tokens = option_tokens, []
-            else:
-                label_tokens, detail_tokens = strong
+            label_tokens, detail_tokens = _split_option_label(option_tokens)
             if not _inline_text(label_tokens).strip():
                 return None
-            options.append(_CardOption(tuple(label_tokens), tuple(detail_tokens)))
+            options.append(
+                _CardOption(tuple(label_tokens), tuple(detail_tokens), recommended)
+            )
 
     return _Card(
         kind=kind,
@@ -518,6 +669,7 @@ def _to_question(card: _Card) -> Question:
             QuestionOption(
                 label=_collapsed_text(option.label),
                 detail=_collapsed_text(option.detail).lstrip(_DETAIL_SEPARATORS),
+                recommended=option.recommended,
             )
             for option in card.options
         ),
@@ -556,10 +708,16 @@ def _question_card_html(card: _Card, position: int, env: EnvType) -> str:
             detail = (
                 f'<span class="qcard-d">{detail_html}</span>' if detail_html else ""
             )
+            tag = (
+                ' <span class="qcard-rec">recommended</span>'
+                if option.recommended
+                else ""
+            )
+            mark = " data-recommended" if option.recommended else ""
             parts.append(
-                f'<li class="qcard-opt" data-text="{html.escape(_question_plain_text(_inline_text(option.label)))}">'
+                f'<li class="qcard-opt" data-text="{html.escape(_question_plain_text(_inline_text(option.label)))}"{mark}>'
                 '<span class="qcard-t">'
-                f'<span class="qcard-l">{label_html}</span>{detail}'
+                f'<span class="qcard-l">{label_html}</span>{tag}{detail}'
                 "</span></li>"
             )
         parts.append("</ul>")

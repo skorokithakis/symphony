@@ -134,14 +134,14 @@ every comment:
       "id": "c-0f4a9b8e6d2c4f0e9a1b3c5d7e9f1a2b",
       "author": "agent",
       "kind": "final",
-      "body": "Added the flag and one test; all tests pass.\n\n> [!QUESTION] Which storage should the cache use?\n> - **Redis**: survives a restart.\n> - In-memory\n\n*Symphony · final*",
+      "body": "Added the flag and one test; all tests pass.\n\n> [!QUESTION] Which storage should the cache use?\n> - **Redis (recommended)**: survives a restart.\n> - In-memory\n\n*Symphony · final*",
       "questions": [
         {
           "kind": "choose-one",
           "question": "Which storage should the cache use?",
           "options": [
-            {"label": "Redis", "detail": "survives a restart."},
-            {"label": "In-memory", "detail": ""}
+            {"label": "Redis", "detail": "survives a restart.", "recommended": true},
+            {"label": "In-memory", "detail": "", "recommended": false}
           ]
         }
       ],
@@ -171,8 +171,8 @@ reply's question cards in order, each as:
   "kind": "choose-many",
   "question": "Which should I remove?",
   "options": [
-    {"label": "The retry loop", "detail": "it hides real failures."},
-    {"label": "The cron shim", "detail": ""}
+    {"label": "The retry loop", "detail": "it hides real failures.", "recommended": true},
+    {"label": "The cron shim", "detail": "", "recommended": false}
   ]
 }
 ```
@@ -182,15 +182,19 @@ reply's question cards in order, each as:
 `options: []`. `question` and the option fields are visible plain text without
 Markdown markup. `detail` is the text after a leading bold label, without the
 separator (`**Redis**: survives a restart.` gives `"survives a restart."`), and
-`""` when the option has no leading bold label. Only well-formed `> [!QUESTION]` callouts are listed: a malformed one
-stays an ordinary quote on the ticket page, and is absent here too.
+`""` when the option has no leading bold label. `recommended` is `true` for the
+option the agent marked `(recommended)`; the marker is removed from `label`, so
+a consumer answering with a label must send it without `(recommended)`. Only
+well-formed `> [!QUESTION]` callouts are listed: a malformed one stays an
+ordinary quote on the ticket page, and is absent here too.
 
 ### Answering questions
 
 Answer with a normal POST comment; there is no separate structured answer
 field. Agents are asked to write each question as a `> [!QUESTION]` callout
 with its options as `> - a` for choose-one or `> - [ ] a` for choose-many, the
-recommended option first. A free-text question has no options and no list.
+recommended option first and marked `(recommended)`. A free-text question has
+no options and no list.
 
 Use the layout the browser's Send builds, because it keeps each answer next to
 its question:

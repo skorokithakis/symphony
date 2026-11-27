@@ -89,7 +89,7 @@ _BOT_FOOTER = "\n\n*Symphony · {kind}*"
 QUESTION_FORMAT_NOTE = (
     'Put each question for the human in a callout: "> [!QUESTION] text", with '
     'options as "> - a" (choose one) or "> - [ ] a" (choose many), '
-    "recommended first."
+    'recommended first and marked "(recommended)".'
 )
 
 #: ``user_id`` reported for human comments, so the resume prompt names an
@@ -425,8 +425,11 @@ class QuestionAnswer(BaseModel):
 
     ``selected`` holds the indexes of the chosen options in the order the card
     renders them, ``edits`` maps an option index to the text the human typed in
-    its pencil field, and ``other`` is the free-text or "Other" answer.  The
-    server validates this shape and stores it verbatim; the page decides which
+    its pencil field, ``other`` is the free-text or "Other" text, and
+    ``other_chosen`` says whether that text is a chosen answer.  The chosen bit
+    is separate from the text because a text kept after choosing a listed
+    option stays visible but must not answer the question.  The server
+    validates this shape and stores it verbatim; the page decides which
     indexes still exist in the current reply and how the pieces are assembled
     into the reply comment.
 
@@ -439,6 +442,7 @@ class QuestionAnswer(BaseModel):
     selected: list[int] = Field(default_factory=list)
     edits: dict[int, str] = Field(default_factory=dict)
     other: str = ""
+    other_chosen: bool = False
 
 
 class ReplyAnswers(BaseModel):

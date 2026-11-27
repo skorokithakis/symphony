@@ -664,6 +664,15 @@ body.sym { min-height: 100dvh; }
 .md .qcard-t { min-width: 0; }
 .md .qcard-l { font-weight: 600; }
 .md .qcard-d { color: var(--ink-2); }
+/* The recommendation is metadata, not a second selection state: it sits where
+   the agent wrote "(recommended)", between the label and its detail.  The
+   outline is what keeps it from reading as one more word of the sentence; it
+   has no fill because fills mean code or selection here. */
+.md .qcard-rec {
+  display: inline-block; margin: 0 2px; padding: 0 6px; vertical-align: 0.1em;
+  border: 1px solid var(--rule-2); border-radius: var(--r-round);
+  font: 400 var(--t-xs)/1.5 var(--font-mono); color: var(--ink-2);
+}
 /* Live cards: only the newest agent reply's cards carry these controls, and
    only while no human message follows it.  Every other card keeps the static
    rules above, which is also what a page without the script shows.  The row is

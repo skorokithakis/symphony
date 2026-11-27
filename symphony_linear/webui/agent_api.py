@@ -362,13 +362,18 @@ def _question_json(question: Question) -> dict[str, Any]:
 
     ``detail`` is ``""`` rather than ``null`` when the option has no leading
     bold label, matching :class:`QuestionOption`, so a consumer never needs a
-    second branch for the two shapes of an absent detail.
+    second branch for the two shapes of an absent detail.  ``recommended`` is
+    reported separately because the marker is removed from ``label``.
     """
     return {
         "kind": question.kind,
         "question": question.question,
         "options": [
-            {"label": option.label, "detail": option.detail}
+            {
+                "label": option.label,
+                "detail": option.detail,
+                "recommended": option.recommended,
+            }
             for option in question.options
         ],
     }

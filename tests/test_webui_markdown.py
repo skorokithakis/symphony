@@ -178,6 +178,73 @@ def test_question_callout_renders_a_choose_many_card() -> None:
     assert "[ ]" not in rendered
 
 
+def test_question_card_marks_recommended_options() -> None:
+    rendered = render_markdown_sections(
+        "> [!QUESTION] Which one?\n"
+        "> - **Redis (recommended)**: survives.\n"
+        "> - **In-memory** (Recommended): no dependency.\n"
+        "> - On disk (RECOMMENDED)\n"
+    )
+
+    assert rendered.count("data-recommended") == 3
+    assert rendered.count('<span class="qcard-rec">recommended</span>') == 3
+    assert 'data-text="Redis"' in rendered
+    assert 'data-text="In-memory"' in rendered
+    assert 'data-text="On disk"' in rendered
+    assert "(recommended)" not in rendered.lower()
+
+    many = render_markdown_sections(
+        "> [!QUESTION] Which ones?\n"
+        "> - [ ] **Lint (recommended)**: slow.\n"
+        "> - [ ] **Tests (recommended)**: everything.\n"
+        "> - [ ] Types\n"
+    )
+    assert 'data-kind="choose-many"' in many
+    assert many.count("data-recommended") == 2
+    assert many.count('<span class="qcard-rec">recommended</span>') == 2
+
+    # A code span holding the same words is literal text, not a marker.
+    literal = render_markdown_sections(
+        "> [!QUESTION] Which one?\n> - `(recommended)` Redis\n"
+    )
+    assert "data-recommended" not in literal
+    assert "<code>(recommended)</code>" in literal
+    assert 'data-text="(recommended) Redis"' in literal
+
+    # An empty bold span left by the marker is skipped and the normal
+    # leading-bold split runs again on what remains.
+    leading = render_markdown_sections(
+        "> [!QUESTION] Which one?\n> - **(recommended)** **Redis**: fast\n"
+    )
+    assert 'data-text="Redis"' in leading
+    assert '<span class="qcard-l">Redis</span>' in leading
+    assert '<span class="qcard-d">: fast</span>' in leading
+
+    # The gap at the cut is normalised across inline token boundaries.
+    cross = render_markdown_sections(
+        "> [!QUESTION] Which one?\n"
+        "> - Use (recommended) *Redis*\n"
+        "> - Use *Redis* (recommended) for sessions\n"
+    )
+    assert 'data-text="Use Redis"' in cross
+    assert 'data-text="Use Redis for sessions"' in cross
+    assert '<span class="qcard-l">Use <em>Redis</em></span>' in cross
+    assert '<span class="qcard-l">Use <em>Redis</em> for sessions</span>' in cross
+
+    # Removing the marker must not leave a space before punctuation.
+    spaced = render_markdown_sections(
+        "> [!QUESTION] Which one?\n> - **Redis** (recommended) : slow\n"
+    )
+    assert 'data-text="Redis"' in spaced
+    assert '<span class="qcard-d">: slow</span>' in spaced
+    assert " : slow" not in spaced
+
+    # Removing the marker must not leave an empty option behind.
+    empty = render_markdown_sections("> [!QUESTION] Which one?\n> - (recommended)\n")
+    assert "qcard" not in empty
+    assert "<blockquote>" in empty
+
+
 def test_question_callout_renders_a_free_text_card() -> None:
     rendered = render_markdown_sections(
         "> [!QUESTION]\n> What should the new service be called?\n"
@@ -282,7 +349,7 @@ def test_question_card_plain_text_neutralises_the_bot_marker() -> None:
 def test_parse_questions_returns_a_choose_one_card() -> None:
     questions = parse_questions(
         "> [!QUESTION] Which storage should the cache use?\n"
-        "> - **Redis**: survives a restart.\n"
+        "> - **Redis (recommended)**: survives a restart.\n"
         "> - In-memory\n"
     )
 
@@ -291,7 +358,11 @@ def test_parse_questions_returns_a_choose_one_card() -> None:
             kind="choose-one",
             question="Which storage should the cache use?",
             options=(
-                QuestionOption(label="Redis", detail="survives a restart."),
+                QuestionOption(
+                    label="Redis",
+                    detail="survives a restart.",
+                    recommended=True,
+                ),
                 QuestionOption(label="In-memory", detail=""),
             ),
         )
