@@ -5,8 +5,11 @@
  * newest agent entry and only while no human message follows it, so a page
  * without a script (and every older reply) keeps a readable card.  The
  * controls are mounted once per card and updated in place, so a field closing
- * never removes the control the user is tabbing or clicking to.  ticket.js
- * calls the interface at the end of this file and posts the assembled body.
+ * never removes the control the user is tabbing or clicking to.  Adjacent live
+ * cards become one tabbed panel; app.js arbitrates the number and arrow keys
+ * through handleKey() so the prefix sequences and type-to-reply keep priority.
+ * ticket.js calls the interface at the end of this file and posts the
+ * assembled body.
  */
 (function () {
   "use strict";
@@ -28,6 +31,14 @@
   var activeEntry = null;
   var activeCommentId = "";
   var cards = [];
+  /* Runs of adjacent live cards.  A run of two or more is mounted in a panel
+   * with a tab strip; a lone card stays where it is but is still a group, so
+   * the number keys can address it. */
+  var groups = [];
+  /* The group the user last clicked or typed in.  Until then the first group
+   * with an unanswered question is the target, which is also why it is not
+   * persisted: a reload starts from the unanswered question again. */
+  var targetGroup = null;
   /* Question index -> raw state: selected option indexes, edits by option
    * index and the free/Other text.  The answer is derived from this by
    * answerOf(), which is the only place that decides what is answered. */
@@ -125,10 +136,19 @@
     return question ? question.getAttribute("data-text") || "" : "";
   }
 
-  function marker() {
+  /* The number is the row's keyboard hint.  It is shown only for the first
+   * ten rows, because a larger number would advertise a key that cannot pick
+   * it. */
+  function marker(number) {
     var mark = document.createElement("span");
     mark.className = "qcard-mark";
     mark.setAttribute("aria-hidden", "true");
+    if (number <= 10) {
+      var label = document.createElement("span");
+      label.className = "qcard-num";
+      label.textContent = String(number);
+      mark.appendChild(label);
+    }
     return mark;
   }
 
@@ -158,10 +178,11 @@
     labelElement,
     editedElement,
     plain,
-    index
+    index,
+    number
   ) {
     var pick = pickButton();
-    row.insertBefore(marker(), row.firstChild);
+    row.insertBefore(marker(number), row.firstChild);
     row.insertBefore(pick, textElement);
     pick.appendChild(textElement);
     var pencil = pencilButton(
@@ -199,7 +220,8 @@
       labelElement,
       editedElement,
       row.getAttribute("data-text") || "",
-      index
+      index,
+      index + 1
     );
   }
 
@@ -222,7 +244,8 @@
       labelElement,
       null,
       "",
-      null
+      null,
+      card.__qcardRows.length + 1
     );
   }
 
@@ -392,6 +415,12 @@
     updateCount();
     syncFormValidation();
     notifyChange();
+    if (card.__qcardKind === "choose-one") {
+      /* A picked option answers the question, so the reader moves on to the
+       * next question of the same group.  Choose-many, Other and an edit
+       * never move: their answer is not finished with a single pick. */
+      moveTab(card.__qgroup, 1);
+    }
   }
 
   function onInput(event) {
@@ -540,10 +569,266 @@
     });
   }
 
+  /* ---------- grouping and tabs ---------- */
+
+  function isLiveCard(node) {
+    return (
+      Boolean(node) &&
+      node.nodeType === 1 &&
+      node.classList.contains("qcard") &&
+      cards.indexOf(node) !== -1
+    );
+  }
+
+  function unansweredIn(groupCards) {
+    for (var index = 0; index < groupCards.length; index += 1) {
+      if (!answersFor(groupCards[index]).length) {
+        return index;
+      }
+    }
+    return 0;
+  }
+
+  /* A group is a run of live cards that are adjacent element siblings.  The
+   * server renders one card per top-level callout, so two cards are adjacent
+   * only when nothing but whitespace separates them.  Cards in different
+   * reply sections have different parents and never join a group, which keeps
+   * a panel inside the section whose summary opened it. */
+  function buildGroups() {
+    groups = [];
+    var members = [];
+    cards.forEach(function (card) {
+      if (members.indexOf(card) !== -1) {
+        return;
+      }
+      var run = [card];
+      for (
+        var sibling = card.nextElementSibling;
+        isLiveCard(sibling);
+        sibling = sibling.nextElementSibling
+      ) {
+        run.push(sibling);
+      }
+      var group = {
+        cards: run,
+        panel: null,
+        tabs: [],
+        active: unansweredIn(run),
+        id: "qgroup-" + activeCommentId + "-" + groups.length,
+      };
+      groups.push(group);
+      run.forEach(function (member) {
+        members.push(member);
+        member.__qgroup = group;
+      });
+      mountGroup(group);
+    });
+  }
+
+  /* The tab a group opens on: its first unanswered question, or its first
+   * question when every one is answered.  A draft hydrates before this runs,
+   * so a saved answer moves the opening tab with it. */
+  function showTab(group, index) {
+    if (index < 0 || index >= group.cards.length) {
+      return;
+    }
+    group.active = index;
+    if (!group.panel) {
+      /* A lone card has no strip and stays visible; the keys still address it
+       * through group.cards[group.active]. */
+      return;
+    }
+    var tabFocused =
+      group.tabs.indexOf(document.activeElement) !== -1;
+    group.cards.forEach(function (card, position) {
+      card.hidden = position !== index;
+      var tab = group.tabs[position];
+      tab.setAttribute(
+        "aria-selected",
+        position === index ? "true" : "false"
+      );
+      /* Roving tabindex: the strip is one Tab stop, and the arrows (or a
+       * click) pick which tab it lands on. */
+      tab.tabIndex = position === index ? 0 : -1;
+    });
+    if (tabFocused) {
+      /* Focus follows the selection whichever path changed it: an arrow, a
+       * digit that advanced after a choose-one pick, or a click. */
+      group.tabs[index].focus();
+    }
+  }
+
+  /* Changing tabs never wraps and never leaves the group: the last tab stays
+   * put, so a pick cannot land the reader somewhere unexpected.  Returns
+   * whether the tab actually changed. */
+  function moveTab(group, step) {
+    if (!group || !group.panel) {
+      return false;
+    }
+    var next = group.active + step;
+    if (next < 0 || next >= group.cards.length) {
+      return false;
+    }
+    showTab(group, next);
+    return true;
+  }
+
+  function currentTab(group) {
+    return group ? group.cards[group.active] : null;
+  }
+
+  /* Whether the group is rendered.  A card inside a closed <details> section
+   * is not, and the keys must not act on a group the reader cannot see.  A
+   * panel itself is never hidden, but all but one of its cards are, so use
+   * the group's current card when there is no panel.  checkVisibility() is
+   * the only reliable test here: Chromium keeps layout boxes for content
+   * hidden by a closed details, so getClientRects() still reports a size. */
+  function isRendered(node) {
+    if (!node) {
+      return false;
+    }
+    if (typeof node.checkVisibility === "function") {
+      return node.checkVisibility();
+    }
+    return node.getClientRects().length > 0;
+  }
+
+  function isGroupVisible(group) {
+    var anchor = group.panel || currentTab(group) || group.cards[0];
+    return isRendered(anchor);
+  }
+
+  function focusedTabGroup() {
+    var tab = document.activeElement;
+    if (!tab || !tab.classList || !tab.classList.contains("qgroup-tab")) {
+      return null;
+    }
+    return tab.__qgroup || null;
+  }
+
+  /* The group the keys act on: the tab that has focus, else the group last
+   * clicked or typed in, else the first visible group with an unanswered
+   * question.  An invisible target is skipped rather than used, so collapsing
+   * its section does not leave the keys pointing inside it. */
+  function keyTarget() {
+    var tabGroup = focusedTabGroup();
+    if (tabGroup && isGroupVisible(tabGroup)) {
+      return tabGroup;
+    }
+    if (targetGroup && isGroupVisible(targetGroup)) {
+      return targetGroup;
+    }
+    return defaultTarget();
+  }
+
+  /* Until the user clicks or types in a group, the keys address the first
+   * group that still has an unanswered question.  When every question is
+   * answered the first visible group is the fallback, because the keys must
+   * still work for changing an answer.  Groups with no rendered card (a
+   * closed section) are never eligible. */
+  function defaultTarget() {
+    var index;
+    for (index = 0; index < groups.length; index += 1) {
+      if (
+        isGroupVisible(groups[index]) &&
+        groups[index].cards.some(function (card) {
+          return !answersFor(card).length;
+        })
+      ) {
+        return groups[index];
+      }
+    }
+    for (index = 0; index < groups.length; index += 1) {
+      if (isGroupVisible(groups[index])) {
+        return groups[index];
+      }
+    }
+    return null;
+  }
+
+  function mountGroup(group) {
+    if (group.cards.length < 2) {
+      return;
+    }
+    var first = group.cards[0];
+    var panel = document.createElement("div");
+    panel.className = "qgroup";
+    var tabs = document.createElement("div");
+    tabs.className = "qgroup-tabs";
+    tabs.setAttribute("role", "tablist");
+    tabs.setAttribute("aria-label", "Questions");
+    panel.appendChild(tabs);
+    group.cards.forEach(function (card, index) {
+      var tab = document.createElement("button");
+      tab.type = "button";
+      tab.className = "qgroup-tab";
+      tab.id = group.id + "-tab-" + index;
+      tab.__qgroup = group;
+      tab.setAttribute("role", "tab");
+      tab.setAttribute("aria-controls", group.id + "-card-" + index);
+      var number = document.createElement("span");
+      number.className = "qgroup-tab-n";
+      number.textContent = String(index + 1);
+      tab.appendChild(number);
+      var check = document.createElement("span");
+      check.className = "qgroup-tab-check";
+      check.setAttribute("aria-hidden", "true");
+      check.textContent = "\u2713";
+      check.hidden = true;
+      tab.appendChild(check);
+      tabs.appendChild(tab);
+      card.id = group.id + "-card-" + index;
+      card.setAttribute("role", "tabpanel");
+      card.setAttribute("aria-labelledby", tab.id);
+      group.tabs.push(tab);
+    });
+    tabs.addEventListener("click", function (event) {
+      var tab = event.target.closest(".qgroup-tab");
+      var index = group.tabs.indexOf(tab);
+      if (index === -1) {
+        return;
+      }
+      event.preventDefault();
+      targetGroup = group;
+      showTab(group, index);
+    });
+    first.parentNode.insertBefore(panel, first);
+    group.cards.forEach(function (card) {
+      panel.appendChild(card);
+    });
+    group.panel = panel;
+    if (locked) {
+      panel.inert = true;
+      panel.classList.add("is-locked");
+    }
+    showTab(group, group.active);
+  }
+
+  /* The check mark is the same answer derivation the Send body uses, so a tab
+   * never claims an answer the comment would omit. */
+  function syncTabs() {
+    groups.forEach(function (group) {
+      group.tabs.forEach(function (tab, index) {
+        var answered = answersFor(group.cards[index]).length > 0;
+        var check = tab.querySelector(".qgroup-tab-check");
+        if (check) {
+          check.hidden = !answered;
+        }
+        tab.classList.toggle("is-answered", answered);
+        tab.setAttribute(
+          "aria-label",
+          "Question " + (index + 1) + (answered ? ", answered" : "")
+        );
+      });
+    });
+  }
+
   function activate(entry) {
     activeEntry = entry;
     activeCommentId = commentIdOf(entry);
     cards = [];
+    groups = [];
+    targetGroup = null;
     state = {};
     Array.prototype.forEach.call(
       entry.querySelectorAll(".qcard"),
@@ -574,14 +859,29 @@
       }
     );
     hydrate();
+    buildGroups();
     cards.forEach(syncCard);
+    syncTabs();
   }
 
   function deactivate() {
-    cards.forEach(function (card) {
-      card.replaceWith(card.__qcardStatic);
+    /* The panel is removed, not just emptied: a restored card must sit exactly
+     * where the server rendered it, in the order of the reply. */
+    groups.forEach(function (group) {
+      if (!group.panel) {
+        group.cards.forEach(function (card) {
+          card.replaceWith(card.__qcardStatic);
+        });
+        return;
+      }
+      group.cards.forEach(function (card) {
+        group.panel.parentNode.insertBefore(card.__qcardStatic, group.panel);
+      });
+      group.panel.remove();
     });
     cards = [];
+    groups = [];
+    targetGroup = null;
     state = {};
     activeEntry = null;
     activeCommentId = "";
@@ -657,6 +957,7 @@
   }
 
   function notifyChange() {
+    syncTabs();
     window.SymQuestions.onChange();
   }
 
@@ -665,6 +966,15 @@
     cards.forEach(function (card) {
       card.inert = value;
       card.classList.toggle("is-locked", value);
+    });
+    /* The panel's tab strip is a control too: locking the cards alone would
+     * leave the tabs clickable mid-Send. */
+    groups.forEach(function (group) {
+      if (!group.panel) {
+        return;
+      }
+      group.panel.inert = value;
+      group.panel.classList.toggle("is-locked", value);
     });
   }
 
@@ -696,7 +1006,18 @@
 
   /* ---------- events ---------- */
 
+  /* The group the keys address is the one the user last touched.  A click on
+   * a tab is caught by the tab strip's own listener, since a tab is outside
+   * the cards. */
+  function noteTarget(node) {
+    var card = node && node.closest ? node.closest(".qcard") : null;
+    if (card && card.__qgroup) {
+      targetGroup = card.__qgroup;
+    }
+  }
+
   thread.addEventListener("click", function (event) {
+    noteTarget(event.target);
     var button = event.target.closest(".qcard-pick, .qcard-edit");
     if (!button) {
       return;
@@ -743,6 +1064,8 @@
     if (!field.classList || !field.classList.contains("qcard-field")) {
       return;
     }
+    /* Typing in a group's field makes that group the keys' target. */
+    noteTarget(field);
     reveal(field);
     window.setTimeout(function () {
       reveal(field);
@@ -764,6 +1087,88 @@
     pointerDown = false;
     runPendingClose();
   });
+
+  /* ---------- number keys and tab arrows ---------- */
+
+  /* One-based option number: 1-9 are themselves, 0 is the tenth.  Returns 0
+   * for a key that is not a digit. */
+  function optionNumber(key) {
+    if (!/^[0-9]$/.test(key)) {
+      return 0;
+    }
+    var digit = Number(key);
+    return digit === 0 ? 10 : digit;
+  }
+
+  /* Called by app.js from its own keydown handler, which has already applied
+   * every guard (modifiers, a focused field, an open dialog, the prefix
+   * sequences).  app.js is the single arbiter on purpose: a capture listener
+   * here could claim a key before app.js had decided whether it was still
+   * part of an armed "s"/"g" sequence or pending reply text.  Returns true
+   * when the key belongs to the question cards, so app.js preventDefaults it
+   * instead of typing it into the reply box.
+   *
+   * The lock is the one guard app.js cannot know about: a card locked by an
+   * in-flight Send is inert for the mouse, and the keyboard must not be a
+   * second way to change an answer that is already in the posted body. */
+  function handleKey(event) {
+    if (!activeEntry || !groups.length || locked) {
+      return false;
+    }
+    var group = keyTarget();
+    if (!group) {
+      return false;
+    }
+    if (event.key === "ArrowLeft" || event.key === "ArrowRight") {
+      if (!group.panel) {
+        return false;
+      }
+      /* A held arrow must not run through every tab. */
+      if (event.repeat) {
+        return true;
+      }
+      /* Using the keys is the interaction that makes this group the target,
+       * exactly like clicking inside it does.  showTab moves focus when the
+       * reader was on the strip. */
+      targetGroup = group;
+      moveTab(group, event.key === "ArrowRight" ? 1 : -1);
+      return true;
+    }
+    var number = optionNumber(event.key);
+    if (!number) {
+      return false;
+    }
+    var card = currentTab(group);
+    if (!card || card.__qcardKind === "free-text") {
+      /* A free-text question has no options to number, so its digits keep
+       * starting a reply in the composer. */
+      return false;
+    }
+    var rows = card.__qcardRows || [];
+    var other = rows.length + 1;
+    var picks = number <= rows.length;
+    var opensOther =
+      !picks && number === other && other <= 10 && Boolean(card.__qcardOther);
+    if (!picks && !opensOther) {
+      /* A digit past the last row falls through, so a reply that starts with
+       * a number still types. */
+      return false;
+    }
+    /* A held digit must change exactly one answer, not toggle on every
+     * auto-repeat and then type the remaining repeats into the reply box. */
+    if (event.repeat) {
+      return true;
+    }
+    /* A keyboard pick or Other is a use of this group, so later keys keep
+     * addressing it even after the reader clicks elsewhere. */
+    targetGroup = group;
+    if (picks) {
+      pick(card, rows[number - 1]);
+    } else {
+      startEdit(card, card.__qcardOther);
+    }
+    return true;
+  }
 
   /* ---------- the interface ticket.js calls ---------- */
 
@@ -841,6 +1246,8 @@
     },
     sent: sent,
     setLocked: setLocked,
+    /* app.js consults this from its own keydown handler. */
+    handleKey: handleKey,
     onChange: null,
   };
 

@@ -722,6 +722,40 @@ body.sym { min-height: 100dvh; }
 /* A Send in flight locks the cards it is about to post, like the uploader
    locks attachments; the dimming says the controls will not take an edit. */
 .md .qcard.is-locked { opacity: 0.7; }
+/* Adjacent live cards are one panel: a numbered tab strip, then the card of
+   the selected tab.  The strip labels are question numbers within the group,
+   separate from the option numbers inside a card.  A lone card is still a
+   group, but it has no strip and keeps the plain card layout. */
+.md .qgroup { display: flex; flex-direction: column; gap: var(--s2); min-width: 0; }
+.md .qgroup .qcard[hidden] { display: none; }
+.md .qgroup-tabs { display: flex; flex-wrap: wrap; gap: var(--s1); }
+.md .qgroup-tab {
+  display: inline-flex; align-items: center; justify-content: center; gap: var(--s1);
+  min-width: var(--tap); min-height: var(--tap); padding: 0 var(--s2);
+  border: 1px solid var(--rule-2); border-radius: var(--r-round);
+  background: var(--surface); color: var(--ink-2);
+  font: 600 var(--t-sm)/1 var(--font-mono); cursor: pointer;
+}
+.md .qgroup-tab:hover { background: var(--sunken); }
+.md .qgroup-tab:focus-visible { outline: 2px solid var(--focus); outline-offset: -2px; }
+.md .qgroup-tab[aria-selected="true"] {
+  border-color: var(--accent);
+  background: color-mix(in srgb, var(--accent) 16%, var(--surface));
+  color: var(--ink);
+}
+.md .qgroup-tab-check[hidden] { display: none; }
+.md .qgroup.is-locked .qgroup-tabs { opacity: 0.7; }
+/* The option's number is a keyboard hint, so it appears only where a keyboard
+   is likely: hover-capable devices.  A touch screen has no number keys. */
+.md .qcard-mark .qcard-num { display: none; }
+@media (hover: hover) {
+  .md .qcard-mark {
+    display: flex; align-items: center; justify-content: center;
+    font: 600 9px/1 var(--font-mono); color: var(--ink-3);
+  }
+  .md .qcard-mark .qcard-num { display: block; }
+  .md .qcard-opt.is-picked .qcard-mark { color: var(--on-accent); }
+}
 /* The answered count shares the actions row with Send, so it is a quiet
    monospace label that never pushes the button off the right edge. */
 .answers-count {

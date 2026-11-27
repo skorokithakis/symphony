@@ -186,6 +186,20 @@ for an answer that is not on the list, and a free-text card is just its text
 field. The count next to Send says how many questions you have answered;
 unanswered questions never block Send.
 
+Cards that sit one after another with nothing between them share a tabbed
+panel: a numbered strip above them, with one question shown at a time. Each tab
+carries a check mark once its question has an answer, and the panel opens at
+the first unanswered question. A single card has no strip.
+
+On a device with a mouse or trackpad each option's marker shows its number.
+With no field focused, the number keys choose options on the visible card of
+the current group (1 to 9, then 0 for the tenth). On a choose-one card a pick
+moves to the next tab, and the last tab stays where it is. The number after the
+last option opens the **Other** field. ArrowLeft and ArrowRight change tabs. A
+digit on a free-text card, or one past the last option, starts a reply in the
+box as before. The keys act on the group you last clicked or typed in; before
+that, on the first group with an unanswered question.
+
 Your answers are saved as you change them, beside the reply text, so a reload
 or another browser shows the same choices. They belong to that agent reply and
 are ignored once a newer reply arrives or a human message follows it. Send

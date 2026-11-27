@@ -814,7 +814,12 @@ shutting down, or the ticket is no longer triggered — see `_is_still_triggered
   Send is in flight. The composer text and the answers stay separate until
   Send: `ticket.js` still compares the textarea's own text when deciding whether
   it may clear it, while the posted body is the assembled comment (quoted
-  question, answers, then the text).
+  question, answers, then the text). Adjacent live cards with nothing between
+  them are one tabbed panel. Digits `1`-`0` and Left/Right act on the target
+  group (the last clicked or typed-in group, else the first visible one with
+  an unanswered question), and app.js arbitrates those keys through
+  `SymQuestions.handleKey` so the `s`/`g` prefix sequences and type-to-reply
+  keep priority.
 - **The web UI server is wired in `cli.py`, not the orchestrator.**
   `cli.main` builds `WebUIServer` from the `LocalTracker`'s store and the
   shared `StateManager`, starts it just before `orchestrator.run()`, and stops

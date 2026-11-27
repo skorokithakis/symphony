@@ -488,6 +488,11 @@
   var pendingPrefix = "";
   var prefixSequenceStart = 0;
   var prefixExpiryTimer = 0;
+  /* The key a question-card shortcut claimed, held until its keyup.  Opening
+   * the Other field moves focus into its input, so without this a held digit
+   * would auto-repeat into that field (or the reply box) instead of staying
+   * one answer. */
+  var claimedRepeatKey = "";
 
   /* The armed prefix is one attribute on <body>; a control's badge letter
      comes from its own data-shortcut-key, and the CSS decides which controls
@@ -554,6 +559,18 @@
   }
 
   document.addEventListener("keydown", function (event) {
+    /* A repeat of a key a question-card shortcut already claimed must not
+       reach whatever that claim focused (Other opens and focuses its input,
+       and a pick can hide a card under the pointer).  This check is before
+       the ignored / focused-field branch for exactly that reason. */
+    if (
+      event.repeat &&
+      claimedRepeatKey !== "" &&
+      event.key === claimedRepeatKey
+    ) {
+      event.preventDefault();
+      return;
+    }
     /* A modifier's own keydown types nothing.  Shift must not disarm: it is
        what "s", Shift+U relies on to type "sU", and Shift plus the second key
        of a sequence still fires it.  CapsLock does end the sequence (the user
@@ -647,6 +664,23 @@
         return;
       }
     }
+    /* Question cards claim digits and the tab arrows.  app.js stays the single
+       arbiter so the "s"/"g" prefix sequences and type-to-reply keep priority:
+       while a sequence is awaiting its second key, or prefix text is waiting
+       to be replayed into the reply box, the cards get no say.  The handler
+       itself applies only the card lock; app.js's guards above still decide
+       every other exclusion. */
+    if (
+      !awaitingPrefix &&
+      pendingReplyText === "" &&
+      window.SymQuestions &&
+      typeof window.SymQuestions.handleKey === "function" &&
+      window.SymQuestions.handleKey(event)
+    ) {
+      claimedRepeatKey = event.key;
+      event.preventDefault();
+      return;
+    }
     // Any other key cancels the armed sequence but still does its own job, so
     // a stray "s" before "j" does not swallow the "j".
     disarmPrefix();
@@ -668,6 +702,17 @@
     } else {
       pendingReplyText = "";
     }
+  });
+
+  document.addEventListener("keyup", function (event) {
+    if (event.key === claimedRepeatKey) {
+      claimedRepeatKey = "";
+    }
+  });
+  /* A keyup can be lost when the window loses focus mid-hold; forget the
+   * claim rather than swallow a later, unrelated key. */
+  window.addEventListener("blur", function () {
+    claimedRepeatKey = "";
   });
 
   /* ---------- the "Saved 14:38" indicator ---------- */
