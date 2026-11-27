@@ -90,7 +90,6 @@ class Row:
     updated_at: str
     updated_text: str
     working: bool
-    working_for: str | None
     failed: bool
     unread: bool
 
@@ -184,20 +183,6 @@ def _utc_text(value: str) -> str:
     return parsed.astimezone(timezone.utc).strftime("%d %b %Y, %H:%M UTC")
 
 
-def _elapsed_text(start: str, now: datetime) -> str:
-    parsed = _parse_datetime(start)
-    if parsed is None:
-        return "0 s"
-    seconds = max(0, int((now - parsed).total_seconds()))
-    if seconds < 60:
-        return f"{seconds} s"
-    if seconds < 3600:
-        return f"{seconds // 60} min"
-    if seconds < 86400:
-        return f"{seconds // 3600} h"
-    return f"{seconds // 86400} d"
-
-
 # ---------------------------------------------------------------------------
 # Row assembly
 # ---------------------------------------------------------------------------
@@ -232,7 +217,6 @@ def latest_agent_summary(ticket: LocalTicket) -> str | None:
 def _row(
     ticket: LocalTicket,
     state_entry: TicketState | None,
-    now: datetime,
     names: Mapping[str, str],
 ) -> Row:
     failed = turn_failed(state_entry)
@@ -254,7 +238,6 @@ def _row(
         updated_at=ticket.updated_at,
         updated_text=_utc_text(ticket.updated_at),
         working=working,
-        working_for=_elapsed_text(ticket.state_changed_at, now) if working else None,
         failed=failed,
         unread=is_unread(ticket),
     )
@@ -286,7 +269,6 @@ def _fingerprint(value: object) -> str:
 
 def home_list(request: Request) -> HomeList:
     """Build the home page's groups and the fingerprint of their rendering."""
-    now = datetime.now(timezone.utc)
     tickets = request.app.store.list_tickets()
     state_entries = _state_entries(request)
     names = repo_names(request.app.store.list_repos())
@@ -296,8 +278,7 @@ def home_list(request: Request) -> HomeList:
         matching = [ticket for ticket in tickets if ticket.state == state]
         matching.sort(key=lambda ticket: _sort_key(ticket.updated_at), reverse=True)
         rows = tuple(
-            _row(ticket, state_entries.get(ticket.id), now, names)
-            for ticket in matching
+            _row(ticket, state_entries.get(ticket.id), names) for ticket in matching
         )
         groups.append(
             Group(
@@ -319,7 +300,6 @@ def home_list(request: Request) -> HomeList:
 
 def archive_list(request: Request) -> ArchiveList:
     """Build the archive page's Done rows and their fingerprint."""
-    now = datetime.now(timezone.utc)
     done = [
         ticket
         for ticket in request.app.store.list_tickets()
@@ -329,7 +309,7 @@ def archive_list(request: Request) -> ArchiveList:
     names = repo_names(request.app.store.list_repos())
     # The working/failed row variants belong to the home page; a finished
     # ticket is shown plainly even if a stale StateManager entry lingers.
-    rows = tuple(_row(ticket, None, now, names) for ticket in done)
+    rows = tuple(_row(ticket, None, names) for ticket in done)
     return ArchiveList(
         rows=rows,
         count=len(rows),

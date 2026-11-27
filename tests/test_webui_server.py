@@ -476,7 +476,9 @@ class TestHomePage:
         text = body.decode()
         assert "row--working" in text
         assert "mark--working" in text
-        assert "Working, " in text
+        # The pulsing mark and the In Progress heading already say it; the
+        # time column already shows the age.
+        assert "Working, " not in text
 
     def test_failed_status_and_setup_error_use_failed_variant(
         self, tmp_path: Path

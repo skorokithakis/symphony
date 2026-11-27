@@ -437,7 +437,7 @@ body.sym { min-height: 100dvh; }
     padding-right: max(var(--s7), calc(100% - 960px + var(--s7)));
   }
   .row {
-    grid-template-columns: 16px 60px minmax(0, 1fr) auto 176px 80px;
+    grid-template-columns: 16px 60px minmax(0, 1fr) auto 120px 80px;
     grid-template-areas: "mark id title flag repo time";
     column-gap: var(--s4); align-items: baseline;
     padding: 9px var(--s3);

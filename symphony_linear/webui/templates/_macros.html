@@ -57,7 +57,6 @@
     <span class="row-sub">
       <span class="row-id">{{ row.id }}</span>
       <span class="row-repo"{% if row.repo_url %} title="{{ row.repo_url }}"{% endif %}>{{ row.repo }}</span>
-      {%- if row.working and row.working_for %}<span class="row-flag">Working, {{ row.working_for }}</span>{% endif -%}
       {%- if row.failed %}<span class="row-flag row-flag--failed">Last turn failed</span>{% endif -%}
     </span>
     <span class="row-time"><time datetime="{{ row.updated_at }}" data-format="relative">{{ row.updated_text }}</time></span>
