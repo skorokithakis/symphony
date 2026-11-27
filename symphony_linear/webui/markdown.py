@@ -6,7 +6,9 @@ Three entry points:
   messages and notices.
 * :func:`render_markdown_sections` renders the same, but turns an agent reply
   into one collapsed ``<details class="sec">`` per heading of the shallowest
-  heading level present, inside a ``<div class="secs">``.  A top-level
+  heading level present, inside a ``<div class="secs">``.  A section that opens
+  with a paragraph previews that paragraph's first two lines in its summary,
+  and a section holding question cards counts them there.  A top-level
   ``> [!QUESTION] ...`` callout in that reply becomes a static question card
   instead of a quote.
 * :func:`parse_questions` returns those cards as structured data, using the
@@ -131,6 +133,29 @@ def _word_count(tokens: Sequence[Token]) -> int:
         elif token.type == "question_card":
             count += int(token.meta.get("words", 0))
     return count + len(" ".join(parts).split())
+
+
+def _section_preview(body: Sequence[Token]) -> str | None:
+    """Return a section's first paragraph as one line of plain text.
+
+    Only a section whose first block is a paragraph gets a preview.  A table,
+    code block, list, quote or question card at the top means the section's
+    shape is not prose, and its opening line is punctuation or a header row
+    rather than a sentence, so a preview would be noise.  The text is returned
+    plain, not escaped, because the caller has to escape it: this function
+    cannot tell whether a later stage wants Markdown or HTML.
+    """
+    if not body or body[0].type != "paragraph_open":
+        return None
+    if len(body) < 2 or body[1].type != "inline":
+        return None
+    text = " ".join(_inline_text(body[1].children or []).split())
+    return text or None
+
+
+def _question_count(body: Sequence[Token]) -> int:
+    """Count the question cards a section body holds."""
+    return sum(1 for token in body if token.type == "question_card")
 
 
 def _heading_level(token: Token) -> int | None:
@@ -821,6 +846,12 @@ def render_markdown_sections(text: str) -> str:
     section render as ordinary headings.  Text before the first section heading
     stays visible above the ``<div class="secs">`` wrapper.  A text with no
     top-level heading renders exactly like :func:`render_markdown`.
+
+    Each summary shows the section title and word count on its first line, a
+    question count when the body holds cards, and a two-line preview of the
+    body's first paragraph when it starts with one.  Collapsing a long reply
+    into titles alone hides which section answers what; the preview is plain
+    escaped text, and CSS clamps it, so no text is cut here.
     """
     env: EnvType = {}
     tokens = _MD.parse(text, env)
@@ -850,11 +881,24 @@ def render_markdown_sections(text: str) -> str:
         body = tokens[body_start:end]
         count = _word_count(body)
         unit = "word" if count == 1 else "words"
-        opened = " open" if any(t.type == "question_card" for t in body) else ""
+        cards = _question_count(body)
+        opened = " open" if cards else ""
+        preview = _section_preview(body)
+        badge = (
+            f'<span class="sec-q">{cards} '
+            f"{'question' if cards == 1 else 'questions'}</span>"
+            if cards
+            else ""
+        )
+        preview_html = (
+            f'<span class="sec-p">{html.escape(preview)}</span>' if preview else ""
+        )
         rendered.append(
             f'<details class="sec"{opened}><summary>'
             f'<span class="sec-t">{html.escape(title)}</span>'
             f'<span class="sec-n">{count} {unit}</span>'
+            f"{preview_html}"
+            f"{badge}"
             "</summary>"
             f'<div class="sec-b">{_MD.renderer.render(body, _MD.options, env)}</div>'
             "</details>"

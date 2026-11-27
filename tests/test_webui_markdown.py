@@ -5,6 +5,8 @@ from __future__ import annotations
 import html
 import re
 
+import pytest
+
 from symphony_linear.tracker import is_bot_comment
 from symphony_linear.webui.markdown import (
     Question,
@@ -119,6 +121,42 @@ def test_word_count_ignores_markup_and_counts_code() -> None:
 
     assert '<span class="sec-n">5 words</span>' in rendered
     assert '<span class="sec-n">0 words</span>' in rendered
+
+
+def test_section_preview_is_escaped_plain_text() -> None:
+    rendered = render_markdown_sections(
+        "# A\n\n<script>alert(1)</script> and [click](javascript:alert(1)) "
+        "with **bold** `code`.\n"
+    )
+
+    # The preview is the paragraph's visible text with its markup dropped, and
+    # it is escaped: raw HTML stays off in the summary too, and a rejected link
+    # keeps its literal source rather than becoming a link.
+    assert (
+        '<span class="sec-p">&lt;script&gt;alert(1)&lt;/script&gt; and '
+        "[click](javascript:alert(1)) with bold code.</span>" in rendered
+    )
+    assert "<script" not in rendered
+    assert "href" not in rendered
+
+
+@pytest.mark.parametrize(
+    "body",
+    [
+        "| a |\n|---|\n| 1 |\n",
+        "```\ncode\n```\n",
+        "- one\n- two\n",
+        "> quoted\n",
+        "> [!QUESTION] Which?\n> - yes\n",
+        "### Deeper\n\ntext\n",
+    ],
+)
+def test_section_preview_is_absent_when_body_starts_with_another_block(
+    body: str,
+) -> None:
+    rendered = render_markdown_sections("# A\n\n" + body)
+
+    assert 'class="sec-p"' not in rendered
 
 
 def test_table_inside_a_section_is_wrapped() -> None:

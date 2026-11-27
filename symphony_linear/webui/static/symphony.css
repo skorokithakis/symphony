@@ -804,20 +804,43 @@ body.sym { min-height: 100dvh; }
 }
 .sec + .sec { border-top: 1px solid var(--rule); }
 .sec > summary {
-  display: flex; align-items: center; gap: var(--s3);
-  min-height: 48px; padding: 0 var(--s4); font-weight: 600; cursor: pointer; list-style: none;
+  display: grid; grid-template-columns: auto minmax(0, 1fr) auto;
+  /* The first line stays the title and the word count, and the second holds
+     the preview with the question badge at its end.  Sharing the first line
+     with the badge squeezed titles into mid-word breaks on a narrow phone,
+     and the badge is metadata, so it belongs with the preview rather than
+     beside the title. */
+  grid-template-areas: "chev title words" ". preview badge";
+  align-items: center; column-gap: var(--s3); row-gap: var(--s1);
+  min-height: 48px; padding: var(--s2) var(--s4); font-weight: 600; cursor: pointer; list-style: none;
   transition: background-color var(--dur) var(--ease);
 }
 .sec > summary::-webkit-details-marker { display: none; }
 .sec > summary::before {
-  content: ""; width: 7px; height: 7px; flex: none; margin: 0 3px;
+  content: ""; grid-area: chev; width: 7px; height: 7px; margin: 0 3px;
   border-right: 2px solid var(--ink-3); border-bottom: 2px solid var(--ink-3);
   transform: rotate(-45deg); transition: transform var(--dur) var(--ease);
 }
 .sec[open] > summary::before { transform: translateY(-2px) rotate(45deg); }
 .sec > summary:hover { background: color-mix(in srgb, var(--sunken) 55%, transparent); }
 .sec > summary:focus-visible { outline-offset: -2px; border-radius: 11px; }
-.sec-n { margin-left: auto; font: 400 var(--t-xs)/1 var(--font-mono); color: var(--ink-3); }
+.sec-t { grid-area: title; min-width: 0; }
+/* One question is as notable as ten, so the badge stays a quiet pill rather
+   than taking the accent, which is reserved for Needs Input. */
+.sec-q {
+  grid-area: badge; justify-self: end; display: inline-flex; align-items: center;
+  height: 18px; padding: 0 var(--s2); border-radius: var(--r-round);
+  background: var(--sunken); color: var(--ink-2); white-space: nowrap;
+  font: 400 var(--t-xs)/1 var(--font-mono);
+}
+.sec-n { grid-area: words; font: 400 var(--t-xs)/1 var(--font-mono); color: var(--ink-3); white-space: nowrap; }
+/* Two lines, clipped by the browser: the text is not shortened on the server,
+   so a wider window still shows the whole first sentence. */
+.sec-p {
+  grid-area: preview; display: -webkit-box; -webkit-box-orient: vertical;
+  -webkit-line-clamp: 2; line-clamp: 2; overflow: hidden;
+  font: 400 var(--t-sm)/1.4 var(--font-text); color: var(--ink-2);
+}
 .sec-b { display: flex; flex-direction: column; gap: var(--s3); padding: var(--s1) var(--s4) var(--s5); min-width: 0; }
 
 /* files in the thread and in the composer */

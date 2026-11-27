@@ -177,6 +177,14 @@ several may be chosen. A section of the reply that holds a card starts open. A
 callout that does not have this exact shape (for example a numbered list of
 options) stays an ordinary quote, with all of its text.
 
+An agent reply with headings is split into collapsible sections. A section's
+header shows its title and word count; when the section holds questions it also
+says how many, so you can spot them without opening it. A section that opens
+with a paragraph shows the first two lines of that paragraph under the title,
+clipped by the browser, so nothing is cut out of the reply. A section that
+opens with a table, code block, list or quote shows no preview, because its
+first line would not read as a sentence.
+
 The marker becomes a small "recommended" tag on that option and is removed from
 the option's text, so it is never part of your answer. A marked option starts
 selected: the first marked option in a one-answer question, and every marked
