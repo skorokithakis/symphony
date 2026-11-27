@@ -56,10 +56,11 @@ from symphony_linear.local_tracker import (
     RepoEntry,
 )
 from symphony_linear.state import TicketState
-from symphony_linear.tracker import TrackerNotFoundError, is_bot_comment
+from symphony_linear.tracker import TrackerNotFoundError, is_agent_kind, is_bot_comment
 from symphony_linear.webui import editor
 from symphony_linear.webui.http_types import Request, Response
-from symphony_linear.webui.ticket import state_action_target
+from symphony_linear.webui.markdown import Question, parse_questions
+from symphony_linear.webui.ticket import state_action_target, strip_footer
 from symphony_linear.webui.title import schedule_generation
 from symphony_linear.webui.views import display_title
 
@@ -356,6 +357,23 @@ def _summary(request: Request, ticket: LocalTicket) -> dict[str, Any]:
     }
 
 
+def _question_json(question: Question) -> dict[str, Any]:
+    """Return one question card in the API's JSON shape.
+
+    ``detail`` is ``""`` rather than ``null`` when the option has no leading
+    bold label, matching :class:`QuestionOption`, so a consumer never needs a
+    second branch for the two shapes of an absent detail.
+    """
+    return {
+        "kind": question.kind,
+        "question": question.question,
+        "options": [
+            {"label": option.label, "detail": option.detail}
+            for option in question.options
+        ],
+    }
+
+
 def _comment_json(comment: LocalComment) -> dict[str, Any]:
     # The body stays exactly as stored, footer included: that footer is what
     # is_bot_comment reads, and stripping it here would give the API a second
@@ -367,11 +385,25 @@ def _comment_json(comment: LocalComment) -> dict[str, Any]:
     if agent:
         match = _FOOTER_KIND.search(comment.body)
         kind = match.group(1) if match is not None else None
+    # Questions come only from genuine agent replies.  The stored kind decides
+    # that, exactly as it does for the ticket page's cards: a footer is just
+    # text a human can type, so deriving the answer from the footer would let a
+    # human comment masquerade as a reply here.  The same helper the page uses
+    # strips the footer, so both sides parse the same reply text.
+    questions = (
+        [
+            _question_json(question)
+            for question in parse_questions(strip_footer(comment.body))
+        ]
+        if is_agent_kind(comment.kind)
+        else []
+    )
     return {
         "id": comment.id,
         "author": "agent" if agent else "human",
         "kind": kind,
         "body": comment.body,
+        "questions": questions,
         "created_at": comment.created_at,
     }
 

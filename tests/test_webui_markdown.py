@@ -7,7 +7,10 @@ import re
 
 from symphony_linear.tracker import is_bot_comment
 from symphony_linear.webui.markdown import (
+    Question,
+    QuestionOption,
     markdown_to_text,
+    parse_questions,
     render_markdown,
     render_markdown_sections,
 )
@@ -274,3 +277,100 @@ def test_question_card_plain_text_neutralises_the_bot_marker() -> None:
     assert "\u2217" in plain_forms[0]
     assert "\u2217" in plain_forms[1]
     assert not any(is_bot_comment(value) for value in plain_forms)
+
+
+def test_parse_questions_returns_a_choose_one_card() -> None:
+    questions = parse_questions(
+        "> [!QUESTION] Which storage should the cache use?\n"
+        "> - **Redis**: survives a restart.\n"
+        "> - In-memory\n"
+    )
+
+    assert questions == [
+        Question(
+            kind="choose-one",
+            question="Which storage should the cache use?",
+            options=(
+                QuestionOption(label="Redis", detail=": survives a restart."),
+                QuestionOption(label="In-memory", detail=""),
+            ),
+        )
+    ]
+
+
+def test_parse_questions_returns_a_choose_many_card() -> None:
+    questions = parse_questions(
+        "> [!QUESTION] Which should I keep?\n"
+        "> - [ ] **The retry loop**: it hides real failures.\n"
+        "> - [ ] The cron shim\n"
+    )
+
+    assert questions == [
+        Question(
+            kind="choose-many",
+            question="Which should I keep?",
+            options=(
+                QuestionOption(
+                    label="The retry loop", detail=": it hides real failures."
+                ),
+                QuestionOption(label="The cron shim", detail=""),
+            ),
+        )
+    ]
+
+
+def test_parse_questions_returns_a_free_text_card() -> None:
+    questions = parse_questions(
+        "> [!QUESTION]\n> What should the\n> new service be called?\n"
+    )
+
+    assert questions == [
+        Question(
+            kind="free-text",
+            question="What should the new service be called?",
+            options=(),
+        )
+    ]
+
+
+def test_parse_questions_ignores_malformed_callouts() -> None:
+    assert parse_questions("> [!QUESTION] Which?\n> - [ ] yes\n> - no\n") == []
+    assert parse_questions("> [!QUESTION]\n> - yes\n") == []
+    assert parse_questions("> [!NOTE] not a question\n") == []
+    assert parse_questions("- > [!QUESTION] nested\n  > - a\n") == []
+
+
+def test_parse_questions_uses_an_image_alt_as_the_reader_sees_it() -> None:
+    text = "> [!QUESTION] Replace ![**the spinner**](spinner.png) with what?\n"
+
+    questions = parse_questions(text)
+
+    assert [question.question for question in questions] == [
+        "Replace the spinner with what?"
+    ]
+    # The page's data-text form is the literal Markdown a browser copies into a
+    # human comment, so it deliberately keeps the image description's markup.
+    assert 'data-text="Replace ∗∗the spinner∗∗ with what?"' in (
+        render_markdown_sections(text)
+    )
+
+
+def test_parse_questions_and_the_page_agree_about_what_is_a_question() -> None:
+    text = (
+        "> [!QUESTION] first?\n"
+        "> - a\n"
+        "\n"
+        "> [!NOTE] not one\n"
+        "\n"
+        "> [!QUESTION] mixed?\n"
+        "> - [ ] a\n"
+        "> - b\n"
+        "\n"
+        "- > [!QUESTION] nested?\n"
+        "\n"
+        "> [!QUESTION] second?\n"
+    )
+    questions = parse_questions(text)
+
+    assert [question.question for question in questions] == ["first?", "second?"]
+    assert render_markdown_sections(text).count('<div class="qcard"') == len(questions)

@@ -333,6 +333,84 @@ class TestTicketsRead:
         assert payload["comments"][0]["body"].endswith("*Symphony · " + kind + "*")
         assert payload["comments"][1]["kind"] is None
 
+    def test_detail_carries_the_questions_of_an_agent_reply(
+        self, tmp_path: Path
+    ) -> None:
+        with _server(tmp_path) as (port, tracker, _state, _wake):
+            ticket_id = _ticket(tracker.store)
+            tracker.post_comment(
+                ticket_id,
+                "Two choices and a name.\n\n"
+                "> [!QUESTION] Which storage should the cache use?\n"
+                "> - **Redis**: survives a restart.\n"
+                "> - In-memory\n"
+                "\n"
+                "> [!QUESTION] Which should I remove?\n"
+                "> - [ ] The retry loop\n"
+                "> - [ ] The cron shim\n"
+                "\n"
+                "> [!QUESTION] What should the new service be called?\n",
+                "final",
+            )
+            # A notice may quote a callout, but the ticket page renders it as a
+            # quote, so the API must not advertise it as a question.
+            tracker.post_comment(
+                ticket_id,
+                "Setup failed.\n\n> [!QUESTION] Retry?\n> - yes\n",
+                "error",
+            )
+            tracker.store.add_human_comment(ticket_id, "Thanks.")
+
+            status, payload, _headers = _call(
+                port, "GET", f"/api/v1/tickets/{ticket_id}"
+            )
+
+        assert status == 200
+        assert payload["comments"][0]["questions"] == [
+            {
+                "kind": "choose-one",
+                "question": "Which storage should the cache use?",
+                "options": [
+                    {"label": "Redis", "detail": ": survives a restart."},
+                    {"label": "In-memory", "detail": ""},
+                ],
+            },
+            {
+                "kind": "choose-many",
+                "question": "Which should I remove?",
+                "options": [
+                    {"label": "The retry loop", "detail": ""},
+                    {"label": "The cron shim", "detail": ""},
+                ],
+            },
+            {
+                "kind": "free-text",
+                "question": "What should the new service be called?",
+                "options": [],
+            },
+        ]
+        assert payload["comments"][1]["questions"] == []
+        assert payload["comments"][2]["questions"] == []
+
+    def test_a_human_comment_with_footer_like_text_gets_no_questions(
+        self, tmp_path: Path
+    ) -> None:
+        with _server(tmp_path) as (port, tracker, _state, _wake):
+            ticket_id = _ticket(tracker.store)
+            tracker.store.add_human_comment(
+                ticket_id,
+                "> [!QUESTION] Which?\n> - a\n\n*Symphony · final*",
+            )
+
+            status, payload, _headers = _call(
+                port, "GET", f"/api/v1/tickets/{ticket_id}"
+            )
+
+        assert status == 200
+        # The stored kind, not the footer text, decides this: a human can type
+        # a footer, and the ticket page shows that comment without cards.
+        assert payload["comments"][0]["questions"] == []
+
 
 # ---------------------------------------------------------------------------
 # Creating and editing tickets

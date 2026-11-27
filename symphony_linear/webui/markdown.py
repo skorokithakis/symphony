@@ -1,6 +1,6 @@
 """Render untrusted Markdown (agent replies, user text) as safe HTML.
 
-Two entry points:
+Three entry points:
 
 * :func:`render_markdown` renders CommonMark plus tables; it is used for user
   messages and notices.
@@ -9,6 +9,9 @@ Two entry points:
   heading level present, inside a ``<div class="secs">``.  A top-level
   ``> [!QUESTION] ...`` callout in that reply becomes a static question card
   instead of a quote.
+* :func:`parse_questions` returns those cards as structured data, using the
+  same detection the renderer uses, so the JSON API and the page cannot
+  disagree about what counts as a question.
 
 The input is model output and is therefore untrusted.  Raw HTML is never
 emitted: the parser runs with ``html=False``, so tag-like input is escaped as
@@ -25,6 +28,8 @@ import copy
 import html
 import re
 from collections.abc import Sequence
+from dataclasses import dataclass
+from typing import Literal
 
 from markdown_it import MarkdownIt
 from markdown_it.token import Token
@@ -82,6 +87,27 @@ def _inline_text(children: Sequence[Token]) -> str:
     parts: list[str] = []
     for child in children:
         if child.type in ("text", "code_inline", "image"):
+            parts.append(child.content)
+        elif child.type in ("softbreak", "hardbreak"):
+            parts.append(" ")
+    return "".join(parts)
+
+
+def _structured_inline_text(children: Sequence[Token]) -> str:
+    """Return the visible text of inline children for the structured API.
+
+    This is :func:`_inline_text` with one difference: an image contributes the
+    text of its parsed alt Markdown rather than the raw description.  The
+    page's ``data-text`` attributes keep the literal description because the
+    browser copies them into the human's reply as literal Markdown, but the
+    JSON API describes what the reader sees, so ``![**bold**](x)`` reads
+    ``bold`` there.
+    """
+    parts: list[str] = []
+    for child in children:
+        if child.type == "image":
+            parts.append(_structured_inline_text(child.children or []))
+        elif child.type in ("text", "code_inline"):
             parts.append(child.content)
         elif child.type in ("softbreak", "hardbreak"):
             parts.append(" ")
@@ -166,6 +192,56 @@ _BLOCK_MARKERS = frozenset("#>-+=~")
 #: An ordered-list marker in the first column, whose delimiter also needs an
 #: escape.
 _ORDERED_MARKER_RE = re.compile(r"\d+[.)]")
+
+_QuestionKind = Literal["choose-one", "choose-many", "free-text"]
+
+
+@dataclass(frozen=True)
+class QuestionOption:
+    """One option of a question card, as the reader sees it.
+
+    ``detail`` is the text after a leading bold label, and is ``""`` when the
+    option has no such split.  Both fields are plain text with whitespace
+    collapsed, not the escaped ``data-text`` form: a consumer that copies them
+    into a comment must apply the escaping the renderer already applies.
+    """
+
+    label: str
+    detail: str
+
+
+@dataclass(frozen=True)
+class Question:
+    """One well-formed question callout of an agent reply.
+
+    ``kind`` is ``choose-one`` for a bullet list, ``choose-many`` for a task
+    list and ``free-text`` for a callout with no list.  ``options`` is empty
+    for ``free-text``.
+    """
+
+    kind: _QuestionKind
+    question: str
+    options: tuple[QuestionOption, ...] = ()
+
+
+@dataclass(frozen=True)
+class _CardOption:
+    """An option's tokens, split into its label and its detail."""
+
+    label: tuple[Token, ...]
+    detail: tuple[Token, ...]
+
+
+@dataclass(frozen=True)
+class _Card:
+    """A well-formed question callout, still holding its tokens for rendering."""
+
+    kind: _QuestionKind
+    question: tuple[Token, ...]
+    options: tuple[_CardOption, ...]
+    prose: tuple[Token, ...]
+    prose_after: tuple[Token, ...]
+    words: int
 
 
 def _escape_underscores(text: str) -> str:
@@ -308,20 +384,25 @@ def _question_card_options(
     return items, index + 1
 
 
-def _question_card_html(
-    tokens: Sequence[Token], start: int, end: int, position: int, env: EnvType
-) -> tuple[str, int] | None:
-    """Build the card for the blockquote at ``tokens[start:end]``, or ``None``.
+def _collapsed_text(tokens: Sequence[Token]) -> str:
+    """Return the visible text of *tokens* with whitespace collapsed.
+
+    This feeds the API, which describes what the reader sees, so images use
+    :func:`_structured_inline_text`'s parsed alt text instead of the literal
+    description the page keeps for its ``data-text`` attributes.
+    """
+    return " ".join(_structured_inline_text(tokens).split())
+
+
+def _parse_question_card(tokens: Sequence[Token], start: int, end: int) -> _Card | None:
+    """Read the callout at ``tokens[start:end]``, or return ``None``.
 
     ``None`` leaves the blockquote to the normal renderer, which is the
     documented fallback: a callout that is not clearly well formed, or that
     uses any block shape this function does not understand, keeps every word of
-    the reply visible as an ordinary quote.  ``position`` is the card's
-    zero-based place among the questions of the reply; the browser reads it,
-    with the kind and the one-line plain-text forms, from the data attributes.
-    The returned count is the visible word count of the card, which the caller
-    stores on the card token so a section that holds only a card does not claim
-    "0 words".
+    the reply visible as an ordinary quote.  The rendered card and
+    :func:`parse_questions` both go through this one function, so the page and
+    the JSON API cannot disagree about what is a question.
 
     The first paragraph holds the question: the marker, then the text either on
     the same line or after a line break.  Later paragraphs are prose.  A single
@@ -352,12 +433,13 @@ def _question_card_html(
     question_children = ([first] if first.content else []) + children[1:]
     while question_children and question_children[0].type in ("softbreak", "hardbreak"):
         question_children.pop(0)
-    if not _inline_text(question_children).strip():
+    question_text = _inline_text(question_children)
+    if not question_text.strip():
         return None
 
     prose: list[Token] = []
     prose_after: list[Token] = []
-    options: list[list[Token]] | None = None
+    item_tokens: list[list[Token]] | None = None
     index = start + 4
     while index < end - 1:
         token = tokens[index]
@@ -370,30 +452,30 @@ def _question_card_html(
                 return None
             # Prose after the list keeps its place below the options rather
             # than moving above them.
-            target = prose_after if options is not None else prose
+            target = prose_after if item_tokens is not None else prose
             target.extend(tokens[index : index + 3])
             index += 3
         elif token.type == "bullet_list_open":
-            if options is not None:
+            if item_tokens is not None:
                 return None
             parsed = _question_card_options(tokens, index, end - 1)
             if parsed is None:
                 return None
-            options, index = parsed
+            item_tokens, index = parsed
         # Any other block (a heading, a nested quote, a code block) is a
         # shape the cards do not promise, so the whole callout stays a quote.
         else:
             return None
 
-    kind = "free-text"
-    rendered_options: list[tuple[str, str, str]] = []
-    words = len(_inline_text(question_children).split())
-    if options is not None:
-        checkboxes = [_starts_with_checkbox(item) for item in options]
+    kind: _QuestionKind = "free-text"
+    options: list[_CardOption] = []
+    words = len(question_text.split())
+    if item_tokens is not None:
+        checkboxes = [_starts_with_checkbox(item) for item in item_tokens]
         if any(checkboxes) and not all(checkboxes):
             return None
         kind = "choose-many" if all(checkboxes) else "choose-one"
-        for item in options:
+        for item in item_tokens:
             option_tokens = _without_checkbox_prefix(item)
             option_text = _inline_text(option_tokens)
             if not option_text.strip():
@@ -408,48 +490,97 @@ def _question_card_html(
                 label_tokens, detail_tokens = strong
             if not _inline_text(label_tokens).strip():
                 return None
-            rendered_options.append(
-                (
-                    _MD.renderer.renderInline(label_tokens, _MD.options, env),
-                    _MD.renderer.renderInline(detail_tokens, _MD.options, env)
-                    if detail_tokens
-                    else "",
-                    _question_plain_text(_inline_text(label_tokens)),
-                )
-            )
+            options.append(_CardOption(tuple(label_tokens), tuple(detail_tokens)))
 
+    return _Card(
+        kind=kind,
+        question=tuple(question_children),
+        options=tuple(options),
+        prose=tuple(prose),
+        prose_after=tuple(prose_after),
+        words=words + _word_count(prose) + _word_count(prose_after),
+    )
+
+
+def _to_question(card: _Card) -> Question:
+    """Return the structured, render-free form of one parsed card."""
+    return Question(
+        kind=card.kind,
+        question=_collapsed_text(card.question),
+        options=tuple(
+            QuestionOption(
+                label=_collapsed_text(option.label),
+                detail=_collapsed_text(option.detail),
+            )
+            for option in card.options
+        ),
+    )
+
+
+def _question_card_html(card: _Card, position: int, env: EnvType) -> str:
+    """Build the card HTML for one parsed question.
+
+    ``position`` is the card's zero-based place among the questions of the
+    reply; the browser reads it, with the kind and the one-line plain-text
+    forms, from the data attributes.  The plain-text forms are the escaped
+    forms a later stage copies into a human comment, so they are derived here
+    from the same tokens the visible HTML is rendered from.
+    """
     parts = [
-        f'<div class="qcard" data-kind="{kind}" data-question-index="{position}">',
-        f'<p class="qcard-q" data-text="{html.escape(_question_plain_text(_inline_text(question_children)))}">'
-        f"{_MD.renderer.renderInline(question_children, _MD.options, env)}</p>",
+        f'<div class="qcard" data-kind="{card.kind}" data-question-index="{position}">',
+        f'<p class="qcard-q" data-text="{html.escape(_question_plain_text(_inline_text(card.question)))}">'
+        f"{_MD.renderer.renderInline(card.question, _MD.options, env)}</p>",
     ]
-    if prose:
+    if card.prose:
         parts.append(
             '<div class="qcard-prose">'
-            + _MD.renderer.render(prose, _MD.options, env)
+            + _MD.renderer.render(card.prose, _MD.options, env)
             + "</div>"
         )
-    if rendered_options:
+    if card.options:
         parts.append('<ul class="qcard-opts">')
-        for label_html, detail_html, label_text in rendered_options:
+        for option in card.options:
+            label_html = _MD.renderer.renderInline(option.label, _MD.options, env)
+            detail_html = (
+                _MD.renderer.renderInline(option.detail, _MD.options, env)
+                if option.detail
+                else ""
+            )
             detail = (
                 f'<span class="qcard-d">{detail_html}</span>' if detail_html else ""
             )
             parts.append(
-                f'<li class="qcard-opt" data-text="{html.escape(label_text)}">'
+                f'<li class="qcard-opt" data-text="{html.escape(_question_plain_text(_inline_text(option.label)))}">'
                 '<span class="qcard-t">'
                 f'<span class="qcard-l">{label_html}</span>{detail}'
                 "</span></li>"
             )
         parts.append("</ul>")
-    if prose_after:
+    if card.prose_after:
         parts.append(
             '<div class="qcard-prose">'
-            + _MD.renderer.render(prose_after, _MD.options, env)
+            + _MD.renderer.render(card.prose_after, _MD.options, env)
             + "</div>"
         )
     parts.append("</div>")
-    return "".join(parts), words + _word_count(prose) + _word_count(prose_after)
+    return "".join(parts)
+
+
+def _blockquote_close_index(tokens: Sequence[Token], start: int) -> int | None:
+    """Return the index of the ``blockquote_close`` matching ``start``.
+
+    ``None`` means the token stream is unbalanced, which cannot happen for a
+    parse of a text, but failing closed is cheaper than indexing past the end.
+    """
+    depth = 0
+    for index in range(start, len(tokens)):
+        if tokens[index].type == "blockquote_open":
+            depth += 1
+        elif tokens[index].type == "blockquote_close":
+            depth -= 1
+            if depth == 0:
+                return index
+    return None
 
 
 def _replace_question_cards(tokens: list[Token], env: EnvType) -> None:
@@ -466,29 +597,51 @@ def _replace_question_cards(tokens: list[Token], env: EnvType) -> None:
         if tokens[index].type != "blockquote_open" or tokens[index].level != 0:
             index += 1
             continue
-        depth = 0
-        close = index
-        while close < len(tokens):
-            if tokens[close].type == "blockquote_open":
-                depth += 1
-            elif tokens[close].type == "blockquote_close":
-                depth -= 1
-                if depth == 0:
-                    break
-            close += 1
-        if close >= len(tokens):
+        close = _blockquote_close_index(tokens, index)
+        if close is None:
             return
-        card = _question_card_html(tokens, index, close + 1, position, env)
+        card = _parse_question_card(tokens, index, close + 1)
         if card is None:
             index += 1
             continue
-        card_html, card_words = card
         card_token = Token("question_card", "", 0)
-        card_token.content = card_html
-        card_token.meta["words"] = card_words
+        card_token.content = _question_card_html(card, position, env)
+        card_token.meta["words"] = card.words
         tokens[index : close + 1] = [card_token]
         position += 1
         index += 1
+
+
+def parse_questions(text: str) -> list[Question]:
+    """Return the well-formed question cards of *text*, in callout order.
+
+    Only top-level callouts count, because those are the ones the ticket page
+    turns into cards; a callout nested in a list or in another quote is left to
+    the normal renderer there and is absent here too.  Malformed callouts and
+    every block shape the cards do not understand are absent as well, so the
+    JSON API never advertises a question the page would show as a quote.
+
+    The bot footer is a plain paragraph, not a blockquote, so it does not need
+    stripping first.
+    """
+    env: EnvType = {}
+    tokens = _MD.parse(text, env)
+    questions: list[Question] = []
+    index = 0
+    while index < len(tokens):
+        if tokens[index].type != "blockquote_open" or tokens[index].level != 0:
+            index += 1
+            continue
+        close = _blockquote_close_index(tokens, index)
+        if close is None:
+            break
+        card = _parse_question_card(tokens, index, close + 1)
+        if card is not None:
+            questions.append(_to_question(card))
+        # Everything inside the quote has a level above zero, so jumping past
+        # it is the same scan the renderer's loop makes one token at a time.
+        index = close + 1
+    return questions
 
 
 _MD.renderer.rules["question_card"] = _question_card_render

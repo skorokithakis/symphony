@@ -134,7 +134,17 @@ every comment:
       "id": "c-0f4a9b8e6d2c4f0e9a1b3c5d7e9f1a2b",
       "author": "agent",
       "kind": "final",
-      "body": "Added the flag and one test; all tests pass.\n\nWhat next?\n\n*Symphony · final*",
+      "body": "Added the flag and one test; all tests pass.\n\n> [!QUESTION] Which storage should the cache use?\n> - **Redis**: survives a restart.\n> - In-memory\n\n*Symphony · final*",
+      "questions": [
+        {
+          "kind": "choose-one",
+          "question": "Which storage should the cache use?",
+          "options": [
+            {"label": "Redis", "detail": ": survives a restart."},
+            {"label": "In-memory", "detail": ""}
+          ]
+        }
+      ],
       "created_at": "2026-11-25T09:41:12.345678+00:00"
     }
   ]
@@ -151,6 +161,61 @@ includes the `*Symphony · ...*` footer in `body`) and `human` otherwise.
 ` · model: ...`), `error`, `cleanup`, `qa`, `restart`, `workspace`,
 `attachments` or `ignored`. The polling rules below use it to tell a
 turn-ending comment from a notice.
+
+`questions` is present on every comment. It is `[]` for a human comment, for a
+notice and for an agent reply with no question cards. Otherwise it lists the
+reply's question cards in order, each as:
+
+```json
+{
+  "kind": "choose-many",
+  "question": "Which should I remove?",
+  "options": [
+    {"label": "The retry loop", "detail": ": it hides real failures."},
+    {"label": "The cron shim", "detail": ""}
+  ]
+}
+```
+
+`kind` is `choose-one` (pick one of `options`), `choose-many` (pick any) or
+`free-text` (answer in your own words); a `free-text` question has
+`options: []`. `question` and the option fields are visible plain text without
+Markdown markup, and `detail` is `""` when the option has no leading bold
+label. Only well-formed `> [!QUESTION]` callouts are listed: a malformed one
+stays an ordinary quote on the ticket page, and is absent here too.
+
+### Answering questions
+
+Answer with a normal POST comment; there is no separate structured answer
+field. Agents are asked to write each question as a `> [!QUESTION]` callout
+with its options as `> - a` for choose-one or `> - [ ] a` for choose-many, the
+recommended option first. A free-text question has no options and no list.
+
+Use the layout the browser's Send builds, because it keeps each answer next to
+its question:
+
+```
+> Which storage should the cache use?
+
+Redis
+
+> Which should I remove?
+
+- The retry loop
+- The cron shim
+
+Anything else you need from me goes last.
+```
+
+That is, for each question you answer: a `> ` line holding the question text, a
+blank line, then the answer, either as one line or as `- ` items when you pick
+several. Put any free text after the answers. Leave out the questions you are
+not answering.
+
+When you copy a question or an option label into your answer, keep it plain
+text and replace any `*` with `∗` (U+2217), the way the browser does: a
+comment whose body contains `*Symphony · ` is treated as a bot comment and
+ignored.
 
 ## Endpoints
 
@@ -365,6 +430,7 @@ curl -s -X POST "$BASE/api/v1/tickets/SYM-7/comments" \
   "author": "human",
   "kind": null,
   "body": "Please also cover the CSV path.",
+  "questions": [],
   "created_at": "2026-11-25T09:45:00+00:00"
 }
 ```

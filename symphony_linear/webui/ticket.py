@@ -244,8 +244,13 @@ def _elapsed(start: str) -> str:
     return _format_duration(seconds)
 
 
-def _strip_footer(body: str) -> str:
-    """Remove the bot footer from *body* when it ends with one."""
+def strip_footer(body: str) -> str:
+    """Remove the bot footer from *body* when it ends with one.
+
+    Public because the JSON API has to hand the same reply text to the question
+    parser that the ticket page renders; two footer-stripping rules would let
+    the page and the API disagree about which callouts are questions.
+    """
     index = body.rfind(_FOOTER_MARKER)
     if index != -1 and body.rstrip().endswith("*"):
         return body[:index]
@@ -302,7 +307,7 @@ def _entry_body(comment: LocalComment, ticket_id: str) -> Entry:
             files=chips_for(ticket_id, comment.files),
         )
 
-    body = _strip_footer(comment.body)
+    body = strip_footer(comment.body)
 
     if kind == "workspace":
         restored = body.lstrip().startswith("**Restored**")
