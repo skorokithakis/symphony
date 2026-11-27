@@ -841,7 +841,9 @@ shutting down, or the ticket is no longer triggered — see `_is_still_triggered
   defaults are applied by the page only when no snapshot exists for the reply.
   A choose-one tap on a listed option always sets that option as the answer,
   including a tap on the already selected one, which keeps it and only moves to
-  the next tab; the tap replaces the answer rather than clearing it. Every card
+  the next tab; the tap replaces the answer rather than clearing it. A tap on
+  Other (holding text) in a choose-one card likewise always chooses it and
+  moves on; only emptying its text leaves the question unanswered. Every card
   of a tabbed panel except its last carries a **Next** button under its options,
   which moves to the next question without answering the current one (any card
   kind, inert during a Send).

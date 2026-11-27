@@ -480,8 +480,9 @@
     if (card.__qcardKind === "choose-one") {
       /* A choose-one pick always answers the question, including a tap on the
        * already selected option, so it always moves the reader on to the next
-       * question of the same group.  choose-many, Other and an edit never
-       * move: their answer is not finished with a single pick. */
+       * question of the same group (toggleOther does the same for a chosen
+       * Other).  choose-many and an edit never move: their answer is not
+       * finished with a single pick. */
       moveTab(card.__qgroup, 1);
     }
   }
@@ -492,14 +493,22 @@
       startEdit(card, card.__qcardOther);
       return;
     }
-    answer.otherChosen = !answer.otherChosen;
-    if (answer.otherChosen && card.__qcardKind === "choose-one") {
+    if (card.__qcardKind === "choose-many") {
+      answer.otherChosen = !answer.otherChosen;
+    } else {
+      /* Like a listed option, a tap on Other in a one-answer card always
+       * chooses it, so a second tap cannot leave the question unanswered;
+       * picking a listed option is the way to change the answer. */
+      answer.otherChosen = true;
       answer.selected = [];
     }
     syncSelection(card);
     updateCount();
     syncFormValidation();
     notifyChange();
+    if (card.__qcardKind === "choose-one") {
+      moveTab(card.__qgroup, 1);
+    }
   }
 
   function onInput(event) {

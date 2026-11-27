@@ -191,7 +191,8 @@ selected: the first marked option in a one-answer question, and every marked
 option when several may be chosen. The count next to Send includes them, and
 Send sends them like any other choice unless you change them; a tap on a
 listed option of a one-answer question always chooses it, even the one already
-selected, so the answer is replaced rather than cleared.
+selected, so the answer is replaced rather than cleared. A tap on a chosen
+**Other** with text works the same way.
 
 When the newest reply has cards and no human message follows it, the cards are
 live. Tap an option to choose it; in a choose-many card a tap toggles it. The
