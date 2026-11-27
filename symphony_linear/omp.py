@@ -171,7 +171,13 @@ def _execute(
     env = {"HOME": str(Path.home())}
     if secrets_file:
         env[SECRETS_ENV_VAR] = secrets_file
-    returncode, stdout_text, stderr_text, timeout_reason = agent_runner.run(
+    (
+        returncode,
+        stdout_text,
+        stderr_text,
+        timeout_reason,
+        _planned_stop,
+    ) = agent_runner.run(
         cmd=cmd,
         workspace_path=workspace_path,
         tmp_path=tmp_path,

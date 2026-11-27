@@ -81,6 +81,23 @@ is a single JSON object.  The events observed during testing were:
       }
     }
 
+**background_wait** – emitted when the run is idle but background jobs started
+during the prompt are still alive.  The CLI does not exit while they are, and
+re-emits the event when the job count changes:
+    {
+      "type": "background_wait",
+      "timestamp": 1732...,
+      "sessionID": "ses_...",
+      "jobs": [
+        {"id": "sh_...", "kind": "shell", "title": "sleep 400"}
+      ]
+    }
+
+``kind`` values seen in OpenCode 2.3.2 are ``shell``, ``subagent``, ``image``
+and ``codemode``.  When a job ends the owning session is notified and may take
+another turn (more stdout events follow), after which the CLI either exits or
+emits ``background_wait`` again.
+
 Other event types (e.g. ``"tool_result"``) may appear but are ignored by
 this module.
 
@@ -118,6 +135,15 @@ Key observations:
   included in ``OpenCodeError``.
 - The stream is always valid line-delimited JSON.  Corrupt lines are logged
   and skipped.
+- A ``background_wait`` whose jobs are all ``shell`` is treated as the end of
+  the turn after a fixed grace period.  OpenCode has no option to bound the
+  wait (upstream issue
+  https://github.com/anomalyco/opencode/issues/66885), so without this a dev
+  server started with ``background: true`` keeps the turn alive until the idle
+  watchdog kills it and the reply is posted as a timeout.  The stop is a
+  success: the session id, trimmed reply and context tokens are the ones from
+  the last turn, plus one line naming the stopped jobs.  A wait that lists any
+  other kind of job stays on the existing watchdogs.
 
 -------------------------------------------------------------------------------
 Context tokens
@@ -143,6 +169,7 @@ from __future__ import annotations
 
 import json
 import logging
+import re
 import subprocess
 from pathlib import Path
 from typing import Callable
@@ -169,6 +196,21 @@ logger = logging.getLogger(__name__)
 # ``--dangerously-skip-permissions``).  There is no ``--dir``: the sandbox sets
 # the working directory to the repo and V2 uses the cwd.
 _BASE_FLAGS = ["--standalone", "--format", "json", "--auto", "--print-logs"]
+
+# ``opencode run`` has no option to bound how long it waits for the background
+# jobs a prompt started (upstream issue
+# https://github.com/anomalyco/opencode/issues/66885).  A shell job that never
+# finishes, such as a dev server started with ``background: true``, therefore
+# holds the turn open until the idle watchdog kills it and a perfectly good
+# reply is posted as a timeout.  Until upstream adds a bound, stop the turn
+# ourselves after this grace once the last stdout event waits only on shell
+# jobs.  Remove this workaround when the option exists.
+_BACKGROUND_WAIT_GRACE_SECONDS = 120.0
+
+# A job title is the raw command, which can be a multi-line heredoc or hundreds
+# of characters long.  The stop line is one line in a tracker comment, so keep
+# it readable rather than pasting the whole script.
+_MAX_JOB_TITLE_LENGTH = 200
 
 # ---------------------------------------------------------------------------
 # Typed exception aliases
@@ -440,6 +482,66 @@ def _parse_stream(stdout_text: str) -> tuple[str | None, list[dict]]:
     return session_id, parsed_events
 
 
+def _shell_job_titles(line: str) -> list[str] | None:
+    """Return the titles of a shell-only ``background_wait`` event line.
+
+    Returns ``None`` for every other line: a different event, a wait with no
+    jobs, or a wait listing any job that is not a ``shell``.  Subagent, image
+    and codemode jobs can still make progress on their own, so they stay on
+    the existing watchdogs instead of being stopped early.
+    """
+    # The hook runs on the stdout drain thread for every line of a turn;
+    # skip the JSON parse for the overwhelmingly common non-wait events.
+    if '"background_wait"' not in line:
+        return None
+    try:
+        event = json.loads(line)
+    except json.JSONDecodeError:
+        return None
+    if not isinstance(event, dict) or event.get("type") != "background_wait":
+        return None
+    jobs = event.get("jobs")
+    if not isinstance(jobs, list) or not jobs:
+        return None
+    titles: list[str] = []
+    for job in jobs:
+        if not isinstance(job, dict) or job.get("kind") != "shell":
+            return None
+        title = job.get("title")
+        if not isinstance(title, str) or not title:
+            title = job.get("id")
+        titles.append(title if isinstance(title, str) and title else "shell job")
+    return titles
+
+
+def _single_line(text: str) -> str:
+    """Collapse *text* into one truncated line for a tracker comment."""
+    collapsed = " ".join(text.split())
+    if len(collapsed) > _MAX_JOB_TITLE_LENGTH:
+        collapsed = collapsed[: _MAX_JOB_TITLE_LENGTH - 1] + "…"
+    return collapsed
+
+
+def _inline_code(text: str) -> str:
+    """Wrap *text* in inline-code fences that survive embedded backticks."""
+    longest_run = max((len(run) for run in re.findall(r"`+", text)), default=0)
+    fence = "`" * (longest_run + 1)
+    # CommonMark strips one space from each side unless the content is all
+    # spaces, so padding is what lets a leading or trailing backtick survive.
+    pad = " " if text.startswith("`") or text.endswith("`") else ""
+    return f"{fence}{pad}{text}{pad}{fence}"
+
+
+def _stopped_jobs_line(titles: list[str]) -> str:
+    """Build the one reply line naming the jobs a planned stop killed."""
+    # A whitespace-only command collapses to nothing once normalised, which
+    # would leave an empty code span; name it instead.
+    rendered = ", ".join(
+        _inline_code(_single_line(title) or "unnamed job") for title in titles
+    )
+    return f"Stopped background jobs: {rendered}"
+
+
 def _execute(
     cmd: list[str],
     workspace_path: str,
@@ -458,7 +560,28 @@ def _execute(
     env = {"HOME": str(Path.home())}
     if secrets_file:
         env[SECRETS_ENV_VAR] = secrets_file
-    returncode, stdout_text, stderr_text, timeout_reason = agent_runner.run(
+
+    # The titles from the last shell-only background_wait, reported in the
+    # reply when the grace timer stops the turn.
+    stopped_jobs: list[str] = []
+
+    def _on_stdout_line(line: str) -> float | None:
+        # Any line that is not a shell-only background_wait disarms an armed
+        # timer: the session got another turn (a job finished and the agent is
+        # working again), so the turn is alive after all.
+        titles = _shell_job_titles(line)
+        if titles is None:
+            return None
+        stopped_jobs[:] = titles
+        return _BACKGROUND_WAIT_GRACE_SECONDS
+
+    (
+        returncode,
+        stdout_text,
+        stderr_text,
+        timeout_reason,
+        planned_stop,
+    ) = agent_runner.run(
         cmd=cmd,
         workspace_path=workspace_path,
         tmp_path=tmp_path,
@@ -467,6 +590,7 @@ def _execute(
         on_subprocess=on_subprocess,
         env=env,
         on_output=on_output,
+        on_stdout_line=_on_stdout_line,
         hide_paths=hide_paths,
         extra_rw_paths=extra_rw_paths or [],
         attachments_path=attachments_path,
@@ -508,22 +632,28 @@ def _execute(
     # ----------------------------------------------------------------------
     # Validate.
     # ----------------------------------------------------------------------
-    # Detect external kill (negative returncode = killed by signal).
-    # Check this before non-zero exit so we can distinguish.
-    if returncode is not None and returncode < 0:
-        raise OpenCodeCancelled(
-            f"OpenCode process killed by signal {-returncode}", session_id=session_id
-        )
+    # A planned stop is the grace timer we asked the runner to arm, so its
+    # kill signal is not an external cancellation: the turn already produced
+    # its reply and is treated as a success.  A real external kill leaves
+    # ``planned_stop`` false and still maps to OpenCodeCancelled.
+    if not planned_stop:
+        # Detect external kill (negative returncode = killed by signal).
+        # Check this before non-zero exit so we can distinguish.
+        if returncode is not None and returncode < 0:
+            raise OpenCodeCancelled(
+                f"OpenCode process killed by signal {-returncode}",
+                session_id=session_id,
+            )
 
-    if returncode != 0:
-        error_messages = _extract_error_messages(parsed_events)
-        detail = ""
-        if error_messages:
-            detail = "\nerror: " + "; ".join(error_messages)
-        raise OpenCodeError(
-            f"OpenCode exited with code {returncode}{detail}"
-            f"\nstderr: {stderr_text[-2000:]}"
-        )
+        if returncode != 0:
+            error_messages = _extract_error_messages(parsed_events)
+            detail = ""
+            if error_messages:
+                detail = "\nerror: " + "; ".join(error_messages)
+            raise OpenCodeError(
+                f"OpenCode exited with code {returncode}{detail}"
+                f"\nstderr: {stderr_text[-2000:]}"
+            )
 
     if session_id is None:
         raise OpenCodeError(
@@ -539,6 +669,13 @@ def _execute(
     # available as the fallback (and for the timeout path above).
     # ----------------------------------------------------------------------
     final_message = _assemble_final_reply(parsed_events, session_id)
+    if planned_stop and stopped_jobs:
+        # Without this line the reply would silently omit the background work
+        # the stop killed, and a reader would not know the turn ended early.
+        stopped_line = _stopped_jobs_line(stopped_jobs)
+        final_message = (
+            f"{final_message}\n\n{stopped_line}" if final_message else stopped_line
+        )
 
     return session_id, final_message, context_tokens
 

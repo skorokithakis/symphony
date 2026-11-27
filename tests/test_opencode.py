@@ -29,6 +29,7 @@ from symphony_linear.opencode import (
     _assemble_message,
     _extract_context_tokens,
     _parse_stream,
+    _stopped_jobs_line,
     run_initial,
     run_resume,
 )
@@ -1114,3 +1115,139 @@ def _make_tool_use(tool: str, title: str) -> dict[str, Any]:
             "state": {"title": title, "status": "running"},
         },
     }
+
+
+# ---------------------------------------------------------------------------
+# Unit: background-wait grace stop
+# ---------------------------------------------------------------------------
+
+
+def _background_wait(*jobs: tuple[str, str]) -> dict[str, Any]:
+    """Build a ``background_wait`` event with ``(kind, title)`` jobs."""
+    return {
+        "type": "background_wait",
+        "timestamp": 1732000000,
+        "sessionID": "ses_main",
+        "jobs": [
+            {"id": f"sh_{index}", "kind": kind, "title": title}
+            for index, (kind, title) in enumerate(jobs)
+        ],
+    }
+
+
+class TestBackgroundWait:
+    """A shell-only wait is stopped early and reported as a success."""
+
+    def test_shell_only_wait_returns_the_reply_plus_the_stopped_jobs_line(
+        self,
+    ) -> None:
+        events = [
+            {"type": "step_start", "sessionID": "ses_main", "part": {}},
+            {
+                "type": "text",
+                "sessionID": "ses_main",
+                "part": {"text": "All done."},
+            },
+            {
+                "type": "step_finish",
+                "sessionID": "ses_main",
+                "part": {"tokens": {"input": 12}},
+            },
+            _background_wait(("shell", "trmnlp serve --port 4569")),
+        ]
+        stdout = ("\n".join(json.dumps(event) for event in events) + "\n").encode()
+        proc = _FakePopen(stdout=stdout, exit_code=None)
+
+        with (
+            patch("symphony_linear.opencode._BACKGROUND_WAIT_GRACE_SECONDS", 0.2),
+            patch("symphony_linear.agent_runner.run_in_sandbox", return_value=proc),
+        ):
+            session_id, final_message, context_tokens = run_initial(
+                workspace_path="/ws",
+                tmp_path="/ws/tmp",
+                prompt="do it",
+                timeout_seconds=10,
+                idle_timeout_seconds=10,
+                on_subprocess=lambda p: None,
+            )
+
+        assert session_id == "ses_main"
+        assert context_tokens == 12
+        assert final_message == (
+            "All done.\n\nStopped background jobs: `trmnlp serve --port 4569`"
+        )
+        assert proc.killed
+
+    def test_wait_with_a_subagent_job_keeps_the_existing_watchdog(self) -> None:
+        """Only shell-only waits may stop early; a subagent stays on the idle
+        watchdog and still raises OpenCodeTimeout."""
+        events = [
+            {"type": "step_start", "sessionID": "ses_main", "part": {}},
+            {
+                "type": "text",
+                "sessionID": "ses_main",
+                "part": {"text": "Waiting on a subagent."},
+            },
+            _background_wait(("shell", "sleep 400"), ("subagent", "research")),
+        ]
+        stdout = ("\n".join(json.dumps(event) for event in events) + "\n").encode()
+        proc = _FakePopen(stdout=stdout, exit_code=None)
+
+        with (
+            patch("symphony_linear.opencode._BACKGROUND_WAIT_GRACE_SECONDS", 0.05),
+            patch("symphony_linear.agent_runner.run_in_sandbox", return_value=proc),
+        ):
+            with pytest.raises(OpenCodeTimeout) as excinfo:
+                run_initial(
+                    workspace_path="/ws",
+                    tmp_path="/ws/tmp",
+                    prompt="do it",
+                    timeout_seconds=10,
+                    idle_timeout_seconds=0.2,
+                    on_subprocess=lambda p: None,
+                )
+
+        assert "no output" in excinfo.value.reason
+        assert proc.killed
+
+    def test_external_kill_racing_the_grace_stays_a_cancellation(self) -> None:
+        events = [
+            {"type": "step_start", "sessionID": "ses_main", "part": {}},
+            _background_wait(("shell", "sleep 400")),
+        ]
+        stdout = ("\n".join(json.dumps(event) for event in events) + "\n").encode()
+        proc = _FakePopen(stdout=stdout, exit_code=None)
+        killer = threading.Timer(0.05, proc.kill)
+        killer.start()
+        try:
+            with (
+                patch("symphony_linear.opencode._BACKGROUND_WAIT_GRACE_SECONDS", 0.3),
+                patch("symphony_linear.agent_runner.run_in_sandbox", return_value=proc),
+            ):
+                with pytest.raises(OpenCodeCancelled, match="killed by signal 9"):
+                    run_initial(
+                        workspace_path="/ws",
+                        tmp_path="/ws/tmp",
+                        prompt="do it",
+                        timeout_seconds=10,
+                        idle_timeout_seconds=10,
+                        on_subprocess=lambda p: None,
+                    )
+        finally:
+            killer.cancel()
+
+    def test_stopped_jobs_line_is_a_single_escaped_line(self) -> None:
+        """Job titles are raw commands: collapse newlines, survive backticks
+        and truncate; an empty title must not render an empty code span."""
+        line = _stopped_jobs_line(["echo `date`\nsleep 5"])
+        assert "\n" not in line
+        assert line == "Stopped background jobs: ``echo `date` sleep 5``"
+
+        long_line = _stopped_jobs_line(["x" * 500])
+        assert len(long_line) < 300
+        assert long_line.endswith("…`")
+
+        assert _stopped_jobs_line(["   \n\t "]) == (
+            "Stopped background jobs: `unnamed job`"
+        )
+        assert _stopped_jobs_line([""]) == "Stopped background jobs: `unnamed job`"

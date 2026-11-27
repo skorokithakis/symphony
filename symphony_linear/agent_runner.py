@@ -26,6 +26,25 @@ chunk, on either stream. It exists so the web UI can show how long ago the
 agent last wrote anything; it is deliberately the same signal as the idle
 watchdog rather than parsed protocol events, so a tool call that streams no
 JSON still counts as activity.
+
+-------------------------------------------------------------------------------
+Adapter-requested grace stops
+-------------------------------------------------------------------------------
+
+An adapter can pass ``on_stdout_line``, a callback invoked for every complete
+stdout line (reassembled across chunk boundaries) that returns a grace delay
+in seconds to arm, or ``None`` to disarm. A timer thread kills the process
+when the delay expires while the process is still running, and the run
+reports ``planned_stop=True`` so the adapter can treat the turn as a success
+rather than a cancellation. This exists for OpenCode, whose CLI waits
+indefinitely for background shell jobs; OMP and pi do not pass the hook.
+
+The timer is a separate thread because the main loop blocks in
+``proc.wait()``; it cannot observe a deadline that the stdout drain thread
+arms after the wait started, but the timer's kill makes that wait return.
+A process that has already exited, or one killed externally (the
+orchestrator calls ``kill()`` on the registered Popen), is left alone: its
+own outcome wins, so an external cancellation never becomes a success.
 """
 
 from __future__ import annotations
@@ -86,21 +105,34 @@ def run(
     *,
     env: dict[str, str],
     on_output: Callable[[], None] | None = None,
+    on_stdout_line: Callable[[str], float | None] | None = None,
     hide_paths: list[str] | None = None,
     extra_rw_paths: list[str] | None = None,
     attachments_path: str | None = None,
     dir_map: list[tuple[str, str]] | None = None,
-) -> tuple[int | None, str, str, str | None]:
+) -> tuple[int | None, str, str, str | None, bool]:
     """Launch *cmd* inside the sandbox and return its raw result.
 
-    Returns ``(returncode, stdout_text, stderr_text, timeout_reason)``.
+    Returns
+    ``(returncode, stdout_text, stderr_text, timeout_reason, planned_stop)``.
     ``timeout_reason`` is ``None`` when the process exits before either
-    watchdog limit. Callers are responsible for parsing output, validating
-    the return code, and raising adapter-specific exceptions.
+    watchdog limit. ``planned_stop`` is ``True`` only when the process was
+    killed by the grace timer armed through ``on_stdout_line``; an external
+    kill, a watchdog timeout and a normal exit all leave it ``False``.
+    Callers are responsible for parsing output, validating the return code,
+    and raising adapter-specific exceptions.
 
     ``on_output`` is called from the drain threads on every chunk received,
     on stdout and stderr alike. It must be cheap and thread-safe; an
     exception there would kill a drain thread and stall the turn.
+
+    ``on_stdout_line`` is called from the stdout drain thread for every
+    complete stdout line, including empty ones, with lines reassembled across
+    chunk boundaries (stderr is not framed). Its return value is a grace
+    delay in seconds: a number arms a timer that kills the process when it
+    expires, while ``None`` disarms an armed timer. The callback must be
+    cheap and thread-safe, and must not raise, for the same reason as
+    ``on_output``.
     """
     proc = run_in_sandbox(
         cmd=cmd,
@@ -125,7 +157,69 @@ def run(
     activity_lock = threading.Lock()
     last_activity = time.monotonic()
 
-    def _drain(stream: io.BufferedReader, chunks: list[bytes]) -> None:
+    # The grace timer runs on its own thread: the watchdog loop blocks in
+    # proc.wait(), which cannot notice a deadline the stdout drain thread
+    # arms after that wait has started. The timer's kill makes the wait
+    # return.
+    grace_lock = threading.Lock()
+    grace_timer: threading.Timer | None = None
+    grace_generation = 0
+    planned_stop = False
+
+    def _expire_grace(generation: int) -> None:
+        nonlocal planned_stop
+        with grace_lock:
+            # Timer.cancel() cannot stop a callback that has already started
+            # and is waiting for this lock, so a callback from a superseded
+            # timer must not kill: a later stdout line may have disarmed it or
+            # re-armed a new one.
+            if generation != grace_generation:
+                return
+            # A process that already exited, or that the orchestrator killed
+            # externally, keeps its own outcome; our kill is a planned stop
+            # only when the process was still alive to receive it.
+            if proc.poll() is not None:
+                return
+            planned_stop = True
+        proc.kill()
+
+    def _arm_grace(delay: float) -> None:
+        nonlocal grace_timer, grace_generation
+        with grace_lock:
+            if grace_timer is not None:
+                grace_timer.cancel()
+            grace_generation += 1
+            generation = grace_generation
+            timer = threading.Timer(delay, _expire_grace, args=(generation,))
+            timer.daemon = True
+            grace_timer = timer
+            timer.start()
+
+    def _disarm_grace() -> None:
+        nonlocal grace_timer, grace_generation
+        with grace_lock:
+            # Bump the generation before cancelling so a callback that has
+            # already started sees the change as soon as it takes this lock.
+            grace_generation += 1
+            if grace_timer is not None:
+                grace_timer.cancel()
+                grace_timer = None
+
+    def _dispatch_stdout_line(line: str) -> None:
+        if on_stdout_line is None:
+            return
+        delay = on_stdout_line(line)
+        if delay is None:
+            _disarm_grace()
+        else:
+            _arm_grace(delay)
+
+    def _drain(
+        stream: io.BufferedReader,
+        chunks: list[bytes],
+        *,
+        frame_lines: bool = False,
+    ) -> None:
         """Read *stream* until EOF in byte chunks, recording last activity.
 
         ``read1`` returns as soon as any byte is available, so a process that
@@ -134,6 +228,7 @@ def run(
         look stalled.
         """
         nonlocal last_activity
+        pending = b""
         while True:
             chunk = stream.read1(65536)
             if not chunk:
@@ -141,13 +236,22 @@ def run(
             chunks.append(chunk)
             if on_output is not None:
                 on_output()
+            if frame_lines:
+                lines, pending = _split_stdout_lines(pending, chunk)
+                for line in lines:
+                    _dispatch_stdout_line(line)
             with activity_lock:
                 last_activity = time.monotonic()
+        if frame_lines and pending:
+            # A killed process can leave a last line without its newline;
+            # frame it at EOF so a final event is still seen.
+            _dispatch_stdout_line(pending.decode(errors="replace").rstrip("\r"))
         stream.close()
 
     stdout_thread = threading.Thread(
         target=_drain,
         args=(proc.stdout, stdout_chunks),
+        kwargs={"frame_lines": on_stdout_line is not None},
         name="agent-stdout",
         daemon=True,
     )
@@ -207,6 +311,11 @@ def run(
             except subprocess.TimeoutExpired:
                 logger.warning("Agent process did not exit after kill")
 
+        with grace_lock:
+            # A watchdog timeout always wins: it is never a planned stop, even
+            # if the grace timer happened to fire in the same instant.
+            stopped_early = planned_stop and timeout_reason is None
+
         # Give the drain threads a chance to flush buffered output; they
         # finish on EOF. A leftover grandchild holding a pipe open only
         # means we proceed with what we have.
@@ -215,9 +324,18 @@ def run(
 
         stdout_text = b"".join(stdout_chunks).decode(errors="replace")
         stderr_text = b"".join(stderr_chunks).decode(errors="replace")
-        return proc.returncode, stdout_text, stderr_text, timeout_reason
+        return (
+            proc.returncode,
+            stdout_text,
+            stderr_text,
+            timeout_reason,
+            stopped_early,
+        )
 
     finally:
+        # A timer left armed after the run would fire into a finished turn;
+        # cancelling it also keeps the thread count honest.
+        _disarm_grace()
         # Ensure the process is reaped if not already.
         if proc.returncode is None:
             try:
@@ -225,6 +343,18 @@ def run(
                 proc.wait(timeout=5)
             except Exception:
                 pass
+
+
+def _split_stdout_lines(pending: bytes, chunk: bytes) -> tuple[list[str], bytes]:
+    """Split ``pending + chunk`` into complete stdout lines and a remainder.
+
+    Drain threads read arbitrary chunks, so one NDJSON event can span several
+    reads; the line hook must see whole lines.  The returned remainder is
+    whatever follows the last newline and is carried into the next call.
+    """
+    parts = (pending + chunk).split(b"\n")
+    remainder = parts.pop()
+    return [part.decode(errors="replace").rstrip("\r") for part in parts], remainder
 
 
 def _tail(text: str, lines: int = 30) -> str:

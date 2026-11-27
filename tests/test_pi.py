@@ -45,7 +45,7 @@ class TestRealPiStream:
 
         with patch(
             "symphony_linear.pi.agent_runner.run",
-            return_value=(0, stream, "", None),
+            return_value=(0, stream, "", None, False),
         ):
             session_id, message, context_tokens = pi.run_initial(
                 workspace_path="/workspace",
@@ -76,7 +76,7 @@ class TestCommandConstruction:
     ) -> None:
         with patch(
             "symphony_linear.pi.agent_runner.run",
-            return_value=(0, _fixture_text(), "", None),
+            return_value=(0, _fixture_text(), "", None, False),
         ) as runner:
             session_id, message, context_tokens = run_initial(
                 workspace_path="/workspace",
@@ -120,7 +120,7 @@ class TestCommandConstruction:
     def test_secrets_file_exported_to_env(self) -> None:
         with patch(
             "symphony_linear.pi.agent_runner.run",
-            return_value=(0, _fixture_text(), "", None),
+            return_value=(0, _fixture_text(), "", None, False),
         ) as runner:
             run_initial(
                 workspace_path="/workspace",
@@ -140,7 +140,7 @@ class TestCommandConstruction:
     ) -> None:
         with patch(
             "symphony_linear.pi.agent_runner.run",
-            return_value=(0, _fixture_text(), "", None),
+            return_value=(0, _fixture_text(), "", None, False),
         ) as runner:
             message, context_tokens = run_resume(
                 workspace_path="/workspace",
@@ -192,7 +192,7 @@ class TestExitValidation:
     def test_zero_exit_error_turn_raises_last_provider_error(self) -> None:
         with patch(
             "symphony_linear.pi.agent_runner.run",
-            return_value=(0, _error_fixture_text(), "", None),
+            return_value=(0, _error_fixture_text(), "", None, False),
         ):
             with pytest.raises(PiError) as excinfo:
                 run_initial(
@@ -224,7 +224,7 @@ class TestSignalCancellation:
     ) -> None:
         with patch(
             "symphony_linear.pi.agent_runner.run",
-            return_value=(-9, stdout, "", None),
+            return_value=(-9, stdout, "", None, False),
         ):
             with pytest.raises(PiCancelled, match="killed by signal 9") as excinfo:
                 run_initial(

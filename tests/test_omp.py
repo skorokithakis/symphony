@@ -165,7 +165,13 @@ class TestTimeoutTrace:
 
         with patch(
             "symphony_linear.omp.agent_runner.run",
-            return_value=(-9, stdout, "still running", "produced no output for 60s"),
+            return_value=(
+                -9,
+                stdout,
+                "still running",
+                "produced no output for 60s",
+                False,
+            ),
         ):
             with pytest.raises(OMPTimeout) as excinfo:
                 _run_initial()
@@ -190,7 +196,7 @@ class TestCommandConstruction:
     ) -> None:
         with patch(
             "symphony_linear.omp.agent_runner.run",
-            return_value=(0, _fixture_text(), "", None),
+            return_value=(0, _fixture_text(), "", None, False),
         ) as runner:
             session_id, message, context_tokens = run_initial(
                 workspace_path="/workspace",
@@ -236,7 +242,7 @@ class TestCommandConstruction:
     def test_secrets_file_exported_to_env(self) -> None:
         with patch(
             "symphony_linear.omp.agent_runner.run",
-            return_value=(0, _fixture_text(), "", None),
+            return_value=(0, _fixture_text(), "", None, False),
         ) as runner:
             run_initial(
                 workspace_path="/workspace",
@@ -254,7 +260,7 @@ class TestCommandConstruction:
     def test_resume_command_prefixes_even_an_already_prefixed_newline(self) -> None:
         with patch(
             "symphony_linear.omp.agent_runner.run",
-            return_value=(0, _fixture_text(), "", None),
+            return_value=(0, _fixture_text(), "", None, False),
         ) as runner:
             message, context_tokens = run_resume(
                 workspace_path="/workspace",
@@ -323,7 +329,7 @@ class TestExitValidation:
     ) -> None:
         with patch(
             "symphony_linear.omp.agent_runner.run",
-            return_value=(-9, stdout, "", None),
+            return_value=(-9, stdout, "", None, False),
         ):
             with pytest.raises(OMPCancelled, match="killed by signal 9") as excinfo:
                 _run_initial()
@@ -334,7 +340,7 @@ class TestExitValidation:
         stderr = "bootstrap-start\n" + ("padding\n" * 1000) + "actual failure\n"
         with patch(
             "symphony_linear.omp.agent_runner.run",
-            return_value=(1, "not NDJSON", stderr, None),
+            return_value=(1, "not NDJSON", stderr, None, False),
         ):
             with pytest.raises(OMPError) as excinfo:
                 _run_initial()
@@ -345,7 +351,7 @@ class TestExitValidation:
     def test_zero_exit_error_turn_raises_last_provider_error(self) -> None:
         with patch(
             "symphony_linear.omp.agent_runner.run",
-            return_value=(0, _error_fixture_text(), "", None),
+            return_value=(0, _error_fixture_text(), "", None, False),
         ):
             with pytest.raises(OMPError) as excinfo:
                 _run_initial()
@@ -362,7 +368,7 @@ class TestExitValidation:
         )
         with patch(
             "symphony_linear.omp.agent_runner.run",
-            return_value=(0, stdout, "", None),
+            return_value=(0, stdout, "", None, False),
         ):
             with pytest.raises(OMPError, match="request aborted"):
                 _run_initial()
@@ -370,7 +376,7 @@ class TestExitValidation:
     def test_zero_exit_without_session_is_an_error(self) -> None:
         with patch(
             "symphony_linear.omp.agent_runner.run",
-            return_value=(0, '{"type":"turn_start"}', "", None),
+            return_value=(0, '{"type":"turn_start"}', "", None, False),
         ):
             with pytest.raises(OMPError, match="No session ID"):
                 _run_initial()
