@@ -1,5 +1,56 @@
 # Changelog
 
+## [0.10.0](https://github.com/skorokithakis/symphony/compare/v0.9.0...v0.10.0) (2026-11-27)
+
+
+### ⚠ BREAKING CHANGES
+
+* Remove webui.username from config.yaml.
+
+### Features
+
+* Add CORS to the /api/v1 agent API ([1493955](https://github.com/skorokithakis/symphony/commit/14939554e04ed66d5401f8787f660704d6947a27))
+* Allow OPTIONS and a one-day preflight cache on /api/v1, and document the Caddy setup ([5354180](https://github.com/skorokithakis/symphony/commit/53541803c43bb10801c5a0329dcbf882c920939f))
+* Answer question cards on the ticket page and send the answers with the reply ([ddca681](https://github.com/skorokithakis/symphony/commit/ddca6812f70cc6c655125a9dd46c9874285b054a))
+* Ask the agent to write questions as callouts on the web UI backend ([f06ba9c](https://github.com/skorokithakis/symphony/commit/f06ba9c9328a6a27187f7f0ca7f2a5ede0b898c1))
+* Check only the password in web UI Basic auth ([01e2a40](https://github.com/skorokithakis/symphony/commit/01e2a40a8567a52c93abbfbe5e0fb2af43f1d68a))
+* Drop the separator before a question option's detail in /api/v1 ([fc46ab5](https://github.com/skorokithakis/symphony/commit/fc46ab5be8ca1c30ddfe5d9f9e1855d7c9a45034))
+* Expose question cards in the /api/v1 agent API ([b7e78db](https://github.com/skorokithakis/symphony/commit/b7e78db5bcfd7ef939fb2220eef5604c9475d9a2))
+* Label the open all and close all section buttons [+] and [-] ([8a528e6](https://github.com/skorokithakis/symphony/commit/8a528e625df76c4dddaa75a7f5156d1dce18ee13))
+* List an agent reply's questions at its top when its cards form several groups ([c958cf1](https://github.com/skorokithakis/symphony/commit/c958cf1138cb41dc8fc876fce9651d680ca22586))
+* Open a question panel on its first question while the recommended answers are untouched ([ca98595](https://github.com/skorokithakis/symphony/commit/ca985955d67a5a0677ec91bc5ebc2b87fe4bc358))
+* Preview each agent reply section's first paragraph and count its questions ([22c2156](https://github.com/skorokithakis/symphony/commit/22c2156693048a3c56ff298b3660478e297af5bc))
+* Reveal a compact ticket header on scroll up on the phone ([3a72bf6](https://github.com/skorokithakis/symphony/commit/3a72bf69e0bbdbd162e73995404e9dbf1989d024))
+* Run without bwrap for a web UI trial started from a terminal ([a52bf22](https://github.com/skorokithakis/symphony/commit/a52bf221ce0124cc373a2ba0ad09f167f51124bd))
+* Scroll to the bottom after Send or Retry ([6cd28bf](https://github.com/skorokithakis/symphony/commit/6cd28bf14aa7f43912db57d019d669d2f6e6872e))
+* Serve the /api/v1 guide without a bearer token ([850f5c9](https://github.com/skorokithakis/symphony/commit/850f5c9bd212da31b9b92d4502b280c9db7b882c))
+* Show adjacent question cards as tabs and answer them with number keys ([c024519](https://github.com/skorokithakis/symphony/commit/c02451972cdb0f67690407ae8bbc395631b028b3))
+* Show an agent reply's question list at the end of the reply ([2b9f4b4](https://github.com/skorokithakis/symphony/commit/2b9f4b4b6f5cad5a930062cda5482613b7ed2b10))
+* Show question callouts in agent replies as cards ([3ac915e](https://github.com/skorokithakis/symphony/commit/3ac915ef5821c6114fe74f40067e23eaad7a6a25))
+* Show the agent's recommended option on question cards and select it by default ([73c35bb](https://github.com/skorokithakis/symphony/commit/73c35bbc5c7009d9ae7ed2bf2695b7435a812de7))
+* Show the new repository form at the top of the repos page ([77a56a3](https://github.com/skorokithakis/symphony/commit/77a56a3aca4cc234fff9238303447a52059a813c))
+* Show the ticket title in the compact header and move the ID to Details ([628c1ad](https://github.com/skorokithakis/symphony/commit/628c1ad0123749948c1c0c925791fd7f27badfa6))
+* Show the waiting ticket count beside the Tickets link ([4b2cdee](https://github.com/skorokithakis/symphony/commit/4b2cdeef30162c350dfe620c22b5242a929625e2))
+* Start the web UI with no setup on the first run ([c74b53e](https://github.com/skorokithakis/symphony/commit/c74b53e649f2f3322177cb71d8a6c220ff6ee5e4))
+
+
+### Bug Fixes
+
+* Do not reload web UI templates from disk while running ([321f658](https://github.com/skorokithakis/symphony/commit/321f65817c3a81b5b78ed18348b8df0f076aaecf))
+* Draw the web UI behind the Android gesture bar ([e22c3e5](https://github.com/skorokithakis/symphony/commit/e22c3e575840ae88390087bcdafb1fd7481a77fa))
+* Drop the duplicate working time from list rows and narrow the repo column ([828326a](https://github.com/skorokithakis/symphony/commit/828326a3b1ea752cf1442d015a2bf74a83f4ba4b))
+* Give Markdown quotes a bar and muted text in the web UI ([55ad622](https://github.com/skorokithakis/symphony/commit/55ad6223ad5a86eb5248e7d828735e643a9e0e8e))
+* Keep the reply composer above the keyboard on Android ([d4b5e4f](https://github.com/skorokithakis/symphony/commit/d4b5e4fa33d84042a95ac8b0c8db177e2c63de39))
+* Remove the underline from the [+] and [-] section buttons ([60abae5](https://github.com/skorokithakis/symphony/commit/60abae5f691cfaa5debf4a0b8b1e94f8756f707f))
+
+
+### Documentation
+
+* Record the question list placement decision ([d874929](https://github.com/skorokithakis/symphony/commit/d8749299202cd9e2cd0ba6bf24754d9935252dd4))
+* Record the reading-aid decisions ([64c73bd](https://github.com/skorokithakis/symphony/commit/64c73bd0e23fa83b852ae9b7659867a675fedb33))
+* Record why /api/v1 allows any origin ([534afff](https://github.com/skorokithakis/symphony/commit/534afff070ab056e820510d0ed9e5aaf7c3a45dc))
+* Rewrite the README around the web UI and move the reference to docs/ ([dc9473d](https://github.com/skorokithakis/symphony/commit/dc9473d51ecdacb69a92242cc0bdb5ad199f4e49))
+
 ## [0.9.0](https://github.com/skorokithakis/symphony/compare/v0.8.0...v0.9.0) (2026-11-25)
 
 
