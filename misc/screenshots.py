@@ -168,6 +168,8 @@ _RATE_LIMIT_ANSWER = """\
 Return 429 with a Retry-After header. Make the limit configurable."""
 
 _RATE_LIMIT_FOLLOW_UP = """\
+## Rate limit
+
 Done. The limit now comes from `SHOP_LOGIN_RATE_LIMIT` (default 5) and the \
 window from `SHOP_LOGIN_RATE_WINDOW_SECONDS` (default 60); both are documented \
 in `.env.example`.
@@ -186,8 +188,19 @@ if retry > 0:
     return retry_later(retry)
 ```
 
-All 14 tests pass. Should repeated blocks lock the account anyway, and should \
-the same limit cover the password reset endpoint?"""
+All 14 tests pass.
+
+## Lockout
+
+> [!QUESTION] Should repeated blocks lock the account anyway?
+> - No, keep returning 429. (recommended)
+> - Yes, lock it after three blocks.
+
+## Password reset
+
+> [!QUESTION] Should the same limit cover the password reset endpoint?
+> - No, a separate budget. (recommended)
+> - Yes, the same budget."""
 
 _SUMMARY_RATE_LIMIT = (
     "Added a limit of 5 attempts per minute per address, with tests. Asks if a "

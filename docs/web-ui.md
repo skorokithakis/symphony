@@ -207,6 +207,13 @@ carries a check mark once its question has an answer. A panel opens on its
 first question while the answers are still the untouched recommendations, and
 otherwise on the first question without an answer. A single card has no strip.
 
+When a reply's cards fall into two or more groups, a short list of its
+questions sits at the top of the reply. Each item is a link to its card, so the
+list works with no script; on the newest reply an item also gets a check mark
+once its question has an answer, matching the count next to Send. Tapping an
+item switches the card's panel to that question, then the page scrolls to it.
+Older replies keep the links without the marks.
+
 On a device with a mouse or trackpad each option's marker shows its number.
 With no field focused, the number keys choose options on the visible card of
 the current group (1 to 9, then 0 for the tenth). On a choose-one card a pick

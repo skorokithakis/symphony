@@ -140,6 +140,14 @@ def test_section_preview_is_escaped_plain_text() -> None:
     assert "href" not in rendered
 
 
+def test_section_preview_uses_an_image_alt_as_the_reader_sees_it() -> None:
+    rendered = render_markdown_sections(
+        "# A\n\n![**the spinner**](spinner.png) then text.\n"
+    )
+
+    assert '<span class="sec-p">the spinner then text.</span>' in rendered
+
+
 @pytest.mark.parametrize(
     "body",
     [
@@ -284,6 +292,65 @@ def test_question_callout_renders_a_free_text_card() -> None:
     assert 'data-kind="free-text"' in rendered
     assert 'data-text="What should the new service be called?"' in rendered
     assert "qcard-opts" not in rendered
+
+
+def test_question_list_is_absent_for_one_group() -> None:
+    rendered = render_markdown_sections(
+        "> [!QUESTION] First?\n> - a\n\n> [!QUESTION] Second?\n> - b\n",
+        "reply-7",
+    )
+
+    # The two cards are adjacent tokens, so they are one group and the tabs
+    # address them together. A list would only repeat the questions.
+    assert 'class="qlist"' not in rendered
+    assert 'id="reply-7-q0"' in rendered
+    assert 'id="reply-7-q1"' in rendered
+
+
+def test_question_list_appears_when_prose_splits_groups() -> None:
+    rendered = render_markdown_sections(
+        "> [!QUESTION] First?\n> - a\n\nBetween.\n\n> [!QUESTION] Second?\n> - b\n",
+        "reply-7",
+    )
+
+    assert '<nav class="qlist" aria-label="Questions">' in rendered
+    assert '<li data-question-index="0"><a href="#reply-7-q0">' in rendered
+    assert '<li data-question-index="1"><a href="#reply-7-q1">' in rendered
+    assert rendered.index('class="qlist"') < rendered.index('class="qcard"')
+
+
+def test_question_list_appears_when_a_heading_splits_groups() -> None:
+    rendered = render_markdown_sections(
+        "# One\n\n> [!QUESTION] First?\n> - a\n\n"
+        "# Two\n\n> [!QUESTION] Second?\n> - b\n",
+        "reply-7",
+    )
+
+    assert 'class="qlist"' in rendered
+    assert '<a href="#reply-7-q0">' in rendered
+    assert '<a href="#reply-7-q1">' in rendered
+
+
+def test_question_list_items_escape_question_text() -> None:
+    rendered = render_markdown_sections(
+        "> [!QUESTION] A <b> & [link](https://example.com)?\n> - a\n\n"
+        "Between.\n\n"
+        "> [!QUESTION] Second?\n> - b\n",
+        "reply-7",
+    )
+
+    assert '<span class="qlist-t">A &lt;b&gt; &amp; link?</span>' in rendered
+
+
+def test_question_list_uses_an_image_alt_as_the_reader_sees_it() -> None:
+    rendered = render_markdown_sections(
+        "> [!QUESTION] Replace ![**the spinner**](spinner.png) now?\n> - a\n\n"
+        "Between.\n\n"
+        "> [!QUESTION] Second?\n> - b\n",
+        "reply-7",
+    )
+
+    assert '<span class="qlist-t">Replace the spinner now?</span>' in rendered
 
 
 def test_malformed_question_callout_renders_as_a_quote() -> None:

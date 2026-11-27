@@ -228,6 +228,22 @@
       .catch(function () {});
   });
 
+  // A question-list link opens the section that holds its card.  Sections with
+  // cards render open, but "Close all" or a tap can close them, and not every
+  // browser opens a closed <details> for a fragment link.  This runs for every
+  // reply, not only the live one that questions.js handles.
+  document.addEventListener("click", function (event) {
+    var link = event.target.closest(".qlist a");
+    if (!link) {
+      return;
+    }
+    var card = document.getElementById(link.getAttribute("href").slice(1));
+    var section = card ? card.closest("details.sec") : null;
+    if (section) {
+      section.open = true;
+    }
+  });
+
   // "Open all" / "Close all" for one agent reply's collapsible sections.
   // Delegated, so replies appended by the poll get working buttons too.
   document.addEventListener("click", function (event) {

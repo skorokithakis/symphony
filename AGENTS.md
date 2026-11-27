@@ -801,6 +801,24 @@ shutting down, or the ticket is no longer triggered — see `_is_still_triggered
   definitions, headings, fences, emphasis, block markers or lists), because a
   later stage copies them into a human comment and `*Symphony · ` is the bot
   footer marker.
+  `render_markdown_sections` takes the reply entry's anchor and gives each
+  card `id="<anchor>-q<index>"`, with the same index in
+  `data-question-index`; without an anchor the HTML is unchanged. When the
+  reply's cards form two or more groups, it also emits
+  `<nav class="qlist" aria-label="Questions"><ol>` of
+  `<li data-question-index="N"><a href="#<anchor>-qN">` items before all other
+  reply HTML. An item's text is the visible question, escaped as plain text.
+  A group is a run of `question_card` tokens with no other token between them;
+  `buildGroups` in `static/questions.js` joins direct element siblings, and
+  the two rules must stay identical, because a mismatch would make the list
+  link to a card the tabs consider part of another group. `buildGroups` keeps
+  a card's server id when it mounts a panel (it only assigns one when absent),
+  so those links keep their target. `questions.js` appends a
+  `.qlist-check` to an item from `answerOf` alone, refreshed wherever the
+  "N of M answered" count is, and a list click selects the card's tab with the
+  existing `showTab` and then lets the anchor's own scroll run; it never moves
+  focus into a field. Only the newest reply's list gets marks; older replies
+  keep the server-rendered links.
   A section holding a card renders open. A malformed callout, a callout nested
   in a list or quote, and every callout in a human message or notice stay a
   quote.

@@ -754,6 +754,27 @@ body.sym { min-height: 100dvh; }
 }
 .md .qgroup-tab-check[hidden] { display: none; }
 .md .qgroup.is-locked .qgroup-tabs { opacity: 0.7; }
+/* The list of a reply's questions, shown when its cards fall into two or more
+   groups.  It is a server-rendered index, so it works without the script, and
+   the accent edge ties it to the cards it links to.  The rows are comfortably
+   tappable on a phone; the check mark is added by the script to the live reply
+   only, so every other reply keeps plain links. */
+.md .qlist {
+  padding: var(--s2) var(--s3);
+  border: 1px solid var(--rule); border-left: 3px solid var(--accent);
+  border-radius: var(--r2); background: var(--surface);
+}
+.md .qlist ol { display: flex; flex-direction: column; }
+.md .qlist li { margin: 0; }
+.md .qlist li + li { margin-top: 0; }
+.md .qlist a {
+  display: flex; align-items: center; gap: var(--s2);
+  min-height: var(--tap); padding: var(--s1) 0;
+}
+.md .qlist-t { min-width: 0; }
+.md .qlist-check {
+  flex: none; margin-left: auto; color: var(--ink-2); font-weight: 700;
+}
 /* The option's number is a keyboard hint, so it appears only where a keyboard
    is likely: hover-capable devices.  A touch screen has no number keys. */
 .md .qcard-mark .qcard-num { display: none; }

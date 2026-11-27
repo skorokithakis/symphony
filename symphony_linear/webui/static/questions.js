@@ -687,7 +687,10 @@
    * server renders one card per top-level callout, so two cards are adjacent
    * only when nothing but whitespace separates them.  Cards in different
    * reply sections have different parents and never join a group, which keeps
-   * a panel inside the section whose summary opened it. */
+   * a panel inside the section whose summary opened it.  The server's question
+   * list counts groups by the same rule (_question_groups in markdown.py), so
+   * the two must stay identical: otherwise the list would link into a panel
+   * the tabs do not have, or point at the wrong question within a group. */
   function buildGroups() {
     groups = [];
     var members = [];
@@ -870,7 +873,13 @@
       tab.id = group.id + "-tab-" + index;
       tab.__qgroup = group;
       tab.setAttribute("role", "tab");
-      tab.setAttribute("aria-controls", group.id + "-card-" + index);
+      /* The server gives a card the id its top question-list link points at.
+       * Keep it; only a card rendered without an anchor (another caller, a
+       * test) gets the panel's own id. */
+      if (!card.id) {
+        card.id = group.id + "-card-" + index;
+      }
+      tab.setAttribute("aria-controls", card.id);
       var number = document.createElement("span");
       number.className = "qgroup-tab-n";
       number.textContent = String(index + 1);
@@ -882,7 +891,6 @@
       check.hidden = true;
       tab.appendChild(check);
       tabs.appendChild(tab);
-      card.id = group.id + "-card-" + index;
       card.setAttribute("role", "tabpanel");
       card.setAttribute("aria-labelledby", tab.id);
       group.tabs.push(tab);
@@ -926,6 +934,57 @@
         );
       });
     });
+  }
+
+  /* The server renders a list of the reply's questions at its top when its
+   * cards fall into two or more groups.  On the live reply each item gets a
+   * check mark once its question is answered; older replies keep plain links.
+   * The test is answerOf() alone: it is true in exactly the cases where
+   * answeredCount()'s answersFor() is non-empty, so the marks always agree
+   * with the "N of M answered" count. */
+  function answeredByAnswerOf(card) {
+    var answer = answerOf(card);
+    return answer.selected.length > 0 || answer.other !== "";
+  }
+
+  function syncList() {
+    var list = activeEntry ? activeEntry.querySelector(".qlist") : null;
+    if (!list) {
+      return;
+    }
+    Array.prototype.forEach.call(list.querySelectorAll("li"), function (item) {
+      var card = cardByIndex(Number(item.getAttribute("data-question-index")));
+      var link = item.querySelector("a");
+      if (!card || !link) {
+        return;
+      }
+      var answered = answeredByAnswerOf(card);
+      var check = link.querySelector(".qlist-check");
+      if (answered && !check) {
+        check = document.createElement("span");
+        check.className = "qlist-check";
+        check.setAttribute("aria-hidden", "true");
+        check.textContent = "\u2713";
+        link.appendChild(check);
+      } else if (!answered && check) {
+        check.remove();
+      }
+    });
+  }
+
+  /* A reply stops being live when a newer one arrives or a human replies, so
+   * its list loses the marks: only the newest reply's list is a live index. */
+  function clearList() {
+    var list = activeEntry ? activeEntry.querySelector(".qlist") : null;
+    if (!list) {
+      return;
+    }
+    Array.prototype.forEach.call(
+      list.querySelectorAll(".qlist-check"),
+      function (check) {
+        check.remove();
+      }
+    );
   }
 
   function activate(entry) {
@@ -981,6 +1040,7 @@
   }
 
   function deactivate() {
+    clearList();
     /* The panel is removed, not just emptied: a restored card must sit exactly
      * where the server rendered it, in the order of the reply. */
     groups.forEach(function (group) {
@@ -1025,6 +1085,9 @@
   /* ---------- count and Send ---------- */
 
   function updateCount() {
+    /* The list's check marks are part of the same answer state as the count,
+     * so every refresh of one refreshes the other. */
+    syncList();
     var actions = document.getElementById("composer-actions");
     var send = document.getElementById("act-send");
     var count = document.getElementById("answers-count");
@@ -1136,6 +1199,24 @@
 
   thread.addEventListener("click", function (event) {
     noteTarget(event.target);
+    var link = event.target.closest(".qlist a");
+    if (link) {
+      /* Every list on the page uses the same reply-local indexes, so an older
+       * reply's item can name a card in the live reply.  Resolve the link's
+       * fragment instead and act only when that target is one of the live
+       * reply's cards; an older link then just scrolls, as it always did. */
+      var href = link.getAttribute("href") || "";
+      var target =
+        href.charAt(0) === "#" ? document.getElementById(href.slice(1)) : null;
+      if (isLiveCard(target) && target.__qgroup) {
+        targetGroup = target.__qgroup;
+        showTab(target.__qgroup, target.__qgroup.cards.indexOf(target));
+      }
+      /* No preventDefault: once showTab has made the card the visible tab, the
+       * browser's own anchor scroll takes the reader there.  Focus stays on
+       * the link, never in a field, so the keyboard does not open. */
+      return;
+    }
     var button = event.target.closest(".qcard-pick, .qcard-edit");
     if (!button) {
       return;

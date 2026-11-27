@@ -324,7 +324,7 @@ def _entry_body(comment: LocalComment, ticket_id: str) -> Entry:
             who="Agent",
             created_at=created_at,
             clock=clock,
-            html=render_markdown_sections(body),
+            html=render_markdown_sections(body, f"reply-{comment.id}"),
             markdown=body.strip(),
             meta=_kind_meta(kind),
             anchor=f"reply-{comment.id}",

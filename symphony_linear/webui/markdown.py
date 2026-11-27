@@ -149,7 +149,7 @@ def _section_preview(body: Sequence[Token]) -> str | None:
         return None
     if len(body) < 2 or body[1].type != "inline":
         return None
-    text = " ".join(_inline_text(body[1].children or []).split())
+    text = _collapsed_text(body[1].children or [])
     return text or None
 
 
@@ -701,17 +701,22 @@ def _to_question(card: _Card) -> Question:
     )
 
 
-def _question_card_html(card: _Card, position: int, env: EnvType) -> str:
+def _question_card_html(
+    card: _Card, position: int, env: EnvType, anchor: str | None
+) -> str:
     """Build the card HTML for one parsed question.
 
     ``position`` is the card's zero-based place among the questions of the
     reply; the browser reads it, with the kind and the one-line plain-text
     forms, from the data attributes.  The plain-text forms are the escaped
     forms a later stage copies into a human comment, so they are derived here
-    from the same tokens the visible HTML is rendered from.
+    from the same tokens the visible HTML is rendered from.  ``anchor`` is the
+    reply's id; the card's own id adds the index so the question list can link
+    to it.  Without an anchor the card keeps its previous, id-less HTML.
     """
+    card_id = f' id="{html.escape(anchor)}-q{position}"' if anchor else ""
     parts = [
-        f'<div class="qcard" data-kind="{card.kind}" data-question-index="{position}">',
+        f'<div class="qcard"{card_id} data-kind="{card.kind}" data-question-index="{position}">',
         f'<p class="qcard-q" data-text="{html.escape(_question_plain_text(_inline_text(card.question)))}">'
         f"{_MD.renderer.renderInline(card.question, _MD.options, env)}</p>",
     ]
@@ -773,13 +778,16 @@ def _blockquote_close_index(tokens: Sequence[Token], start: int) -> int | None:
     return None
 
 
-def _replace_question_cards(tokens: list[Token], env: EnvType) -> None:
+def _replace_question_cards(
+    tokens: list[Token], env: EnvType, anchor: str | None
+) -> None:
     """Replace every well-formed top-level question callout with a card token.
 
     Only a top-level blockquote can become a card; one nested in a list or in
     another quote keeps rendering as a quote.  Replacing whole token runs, not
     the rendered string, keeps escaping in the renderer and lets the section
-    pass notice a card without searching HTML.
+    pass notice a card without searching HTML.  The token also carries what
+    the question list needs, so it is not parsed a second time.
     """
     position = 0
     index = 0
@@ -795,11 +803,65 @@ def _replace_question_cards(tokens: list[Token], env: EnvType) -> None:
             index += 1
             continue
         card_token = Token("question_card", "", 0)
-        card_token.content = _question_card_html(card, position, env)
+        card_token.content = _question_card_html(card, position, env, anchor)
         card_token.meta["words"] = card.words
+        card_token.meta["question_index"] = position
+        card_token.meta["question_text"] = _collapsed_text(card.question)
         tokens[index : close + 1] = [card_token]
         position += 1
         index += 1
+
+
+def _question_groups(tokens: Sequence[Token]) -> list[list[Token]]:
+    """Split the reply's cards into the groups the page's tabs use.
+
+    A group is a run of ``question_card`` tokens with no other token between
+    them.  That is exactly ``buildGroups`` in ``static/questions.js``: it joins
+    cards that are direct element siblings, and the renderer emits one element
+    per card without wrapping the run.  A section heading, a paragraph or any
+    other block therefore starts a new group on both sides.  The rule must stay
+    identical, or the question list would link into a group the tabs do not
+    have; change both together.
+    """
+    groups: list[list[Token]] = []
+    previous: int | None = None
+    for index, token in enumerate(tokens):
+        if token.type != "question_card" or token.level != 0:
+            continue
+        if previous is not None and index == previous + 1:
+            groups[-1].append(token)
+        else:
+            groups.append([token])
+        previous = index
+    return groups
+
+
+def _question_list_html(tokens: Sequence[Token], anchor: str) -> str:
+    """Build the index of a reply's questions, or ``""`` for one group.
+
+    One group already reads as one block of questions, and a lone card has no
+    strip to point at, so the list would only repeat it.  Two or more groups
+    are spread over the reply, where an index earns its place.  Every item is
+    the visible question as escaped plain text, linking to the card's id.
+    """
+    groups = _question_groups(tokens)
+    if len(groups) < 2:
+        return ""
+    items: list[str] = []
+    for group in groups:
+        for token in group:
+            index = int(token.meta["question_index"])
+            text = html.escape(str(token.meta["question_text"]))
+            target = html.escape(f"{anchor}-q{index}")
+            items.append(
+                f'<li data-question-index="{index}">'
+                f'<a href="#{target}"><span class="qlist-t">{text}</span></a></li>'
+            )
+    return (
+        '<nav class="qlist" aria-label="Questions"><ol>'
+        + "".join(items)
+        + "</ol></nav>"
+    )
 
 
 def parse_questions(text: str) -> list[Question]:
@@ -837,7 +899,7 @@ def parse_questions(text: str) -> list[Question]:
 _MD.renderer.rules["question_card"] = _question_card_render
 
 
-def render_markdown_sections(text: str) -> str:
+def render_markdown_sections(text: str, anchor: str | None = None) -> str:
     """Render *text* as safe HTML, one collapsible section per heading.
 
     The shallowest heading level present at the top level of the document
@@ -852,13 +914,19 @@ def render_markdown_sections(text: str) -> str:
     body's first paragraph when it starts with one.  Collapsing a long reply
     into titles alone hides which section answers what; the preview is plain
     escaped text, and CSS clamps it, so no text is cut here.
+
+    ``anchor`` is the reply entry's id.  It gives every card a unique id and,
+    when the reply's cards fall into two or more groups, puts a list of the
+    questions before the reply.  Without an anchor the output keeps its
+    previous HTML, links and list absent, because a link would have no target.
     """
     env: EnvType = {}
     tokens = _MD.parse(text, env)
-    _replace_question_cards(tokens, env)
+    _replace_question_cards(tokens, env, anchor)
+    question_list = _question_list_html(tokens, anchor) if anchor else ""
     levels = [level for token in tokens if (level := _heading_level(token)) is not None]
     if not levels:
-        return _MD.renderer.render(tokens, _MD.options, env)
+        return question_list + _MD.renderer.render(tokens, _MD.options, env)
 
     shallowest = min(levels)
     starts = [
@@ -867,7 +935,10 @@ def render_markdown_sections(text: str) -> str:
         if _heading_level(token) == shallowest
     ]
 
-    rendered: list[str] = [_MD.renderer.render(tokens[: starts[0]], _MD.options, env)]
+    rendered: list[str] = [
+        question_list,
+        _MD.renderer.render(tokens[: starts[0]], _MD.options, env),
+    ]
     rendered.append('<div class="secs">')
     for position, start in enumerate(starts):
         end = starts[position + 1] if position + 1 < len(starts) else len(tokens)
