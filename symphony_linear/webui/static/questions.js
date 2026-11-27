@@ -275,6 +275,34 @@
     card.__qcardFree = field;
   }
 
+  /* Only a tabbed panel gets one: the button moves to the group's next
+   * question without answering this one, which is useful for every card kind
+   * and is the only way forward on a free-text card or a choose-many card that
+   * needs no answer.  It is a real button element and not a submit, because a
+   * panel sits inside the ticket page; the locked guard repeats what the
+   * cards' inert state already does for the pointer. */
+  function buildNext(card, group) {
+    var button = document.createElement("button");
+    button.type = "button";
+    button.className = "qcard-next";
+    button.textContent = "Next";
+    button.setAttribute("aria-label", "Next question");
+    button.addEventListener("click", function (event) {
+      event.preventDefault();
+      if (locked) {
+        return;
+      }
+      targetGroup = group;
+      if (moveTab(group, 1)) {
+        /* The activated button sits in the card that just became hidden, so
+         * focus would otherwise be lost to the body; the newly selected tab
+         * keeps it in the group, and Tab then reaches the new card. */
+        group.tabs[group.active].focus();
+      }
+    });
+    card.appendChild(button);
+  }
+
   function showLabel(card, descriptor) {
     var answer = answerState(card);
     if (descriptor === card.__qcardOther) {
@@ -433,16 +461,11 @@
       } else {
         answer.selected.splice(position, 1);
       }
-    } else if (
-      answer.selected.length === 1 &&
-      answer.selected[0] === descriptor.index
-    ) {
-      /* A second tap on the chosen option leaves the question unanswered, so
-       * a preselected recommendation can be cleared. */
-      answer.selected = [];
     } else {
-      /* The listed option replaces the answer; kept Other text stays for the
-       * pencil but no longer answers the question. */
+      /* The listed option replaces the answer, even when it already was the
+       * answer: tapping a listed option never clears a choose-one question,
+       * only replaces its answer.  Kept Other text stays for the pencil but no
+       * longer answers the question. */
       answer.selected = [descriptor.index];
     }
     if (card.__qcardKind !== "choose-many") {
@@ -454,11 +477,11 @@
     updateCount();
     syncFormValidation();
     notifyChange();
-    if (card.__qcardKind === "choose-one" && answersFor(card).length) {
-      /* A pick that answers the question moves the reader on to the next
-       * question of the same group.  A second tap clears the answer instead,
-       * so it must not advance, and choose-many, Other and an edit never move:
-       * their answer is not finished with a single pick. */
+    if (card.__qcardKind === "choose-one") {
+      /* A choose-one pick always answers the question, including a tap on the
+       * already selected option, so it always moves the reader on to the next
+       * question of the same group.  choose-many, Other and an edit never
+       * move: their answer is not finished with a single pick. */
       moveTab(card.__qgroup, 1);
     }
   }
@@ -631,8 +654,8 @@
 
   /* Without a saved snapshot, the marked options are the starting answer:
    * the first marked option of a choose-one card, every marked option of a
-   * choose-many card.  The card's tag stays visible even when the human
-   * clears the selection. */
+   * choose-many card.  The card's tag stays visible even when the answer no
+   * longer selects it. */
   function applyDefaults() {
     cards.forEach(function (card) {
       if (card.__qcardKind === "free-text") {
@@ -894,6 +917,11 @@
       card.setAttribute("role", "tabpanel");
       card.setAttribute("aria-labelledby", tab.id);
       group.tabs.push(tab);
+      /* The last card has nowhere to go, and a lone card has no strip, so it
+       * never reaches this function. */
+      if (index < group.cards.length - 1) {
+        buildNext(card, group);
+      }
     });
     tabs.addEventListener("click", function (event) {
       var tab = event.target.closest(".qgroup-tab");

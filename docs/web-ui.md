@@ -189,8 +189,9 @@ The marker becomes a small "recommended" tag on that option and is removed from
 the option's text, so it is never part of your answer. A marked option starts
 selected: the first marked option in a one-answer question, and every marked
 option when several may be chosen. The count next to Send includes them, and
-Send sends them like any other choice unless you change them; a tap on the
-selected option of a one-answer question clears it.
+Send sends them like any other choice unless you change them; a tap on a
+listed option of a one-answer question always chooses it, even the one already
+selected, so the answer is replaced rather than cleared.
 
 When the newest reply has cards and no human message follows it, the cards are
 live. Tap an option to choose it; in a choose-many card a tap toggles it. The
@@ -203,7 +204,9 @@ unanswered questions never block Send.
 
 Cards that sit one after another with nothing between them share a tabbed
 panel: a numbered strip above them, with one question shown at a time. Each tab
-carries a check mark once its question has an answer. A panel opens on its
+carries a check mark once its question has an answer. Every card but the last
+in a panel also has a **Next** button under its options, which moves to the next
+question without answering the current one. A panel opens on its
 first question while the answers are still the untouched recommendations, and
 otherwise on the first question without an answer. A single card has no strip.
 
@@ -219,10 +222,10 @@ the marks.
 On a device with a mouse or trackpad each option's marker shows its number.
 With no field focused, the number keys choose options on the visible card of
 the current group (1 to 9, then 0 for the tenth). On a choose-one card a pick
-that answers moves to the next tab; a pick that clears the answer stays. The
-last tab stays where it is. The number after the last option opens the
-**Other** field. ArrowLeft and ArrowRight change tabs. A digit on a free-text
-card, or one past the last option, starts a reply in the box as before. The keys
+always answers, so it moves to the next tab. The last tab stays where it is.
+The number after the last option opens the **Other** field. ArrowLeft and
+ArrowRight change tabs. A digit on a free-text card, or one past the last
+option, starts a reply in the box as before. The keys
 act on the group you last clicked or typed in; before that, on the first visible
 group while the answers are untouched, and otherwise on the first group with an
 unanswered question.

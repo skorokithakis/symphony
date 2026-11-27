@@ -754,6 +754,21 @@ body.sym { min-height: 100dvh; }
 }
 .md .qgroup-tab-check[hidden] { display: none; }
 .md .qgroup.is-locked .qgroup-tabs { opacity: 0.7; }
+/* A tabbed panel's cards carry a Next button under their options, because the
+   only other way forward is picking an option, and a choose-many or free-text
+   question may need no answer.  It matches the tab strip's quiet surface and
+   takes the phone's tap size; the card's own is-locked dimming covers it, and
+   the card is inert during a Send. */
+.md .qcard-next {
+  align-self: flex-end;
+  display: inline-flex; align-items: center; justify-content: center;
+  min-width: var(--tap); min-height: var(--tap); padding: 0 var(--s4);
+  border: 1px solid var(--rule-2); border-radius: var(--r-round);
+  background: var(--surface); color: var(--ink-2);
+  font: 600 var(--t-sm)/1 var(--font-text); cursor: pointer;
+}
+.md .qcard-next:hover { background: var(--sunken); }
+.md .qcard-next:focus-visible { outline: 2px solid var(--focus); outline-offset: -2px; }
 /* The list of a reply's questions, shown when its cards fall into two or more
    groups.  It is a server-rendered index, so it works without the script, and
    the accent edge ties it to the cards it links to.  The rows are comfortably
