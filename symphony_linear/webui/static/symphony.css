@@ -723,6 +723,11 @@ body.sym { min-height: 100dvh; }
   display: flex; flex-wrap: wrap; align-items: center; gap: var(--s2);
   flex: 1 1 auto; min-width: 0; padding: var(--s2) var(--s3) var(--s2) 0;
 }
+/* While its field is open the pill only crowds the input.  Once the label is
+   edited it is the human's words, not the agent's, so the recommendation tag
+   would mislead; it returns if the edit is reverted to the original text. */
+.md .qcard-opt.is-editing .qcard-rec,
+.md .qcard-opt.is-edited .qcard-rec { display: none; }
 .md .qcard-edit-field, .md .qcard-other-field { width: auto; flex: 1 1 8rem; min-width: 0; }
 .md .qcard-answer { display: flex; flex-direction: column; }
 .md .qcard-answer textarea.qcard-field {
