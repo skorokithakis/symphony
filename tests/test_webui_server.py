@@ -748,6 +748,26 @@ class TestTemplates:
         os.utime(asset, ns=(2, 2))
         assert templates.static_url("app.js") == "/static/app.js?v=2"
 
+    def test_templates_are_not_reloaded_from_disk(self, tmp_path: Path) -> None:
+        # The running code must keep rendering the templates of its own
+        # revision: a template changed by a checkout move before the restart
+        # used to be read back and fail against the old view code with a 500.
+        # Both a page rendered before the change and one first rendered after
+        # it must keep the startup content.
+        rendered = tmp_path / "rendered.html"
+        unrendered = tmp_path / "unrendered.html"
+        rendered.write_text("old")
+        unrendered.write_text("old")
+        environment = templates._make_environment(tmp_path)
+        assert environment.get_template("rendered.html").render() == "old"
+
+        for path in (rendered, unrendered):
+            path.write_text("new")
+            os.utime(path, ns=(10**18, 10**18))
+
+        assert environment.get_template("rendered.html").render() == "old"
+        assert environment.get_template("unrendered.html").render() == "old"
+
     def test_list_continuation_loads_only_on_the_text_box_pages(
         self, tmp_path: Path
     ) -> None:
