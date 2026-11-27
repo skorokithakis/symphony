@@ -63,6 +63,32 @@ without any Symphony change. For example, Tinyauth can inject an
 `Authorization: Basic ...` header from its `basic-auth` response labels, and
 the daemon sees an ordinary authenticated request.
 
+A page on another origin can call the agent API (`/api/v1`) from a browser,
+because that API sends CORS headers. Before such a call, the browser sends an
+`OPTIONS` preflight request with no `Authorization` header. If the proxy puts a
+login service in front of every request, it must let these preflights through
+to Symphony, or the browser never sends the real request. Symphony answers a
+preflight without credentials, and it still checks the bearer token on the real
+request. With Caddy's `forward_auth`, for example:
+
+```
+symphony.example.com {
+	@api_preflight {
+		method OPTIONS
+		path /api/v1 /api/v1/*
+	}
+	handle @api_preflight {
+		reverse_proxy 127.0.0.1:8080
+	}
+	handle {
+		forward_auth <your login service> {
+			uri <its verify path>
+		}
+		reverse_proxy 127.0.0.1:8080
+	}
+}
+```
+
 ## Tickets and states
 
 Tickets are in one of five fixed states:

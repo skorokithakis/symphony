@@ -139,13 +139,15 @@ _UNAUTHORIZED = Response.text(
 #: path there, because the browser only wants the headers and a real request to
 #: an unknown path must still get the JSON 404.  ``Access-Control-Allow-Origin``
 #: is not listed here: end_headers() adds it to every response in the namespace,
-#: this one included, and a second copy would be a duplicate header.
+#: this one included, and a second copy would be a duplicate header.  The
+#: Max-Age is the longest Firefox honours; Chromium caps it at 7200 seconds,
+#: which is harmless because a preflight is cheap.
 _API_PREFLIGHT = Response(
     status=204,
     headers=(
-        ("Access-Control-Allow-Methods", "GET, POST, PATCH, DELETE"),
+        ("Access-Control-Allow-Methods", "GET, POST, PATCH, DELETE, OPTIONS"),
         ("Access-Control-Allow-Headers", "Authorization, Content-Type"),
-        ("Access-Control-Max-Age", "600"),
+        ("Access-Control-Max-Age", "86400"),
     ),
 )
 

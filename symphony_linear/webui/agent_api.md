@@ -40,7 +40,7 @@ When `webui.api_token` is set, every `/api/v1` response carries
 `Access-Control-Allow-Origin: *`, so a page on another origin can call the API
 from the browser. An `OPTIONS` preflight to any path under `/api/v1` gets a
 `204` with no body and needs no token. It sends `Access-Control-Allow-Methods`,
-`Access-Control-Allow-Headers` and `Access-Control-Max-Age: 600`. The answer is
+`Access-Control-Allow-Headers` and `Access-Control-Max-Age: 86400`. The answer is
 the same for every path, and the real request still gets the JSON `404` or
 `405`. The wildcard is safe because the namespace accepts only the bearer token.
 It never accepts Basic credentials or cookies, and a browser never attaches a

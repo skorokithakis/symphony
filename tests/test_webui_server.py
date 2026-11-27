@@ -1249,11 +1249,14 @@ class TestAgentAPI:
             assert status == 204
             assert body == b""
             assert headers["Access-Control-Allow-Origin"] == "*"
-            assert headers["Access-Control-Allow-Methods"] == "GET, POST, PATCH, DELETE"
+            assert (
+                headers["Access-Control-Allow-Methods"]
+                == "GET, POST, PATCH, DELETE, OPTIONS"
+            )
             assert headers["Access-Control-Allow-Headers"] == (
                 "Authorization, Content-Type"
             )
-            assert headers["Access-Control-Max-Age"] == "600"
+            assert headers["Access-Control-Max-Age"] == "86400"
 
     def test_every_namespace_response_carries_the_cors_header(
         self, tmp_path: Path
