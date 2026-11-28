@@ -864,12 +864,14 @@ body.sym { min-height: 100dvh; }
 .md pre code { background: none; padding: 0; font: inherit; }
 .scroll-x { overflow-x: auto; }
 .md table { border-collapse: collapse; min-width: 100%; font-size: var(--t-sm); }
-.md th, .md td { padding: var(--s2) var(--s4) var(--s2) 0; text-align: left; vertical-align: top; white-space: nowrap; border-bottom: 1px solid var(--rule); }
+/* Cells wrap at every width. The minimum width keeps a many-column table from
+   shrinking to one word per line on a phone; when the columns still do not fit,
+   the .scroll-x wrapper scrolls the table sideways instead. */
+.md th, .md td { min-width: 8em; padding: var(--s2) var(--s4) var(--s2) 0; text-align: left; vertical-align: top; border-bottom: 1px solid var(--rule); }
+.md td code { overflow-wrap: anywhere; }
 .md th:last-child, .md td:last-child { padding-right: 0; }
 .md th { font: 600 var(--t-xs)/1.4 var(--font-mono); color: var(--ink-2); border-bottom-color: var(--rule-2); }
 .md tbody tr:last-child td { border-bottom: 0; }
-.md td.wrap { white-space: normal; min-width: 16em; }
-.md td.num, .md th.num { text-align: right; font-variant-numeric: tabular-nums; }
 
 /* collapsible sections: one <details> for each top-level heading, in one soft panel */
 .secs {
@@ -966,9 +968,6 @@ a.file:hover { border-color: var(--ink-3); background: var(--sunken); }
 
 @container sym (min-width: 800px) {
   .md { font-size: 17px; }
-  /* on the desktop, table text wraps. On the phone, the table scrolls sideways. */
-  .md td { white-space: normal; }
-  .md td.num, .md td code { white-space: nowrap; }
   .sec-b { padding-left: calc(var(--s4) + 25px); }
 }
 
