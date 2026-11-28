@@ -101,7 +101,7 @@
     <span class="who">{{ entry.who }}</span>
     {{ new_badge(entry) }}
     <time datetime="{{ entry.created_at }}" data-format="time">{{ entry.clock }}</time>
-    {% for item in entry.meta %}<span>{{ item }}</span>{% endfor %}
+    {% for item in entry.meta %}<span{% if item.title %} title="{{ item.title }}"{% endif %}>{{ item.text }}</span>{% endfor %}
     <span class="entry-tools">
       <button class="link-btn" type="button" id="{{ entry.anchor }}-open" data-open-secs="{{ entry.anchor }}" aria-label="Open all sections" title="Open all sections">[+]</button>
       <button class="link-btn" type="button" id="{{ entry.anchor }}-close" data-close-secs="{{ entry.anchor }}" aria-label="Close all sections" title="Close all sections">[-]</button>

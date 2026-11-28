@@ -32,6 +32,7 @@ from symphony_linear.state import StateManager, TicketStatus, load_state
 from symphony_linear.tracker import TransitionTarget
 from symphony_linear.turn_activity import TurnActivity
 from symphony_linear.webui.server import WebUIServer
+from symphony_linear.webui.ticket import _kind_meta
 from tests.test_webui_server import (
     _config,
     _origin,
@@ -211,7 +212,9 @@ class TestTicketPage:
         # Agent reply: sectioned Markdown plus the tokens and model metadata.
         assert "entry--agent" in text
         assert '<details class="sec">' in text
-        assert "37,074 tokens" in text
+        # The header abbreviates the count; the exact one is the hover text.
+        assert ">37k tok<" in text
+        assert 'title="37,074 tokens of context"' in text
         assert "sonnet-4.5" in text
         assert "Open all" in text
         assert "Close all" in text
@@ -231,6 +234,26 @@ class TestTicketPage:
         assert "/tmp/secret-workspace" not in text
         assert "*Symphony ·" not in text
         assert text.count('<p class="notice">') == 3
+
+    @pytest.mark.parametrize(
+        ("tokens", "label"),
+        [
+            pytest.param(0, "0 tok", id="zero"),
+            pytest.param(850, "850 tok", id="exact-below-a-thousand"),
+            pytest.param(999, "999 tok", id="largest-below-a-thousand"),
+            pytest.param(1_499, "1k tok", id="rounds-down"),
+            # Half up: 2,500 becomes 3k, whereas Python's round() rounds a
+            # half to even and would leave it at 2k.
+            pytest.param(2_500, "3k tok", id="half-up"),
+            pytest.param(73_968, "74k tok", id="rounds-up"),
+        ],
+    )
+    def test_the_context_label_is_short_and_keeps_the_exact_hover(
+        self, tokens: int, label: str
+    ) -> None:
+        (item,) = _kind_meta(f"context: {tokens:,} tokens")
+        assert item.text == label
+        assert item.title == f"{tokens:,} tokens of context"
 
     @pytest.mark.parametrize(
         ("body", "expected_text", "folded"),

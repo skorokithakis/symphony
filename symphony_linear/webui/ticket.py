@@ -122,6 +122,18 @@ RETRY_BODY = "Retry."
 
 
 @dataclass(frozen=True)
+class MetaItem:
+    """One header fragment of an agent reply.
+
+    ``text`` is what the narrow header shows; ``title`` is the hover text and
+    keeps the untruncated value, so a shortened token count loses nothing.
+    """
+
+    text: str
+    title: str = ""
+
+
+@dataclass(frozen=True)
 class Entry:
     """One item in the thread, with every display decision already made.
 
@@ -136,7 +148,8 @@ class Entry:
     browser never sends a body back and the server can only read a reply it
     already stores.  ``new`` marks an entry posted after the ticket's seen
     marker when the page was opened; the page keeps the badge until it is
-    reloaded.
+    reloaded.  ``meta`` holds the agent header's token and model labels, each
+    with the hover text that carries the untruncated value.
     """
 
     kind: str
@@ -150,7 +163,7 @@ class Entry:
     #: URL is built here rather than by the page script so an entry appended by
     #: the poll gets a working button from the same rule as the initial page.
     speech_url: str = ""
-    meta: tuple[str, ...] = ()
+    meta: tuple[MetaItem, ...] = ()
     long: bool = False
     detail_html: str = ""
     anchor: str = ""
@@ -290,20 +303,36 @@ def _is_long(text: str) -> bool:
     return len(text) > _LONG_BODY or text.count("\n") >= _LONG_LINES
 
 
-def _kind_meta(kind: str) -> tuple[str, ...]:
+def _context_meta(plain: str) -> MetaItem:
+    """Abbreviate a ``N tokens`` count so the agent header fits on a phone.
+
+    Below a thousand the exact number is already short (``850 tok``) and
+    rounding it would throw away the only detail it carries.  Above that the
+    label rounds to the nearest thousand, half up: Python's ``round`` rounds
+    halves to even, so ``2,500`` would come out as ``2k`` where half up gives
+    ``3k``.  The untruncated count stays in the hover text.
+    """
+    tokens = int(plain.removesuffix(" tokens").replace(",", ""))
+    title = f"{tokens:,} tokens of context"
+    if tokens < 1_000:
+        return MetaItem(f"{tokens} tok", title)
+    return MetaItem(f"{(tokens + 500) // 1_000}k tok", title)
+
+
+def _kind_meta(kind: str) -> tuple[MetaItem, ...]:
     """Extract the display metadata from a final-comment kind string.
 
     Kinds are ``final`` or ``context: 37,074 tokens`` optionally followed by
     `` · model: <id>``.  The middle dot (U+00B7) is the footer separator.
     """
     segments = [segment.strip() for segment in kind.split(" · ")]
-    meta: list[str] = []
+    meta: list[MetaItem] = []
     first = segments[0]
     if first.startswith("context: "):
-        meta.append(first[len("context: ") :])
+        meta.append(_context_meta(first[len("context: ") :]))
     for segment in segments[1:]:
         if segment.startswith("model: "):
-            meta.append(segment[len("model: ") :])
+            meta.append(MetaItem(segment[len("model: ") :]))
     return tuple(meta)
 
 

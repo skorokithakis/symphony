@@ -242,7 +242,11 @@ def _agent_reply(
     ticket_id: str,
     body: str,
     *,
-    kind: str = "final · context: 21,408 tokens",
+    # The daemon's final-comment kind is "context: N tokens" with an optional
+    # " · model: <id>", and the ticket header parses the count out of the first
+    # segment.  A kind with a "final · " prefix would silently drop the token
+    # label from the screenshots.
+    kind: str = "context: 21,408 tokens",
     summary: str | None = None,
 ) -> Comment:
     """Post an agent reply through the normal path, footer included."""
@@ -301,7 +305,7 @@ the `.webp` files.
 
 The average image is 38% smaller. Can I delete the old JPEG files, or do you \
 want to keep them until the next release?""",
-        kind="final · context: 18,220 tokens",
+        kind="context: 18,220 tokens",
         summary=_SUMMARY_WEBP,
     )
     store.set_seen_comment(webp_id, comment.id)
@@ -335,7 +339,7 @@ The checklist is on the dashboard and remembers a dismissed state per account.
 
 All 9 tests pass. The "Invite a teammate" step still needs a real email \
 address to complete, so I left it as a follow-up.""",
-        kind="final · context: 16,905 tokens",
+        kind="context: 16,905 tokens",
     )
 
     rate_limit_id = _started(
@@ -350,14 +354,14 @@ address to complete, so I left it as a follow-up.""",
         tracker,
         rate_limit_id,
         _RATE_LIMIT_REPLY,
-        kind="final · context: 24,816 tokens · model: anthropic/claude-opus-4-6",
+        kind="context: 24,816 tokens · model: anthropic/claude-opus-4-6",
     )
     answer = store.add_human_comment(rate_limit_id, _RATE_LIMIT_ANSWER)
     _agent_reply(
         tracker,
         rate_limit_id,
         _RATE_LIMIT_FOLLOW_UP,
-        kind="final · context: 31,402 tokens · model: anthropic/claude-opus-4-6",
+        kind="context: 31,402 tokens · model: anthropic/claude-opus-4-6",
         summary=_SUMMARY_RATE_LIMIT,
     )
     store.set_seen_comment(rate_limit_id, answer.id)
@@ -395,7 +399,7 @@ round once.
 
 Can you confirm the expected total for the example order? I make it £48.78 \
 after the fix.""",
-        kind="final · context: 19,640 tokens",
+        kind="context: 19,640 tokens",
         summary=_SUMMARY_ROUNDING,
     )
 
