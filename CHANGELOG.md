@@ -1,5 +1,48 @@
 # Changelog
 
+## [0.11.0](https://github.com/skorokithakis/symphony/compare/v0.10.0...v0.11.0) (2026-11-28)
+
+
+### Features
+
+* Add a speak button that reads a summary of an agent reply aloud ([30f9f68](https://github.com/skorokithakis/symphony/commit/30f9f683c62cb35df274b25c9f6f4f4b81b001b6))
+* Add optional webui.tts_speed and webui.tts_voice settings ([23b8a8e](https://github.com/skorokithakis/symphony/commit/23b8a8e4b42f7318f9bda56fb5b35810eac66570))
+* Add Prometheus metrics served at /metrics on the web UI ([8aed62d](https://github.com/skorokithakis/symphony/commit/8aed62d65e94a132285b04d5ae564b19a175733f))
+* Advance on re-tapping a chosen answer and add a Next button to question tabs ([9812f26](https://github.com/skorokithakis/symphony/commit/9812f26506fc909cc28d7fdd57e3cbf5bae0fd17))
+* Keep a chosen Other answer on re-tap and advance to the next question ([7b188e6](https://github.com/skorokithakis/symphony/commit/7b188e6153b2ec280522e48a531402043e456847))
+* Move ticket state actions into a Change state menu and Retry into the error message ([13059ce](https://github.com/skorokithakis/symphony/commit/13059ce9ab5fc126fe1dd03c6c6bf98221778df5))
+* Play spoken replies while Soniox generates them, and add a Soniox region setting ([dbab832](https://github.com/skorokithakis/symphony/commit/dbab832bcd25038af4a48926bbb32df33a8df53e))
+* Send the first Android Back from a notification-opened ticket to the ticket list ([696899a](https://github.com/skorokithakis/symphony/commit/696899a1987ec80216e8635497fa2a10ec1322e5))
+* Separate the composing tools from the ticket controls in the composer ([139c79b](https://github.com/skorokithakis/symphony/commit/139c79bc25ade4d0ab9a5feb356ee52ff55cfa13))
+* Show one updating line for each run of tool calls in the live view ([54202a4](https://github.com/skorokithakis/symphony/commit/54202a4b316773c1cb636ecf3d80c619033ef8c6))
+* Show Stop in Send's place while the agent works and keep the composer height stable ([21b60d4](https://github.com/skorokithakis/symphony/commit/21b60d407267792a05b78db26f835ed38d669001))
+* Show the running turn's steps on the web UI ticket page ([f59ef2f](https://github.com/skorokithakis/symphony/commit/f59ef2f315c80f9b208ab1d91e51a94a85a5864a))
+* Tell the agent where its repo secrets file is ([1676de7](https://github.com/skorokithakis/symphony/commit/1676de761627311194b395c80595eb208ce9935c))
+
+
+### Bug Fixes
+
+* Activate a new web push service worker at once instead of waiting for the app to close ([b6dba0b](https://github.com/skorokithakis/symphony/commit/b6dba0b3bd31e588a212375bcc4fd33b62819b89))
+* Count stash entries and detached HEAD commits as unsaved work ([7f77607](https://github.com/skorokithakis/symphony/commit/7f7760710ef27f42263b8f84bf79aca46a650132))
+* Draw the copy and speak icons at composer size and put icons one icon width apart ([4db6094](https://github.com/skorokithakis/symphony/commit/4db6094a8646b1c36598e497c6b8b05e5532a166))
+* Edit and send the whole question-card option, not only its bold label ([1a13740](https://github.com/skorokithakis/symphony/commit/1a1374076fbba5a2df9c442bdff37b6384572a4b))
+* Even out the gaps around the composer's tool separator ([51bbcdc](https://github.com/skorokithakis/symphony/commit/51bbcdc261399936c078b36ae69600df31ad974d))
+* Hide the recommended pill on an option being edited or already edited ([a5b822e](https://github.com/skorokithakis/symphony/commit/a5b822ec7991525545ccf6a424d0d6e0cc47de5f))
+* Let Enter finish typing in question-card text fields ([c4b6ef0](https://github.com/skorokithakis/symphony/commit/c4b6ef0bb59855cf2aa8bca3d036b5cd0896f297))
+* Put the copy and speak icons on agent replies closer together ([d5b13ee](https://github.com/skorokithakis/symphony/commit/d5b13ee9d9f299f2f31820656ff90bebdf08a464))
+* Remove the composer answer count and the reserved second action line on phones ([6dc772f](https://github.com/skorokithakis/symphony/commit/6dc772f34b43664b02a211996398d9e72faa9222))
+* Shorten the token count in the agent reply header ([028bfec](https://github.com/skorokithakis/symphony/commit/028bfec3755c496f3650557e3c04179c4e61c80f))
+* Show the speak button's busy state with reduced motion and a warning icon on failure ([87cdfcb](https://github.com/skorokithakis/symphony/commit/87cdfcb8637c3a0ea85bb0e47c723a5eef200f86))
+* Space the composer tools 32 px apart ([ad6c34a](https://github.com/skorokithakis/symphony/commit/ad6c34a1f59a544fbc5f19e0522427c588c78eb2))
+* Stop OpenCode turns that only wait on background shell jobs ([433bb14](https://github.com/skorokithakis/symphony/commit/433bb14ba8a319149bfb683cc852d836c3c777b0))
+* Stop running git on the host inside ticket checkouts ([78f24e3](https://github.com/skorokithakis/symphony/commit/78f24e331d5c2c9f53b98ebc98efdfd1d170b67b))
+* Wrap text in Markdown table cells at every width ([1ad3a79](https://github.com/skorokithakis/symphony/commit/1ad3a79ac3df6e6973348e5d292662bfb707afcc))
+
+
+### Documentation
+
+* Record question-card Enter key decisions ([9627bdc](https://github.com/skorokithakis/symphony/commit/9627bdc37d8bc2874458cd2e4d80bcd062c1bd96))
+
 ## [0.10.0](https://github.com/skorokithakis/symphony/compare/v0.9.0...v0.10.0) (2026-11-27)
 
 
