@@ -84,6 +84,7 @@
           <svg class="ic ic-expand" viewBox="0 0 20 20" aria-hidden="true"><path d="M4 8V4h4M16 12v4h-4M4 4l5 5M16 16l-5-5"></path></svg>
           <svg class="ic ic-shrink" viewBox="0 0 20 20" aria-hidden="true"><path d="M9 5v4H5M11 15v-4h4M9 9L4 4M11 11l5 5"></path></svg>
         </button>
+        <span class="tools-sep" aria-hidden="true"></span>
         {% if page.composer_models %}
         <label class="sr" for="composer-model">Model</label>
         <select class="input composer-model" id="composer-model" name="model"{% if page.ticket.state == "In Progress" %} disabled{% endif %}>

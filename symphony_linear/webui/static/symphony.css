@@ -1005,6 +1005,14 @@ a.file:hover { border-color: var(--ink-3); background: var(--sunken); }
    space (up to 12rem, 5rem on a phone) instead of wrapping the row. */
 .composer-tools .icon-btn, .composer-tools .state-menu-wrap, .composer-tools .saved { flex: none; }
 .composer-tools .composer-model { flex: 1 1 4.75rem; min-width: 0; }
+/* Splits the composing tools (attach, dictation, size) from the ticket
+   controls (Model, Change state).  It shows only when a ticket control
+   follows: without model aliases an In Progress ticket has none, and a lone
+   rule at the row's end would separate nothing.  The menu button is matched
+   rather than the wrapper, because the poll leaves the wrapper in place with
+   only whitespace inside, which :empty does not match. */
+.tools-sep { display: none; flex: none; width: 1px; height: 20px; margin: 0 var(--s1); background: var(--rule-2); }
+.tools-sep:has(~ .composer-model, ~ .state-menu-wrap #state-menu-button) { display: block; }
 .saved {
   display: inline-flex; align-items: center; gap: 6px;
   font: 400 var(--t-xs)/1 var(--font-mono); color: var(--ink-3);
