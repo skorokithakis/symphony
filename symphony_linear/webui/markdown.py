@@ -744,8 +744,15 @@ def _question_card_html(
                 else ""
             )
             mark = " data-recommended" if option.recommended else ""
+            # The answer is the whole option, not only its bold label: a pick
+            # sends this text and the pencil edits it, so both must carry the
+            # detail too.  Sending only the label made an edit drop everything
+            # after the colon of `**Label**: detail`.
+            option_text = _question_plain_text(
+                _inline_text(option.label + option.detail)
+            )
             parts.append(
-                f'<li class="qcard-opt" data-text="{html.escape(_question_plain_text(_inline_text(option.label)))}"{mark}>'
+                f'<li class="qcard-opt" data-text="{html.escape(option_text)}"{mark}>'
                 '<span class="qcard-t">'
                 f'<span class="qcard-l">{label_html}</span>{tag}{detail}'
                 "</span></li>"

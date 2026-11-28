@@ -794,9 +794,13 @@ shutting down, or the ticket is no longer triggered — see `_is_still_triggered
   `(recommended)` (any case) in a plain text token is removed from its label
   and `data-text`; that `li` then carries `data-recommended` and a
   `<span class="qcard-rec">recommended</span>` between the label and the
-  detail. A code span holding the same words is literal text, and an option
-  left empty falls back to a quote; the tag is display only. The `data-text`
-  forms are single-line plain text with `*` replaced by U+2217; they are also
+  detail. An option's `data-text` is the whole option, label and detail
+  (`**Redis**: fast` gives `Redis: fast`), because it is both what a pick
+  sends and what the pencil edits; while an option is edited or being
+  edited, CSS hides its detail. A code span holding the same words is
+  literal text, and an option left empty falls back to a quote; the tag is
+  display only. The `data-text` forms are single-line plain text with `*`
+  replaced by U+2217; they are also
   escaped so they stay literal Markdown at the start of a line (no link
   definitions, headings, fences, emphasis, block markers or lists), because a
   later stage copies them into a human comment and `*Symphony · ` is the bot

@@ -196,9 +196,10 @@ selected, so the answer is replaced rather than cleared. A tap on a chosen
 
 When the newest reply has cards and no human message follows it, the cards are
 live. Tap an option to choose it; in a choose-many card a tap toggles it. The
-pencil beside an option selects it and replaces its label with a text field
-holding that label, so you can answer in your own words; clearing the field
-brings the agent's label back. The last row of a card with options is **Other**,
+pencil beside an option selects it and replaces the whole option, bold label
+and the explanation after it, with a text field holding that text, so you can
+answer in your own words; clearing the field brings the agent's option back.
+A chosen option you did not edit is sent as its whole text too. The last row of a card with options is **Other**,
 for an answer that is not on the list, and a free-text card is just its text
 field. The count next to Send says how many questions you have answered;
 unanswered questions never block Send.

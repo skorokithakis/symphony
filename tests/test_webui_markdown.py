@@ -198,10 +198,12 @@ def test_question_callout_renders_a_choose_one_card() -> None:
         '<div class="qcard" data-kind="choose-one" data-question-index="0">' in rendered
     )
     assert 'data-text="Which storage should the cache use?"' in rendered
-    assert 'data-text="Redis"' in rendered
+    # The plain form is the whole option, so a pick and an edit carry the
+    # detail too, not only the bold label.
+    assert 'data-text="Redis: survives a restart."' in rendered
     assert '<span class="qcard-l">Redis</span>' in rendered
     assert '<span class="qcard-d">: survives a restart.</span>' in rendered
-    assert 'data-text="In-memory"' in rendered
+    assert 'data-text="In-memory: no dependency."' in rendered
 
 
 def test_question_callout_renders_a_choose_many_card() -> None:
@@ -212,8 +214,8 @@ def test_question_callout_renders_a_choose_many_card() -> None:
     )
 
     assert 'data-kind="choose-many"' in rendered
-    assert 'data-text="The retry loop"' in rendered
-    assert 'data-text="The cron shim"' in rendered
+    assert 'data-text="The retry loop: it hides real failures."' in rendered
+    assert 'data-text="The cron shim: it duplicates the scheduler."' in rendered
     assert "[ ]" not in rendered
 
 
@@ -227,8 +229,8 @@ def test_question_card_marks_recommended_options() -> None:
 
     assert rendered.count("data-recommended") == 3
     assert rendered.count('<span class="qcard-rec">recommended</span>') == 3
-    assert 'data-text="Redis"' in rendered
-    assert 'data-text="In-memory"' in rendered
+    assert 'data-text="Redis: survives."' in rendered
+    assert 'data-text="In-memory: no dependency."' in rendered
     assert 'data-text="On disk"' in rendered
     assert "(recommended)" not in rendered.lower()
 
@@ -255,7 +257,7 @@ def test_question_card_marks_recommended_options() -> None:
     leading = render_markdown_sections(
         "> [!QUESTION] Which one?\n> - **(recommended)** **Redis**: fast\n"
     )
-    assert 'data-text="Redis"' in leading
+    assert 'data-text="Redis: fast"' in leading
     assert '<span class="qcard-l">Redis</span>' in leading
     assert '<span class="qcard-d">: fast</span>' in leading
 
@@ -274,7 +276,7 @@ def test_question_card_marks_recommended_options() -> None:
     spaced = render_markdown_sections(
         "> [!QUESTION] Which one?\n> - **Redis** (recommended) : slow\n"
     )
-    assert 'data-text="Redis"' in spaced
+    assert 'data-text="Redis: slow"' in spaced
     assert '<span class="qcard-d">: slow</span>' in spaced
     assert " : slow" not in spaced
 

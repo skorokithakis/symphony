@@ -728,6 +728,10 @@ body.sym { min-height: 100dvh; }
    would mislead; it returns if the edit is reverted to the original text. */
 .md .qcard-opt.is-editing .qcard-rec,
 .md .qcard-opt.is-edited .qcard-rec { display: none; }
+/* The field and an edit replace the whole option, detail included, so the
+   detail would otherwise repeat text the human may have changed. */
+.md .qcard-opt.is-editing .qcard-d,
+.md .qcard-opt.is-edited .qcard-d { display: none; }
 .md .qcard-edit-field, .md .qcard-other-field { width: auto; flex: 1 1 8rem; min-width: 0; }
 .md .qcard-answer { display: flex; flex-direction: column; }
 .md .qcard-answer textarea.qcard-field {
