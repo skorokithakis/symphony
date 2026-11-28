@@ -337,7 +337,7 @@ Currently supported keys:
 | Key                    | Type      | Default            | Notes                                          |
 |------------------------|-----------|--------------------|------------------------------------------------|
 | `auto_branch`          | bool      | inherits global    | Applied on first clone, not on resume.         |
-| `turn_timeout_seconds` | int (> 0) | inherits global    | Re-read on every turn (initial and resume).    |
+| `turn_timeout_seconds` | int (> 0) | inherits global    | Read when the checkout is prepared; replies keep it. |
 
 ```yaml
 # .symphony/config.yaml (committed in your project repo)
@@ -349,3 +349,14 @@ Unknown keys, invalid YAML or out-of-range values cause Symphony to post an
 error comment on the ticket and block the run until you fix the file and
 comment to retry. Per-project values win over the global config; missing
 keys fall back to the global value.
+
+Symphony reads the file when it prepares the ticket's checkout: when the ticket
+starts, and again if that start has to be repeated (a retry after a setup
+error, or a first turn that was interrupted before the agent had a session).
+It does not read it when you reply to a ticket: after the first turn the agent
+can write to the checkout, so a read at that point would let the agent change
+its own limits. A change to the file on the remote therefore takes effect only
+when a checkout is cloned anew: for a new ticket, or for a repeated start whose
+old checkout held no unsaved work. A ticket whose agent session continues keeps
+the values it started with. The file must be a regular file of at most 64 KiB; a symbolic link, at
+`.symphony` or at the file itself, is reported as an error.

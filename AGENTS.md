@@ -169,7 +169,8 @@ shutting down, or the ticket is no longer triggered — see `_is_still_triggered
   ticket is still in it — human never moved it again, or the refusal transition
   failed — the state entry is dropped but the dirty directory is kept, so a
   workspace may exist with no state entry, and a re-triggered ticket then
-  reuses that directory via `clone_workspace`'s fetch-or-reuse path. Ticket
+  reuses that directory, because `clone_workspace` keeps a checkout with
+  unsaved work exactly as it is (see the host-git invariant below). Ticket
   deletion is the exception: the `TrackerNotFoundError` branch cleans up
   unconditionally, dirty or not. `cleanup_refused_state` is cleared
   (set to `None`) when the agent next takes a turn (the pipelines do this
@@ -191,9 +192,10 @@ shutting down, or the ticket is no longer triggered — see `_is_still_triggered
   writable by up to 5 concurrent workers. Resolution, containment, and
   `mkdir -p` of both sides happen in `workspace.ensure_dir_map` (bwrap cannot
   create mount points under the read-only root bind); `run_in_sandbox` only
-  emits argv from the resolved pairs. Git ops run
+  emits argv from the resolved pairs. `git clone` runs
   *outside* the sandbox using the daemon's credentials; the selected coding
-  agent and `.symphony/setup` run *inside*. OpenCode's session directories and
+  agent, `.symphony/setup` and every later git command in the checkout run
+  *inside* (see the host-git invariant below). OpenCode's session directories and
   the pi family's `~/.omp` and `~/.pi` are deliberate read-write binds.
   OpenCode V2 also needs `~/.local/state/opencode/locks` writable (created on
   the host if missing); only `locks/` is bound, because the parent holds
@@ -207,6 +209,55 @@ shutting down, or the ticket is no longer triggered — see `_is_still_triggered
   `--clearenv` and the adapters set only `HOME` (plus `PATH`), so a sandboxed
   pi always resolves its state to `~/.pi`, which is why that exact path is the
   one bound read-write.
+- **`git clone` is the only git command the daemon runs on the host for a
+  ticket checkout.** The checkout is bound read-write in the sandbox, so
+  `.git/config` and `.git/hooks` are agent-written input, and git starts the
+  programs they name: `core.fsmonitor` on `git status`, `post-checkout` on
+  `git switch`, `reference-transaction` and `core.sshCommand` on `git fetch`
+  (all verified with git 2.47). Git's own manual says a `.git` directory from
+  an untrusted source is not safe to run git in. A list of `-c` overrides was
+  rejected because the set of such keys has no end (filter drivers have free
+  names). So `dirty_summary` (`git status`, `git rev-list`) and
+  `_git_switch_branch` go through `workspace._run_git_in_sandbox`, which
+  passes only the hide list and the ticket's `tmp/` (no `extra_rw_paths`,
+  `dir_map`, secrets file env or attachments mount) and kills the command
+  after `SANDBOX_GIT_TIMEOUT_SECONDS`, because `dirty_summary` runs on the
+  poll loop thread; a failure or a time-out reads as "could not verify",
+  which callers treat as dirty, and a timed-out `git switch` raises
+  `BranchFailed` without the `switch -c` attempt. That sandbox is narrower
+  than the agent's only in its write mounts: the ticket's own directory
+  (`secrets.env`, `attachments/`) stays readable through the read-only root
+  bind, exactly as it is for the agent, so a hook started there reaches
+  nothing the agent could not already read. Nothing fetches in an existing
+  checkout: fetch needs the daemon's credentials, so it cannot move into the
+  sandbox. When `clone_workspace` finds an existing checkout it deletes it
+  and clones again if `dirty_summary` reports no unsaved work, and otherwise
+  (unsaved work, or a check that could not run) returns it unchanged;
+  `_prepare_workspace` first stops a QA serve that this ticket owns
+  (`_kill_active_serve(ticket_id=...)`, one lock acquisition, since this is a
+  worker thread racing `_reconcile_serve`), because a serve that dies when
+  its checkout is replaced would be reported as "serve died" and move the
+  ticket to Needs Input under the new turn. `.symphony/config.yaml` is read
+  from the checkout's files in
+  `_prepare_workspace` only, so once per workspace preparation (a retried
+  start or a session-less recovery reads it again, a resume never does). The
+  read opens `.symphony` and the file by descriptor with `O_NOFOLLOW`, so no
+  symbolic link is followed, and refuses a non-regular or oversized file (a
+  FIFO would block the worker). Its `turn_timeout_seconds` override is stored
+  in `TicketState.turn_timeout_seconds` (`None` means the global value); the
+  resume pipeline never reads the file, because the agent could then change
+  its own limit or block its own ticket with a broken file. On a checkout
+  that was kept because of unsaved work, a repeated preparation reads the
+  agent's copy of the file; that is accepted. Accepted consequences: a change
+  to the file on the remote takes effect only on a new clone (a new ticket,
+  or a repeated start whose checkout was clean), the daemon no longer refreshes `origin/*`
+  before a turn, and the output of the sandboxed git commands is
+  agent-controlled (the agent can make its own checkout look clean). Do not
+  add a host-side `subprocess` call with a ticket checkout as its working
+  directory, and do not read a checkout file on the host in a way that
+  follows a symbolic link out of the checkout. `checkout.py` is not covered:
+  it inspects the daemon's own package checkout, which the sandbox mounts
+  read-only. In the unsandboxed trial mode none of this holds.
 - **Without bwrap the daemon runs unsandboxed, but only as a trial.**
   `cli._configure_sandbox_for_missing_bwrap` runs after the config loads
   (the rule needs the tracker type) and before the `--validate-config`

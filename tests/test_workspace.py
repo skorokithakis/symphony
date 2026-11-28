@@ -12,6 +12,7 @@ import os
 import shutil
 import stat
 import subprocess
+import tempfile
 from pathlib import Path
 from unittest import mock
 from urllib.parse import urlsplit
@@ -19,6 +20,7 @@ from urllib.parse import urlsplit
 import pytest
 
 from symphony_linear.workspace import (
+    BranchFailed,
     CloneFailed,
     DirMapError,
     PathContainmentError,
@@ -33,6 +35,7 @@ from symphony_linear.workspace import (
     _REPO_DIR,
     _run_git as _workspace_run_git,
     _run_setup_script,
+    _SandboxGitTimeout,
     _sanitize_identifier,
     _TMP_DIR,
     clone_workspace,
@@ -74,6 +77,24 @@ def _require_git() -> None:
 def _require_bwrap() -> None:
     if not _bwrap_available():
         pytest.skip("bwrap not available")
+
+
+def _base_outside_tmp() -> Path:
+    """Return a writable directory that is not under ``/tmp``.
+
+    ``run_in_sandbox`` replaces ``/tmp`` with the ticket's private tmp dir, so
+    anything under the host ``/tmp`` is invisible inside the sandbox whether or
+    not it is mounted.  A test fixture there cannot prove anything about what
+    the sandbox can reach (gnosis njnsrm).
+    """
+    for base in (Path(__file__).resolve().parent.parent, Path.home()):
+        resolved = base.resolve()
+        text = str(resolved)
+        if text == "/tmp" or text.startswith("/tmp/"):
+            continue
+        if os.access(resolved, os.W_OK):
+            return resolved
+    return pytest.skip("no writable directory outside /tmp for the sandbox git test")
 
 
 def _run_git(args: list[str], cwd: Path) -> None:
@@ -887,6 +908,7 @@ class TestPrepareRemoveIntegration:
     def test_reprepare_switches_branch(self, tmp_path: Path) -> None:
         """Re-preparing with a different branch should switch to it."""
         _require_git()
+        _require_bwrap()
 
         workspace_root = tmp_path / "workspaces"
         workspace_root.mkdir()
@@ -940,6 +962,7 @@ class TestPrepareRemoveIntegration:
     def test_reprepare_with_new_branch(self, tmp_path: Path) -> None:
         """Re-preparing with a branch that doesn't exist yet creates it."""
         _require_git()
+        _require_bwrap()
 
         workspace_root = tmp_path / "workspaces"
         workspace_root.mkdir()
@@ -1063,6 +1086,8 @@ class TestGitLogRedaction:
                     ticket_identifier="T-1",
                     repo_url="https://sekrit-token@github.com/org/repo.git",
                     workspace_root=str(root),
+                    sandbox_hide_paths=[],
+                    tmp_path=str(tmp_path),
                 )
 
         assert "sekrit-token" not in caplog.text
@@ -1082,13 +1107,14 @@ class TestGitOptionTermination:
         root.mkdir()
 
         with mock.patch("symphony_linear.workspace._run_git") as run_git:
-            path, recovered = clone_workspace(
+            path = clone_workspace(
                 ticket_identifier="T-1",
                 repo_url="https://github.com/org/repo.git",
                 workspace_root=str(root),
+                sandbox_hide_paths=[],
+                tmp_path=str(tmp_path),
             )
 
-        assert not recovered
         run_git.assert_called_once_with(
             ["clone", "--", "https://github.com/org/repo.git", path],
             description="clone",
@@ -1104,6 +1130,8 @@ class TestGitOptionTermination:
                     ticket_identifier="T-1",
                     repo_url="--upload-pack=/bin/sh",
                     workspace_root=str(root),
+                    sandbox_hide_paths=[],
+                    tmp_path=str(tmp_path),
                 )
         run_git.assert_not_called()
 
@@ -1115,28 +1143,38 @@ class TestGitOptionTermination:
             args=[], returncode=0, stdout="", stderr=""
         )
         with mock.patch(
-            "symphony_linear.workspace.subprocess.run",
+            "symphony_linear.workspace._run_git_in_sandbox",
             side_effect=[failed, succeeded],
         ) as run:
-            _git_switch_branch("-weird", str(tmp_path))
+            _git_switch_branch("-weird", str(tmp_path), [], tmp_path=str(tmp_path))
 
-        assert run.call_args_list[0][0][0] == ["git", "switch", "--", "-weird"]
-        assert run.call_args_list[1][0][0] == [
-            "git",
+        assert run.call_args_list[0].args[1] == ["switch", "--", "-weird"]
+        assert run.call_args_list[1].args[1] == [
             "switch",
             "-c",
             "-weird",
             "--",
         ]
 
+    def test_switch_branch_timeout_does_not_retry(self, tmp_path: Path) -> None:
+        """A timed-out first switch raises and never starts `switch -c`."""
+        with mock.patch(
+            "symphony_linear.workspace._run_git_in_sandbox",
+            side_effect=_SandboxGitTimeout("timed out after 60s"),
+        ) as run:
+            with pytest.raises(BranchFailed, match="timed out"):
+                _git_switch_branch("branch", str(tmp_path), [], tmp_path=str(tmp_path))
+
+        run.assert_called_once()
+
 
 # ---------------------------------------------------------------------------
-# Unit: clone_workspace — standalone clone/fetch step
+# Unit: clone_workspace — standalone clone step
 # ---------------------------------------------------------------------------
 
 
 class TestCloneWorkspace:
-    """clone_workspace handles sanitization, containment, and clone/fetch."""
+    """clone_workspace handles sanitization, containment, and cloning."""
 
     def test_clones_fresh_repo(self, tmp_path: Path) -> None:
         """A brand-new workspace clones the repo and returns the real path."""
@@ -1148,13 +1186,14 @@ class TestCloneWorkspace:
         source_repo = tmp_path / "source"
         _make_source_repo(source_repo)
 
-        result, recovered = clone_workspace(
+        result = clone_workspace(
             ticket_identifier="CLONE-1",
             repo_url=str(source_repo),
             workspace_root=str(workspace_root),
+            sandbox_hide_paths=[],
+            tmp_path=str(tmp_path),
         )
 
-        assert not recovered
         assert os.path.isdir(result)
         assert os.path.isdir(os.path.join(result, ".git"))
         # The clone lives in <root>/<sanitized_id>/repo.
@@ -1162,37 +1201,6 @@ class TestCloneWorkspace:
         assert os.path.basename(os.path.dirname(os.path.realpath(result))) == "CLONE-1"
 
         remove("CLONE-1", str(workspace_root))
-
-    def test_reuses_existing_workspace(self, tmp_path: Path) -> None:
-        """Re-calling clone_workspace on an existing directory fetches, not clones."""
-        _require_git()
-
-        workspace_root = tmp_path / "workspaces"
-        workspace_root.mkdir()
-
-        source_repo = tmp_path / "source"
-        _make_source_repo(source_repo)
-
-        # First call: clone.
-        result1, recovered1 = clone_workspace(
-            ticket_identifier="REUSE-1",
-            repo_url=str(source_repo),
-            workspace_root=str(workspace_root),
-        )
-
-        assert not recovered1
-
-        # Second call: reuse (fetch).
-        result2, recovered2 = clone_workspace(
-            ticket_identifier="REUSE-1",
-            repo_url=str(source_repo),
-            workspace_root=str(workspace_root),
-        )
-
-        assert not recovered2
-        assert result2 == result1
-
-        remove("REUSE-1", str(workspace_root))
 
     def test_raises_clone_failed_for_bogus_url(self, tmp_path: Path) -> None:
         """clone_workspace raises CloneFailed for a non-existent repo URL."""
@@ -1206,6 +1214,8 @@ class TestCloneWorkspace:
                 ticket_identifier="DEAD",
                 repo_url="/nonexistent/path/not-a-repo",
                 workspace_root=str(workspace_root),
+                sandbox_hide_paths=[],
+                tmp_path=str(tmp_path),
             )
 
     def test_sanitized_directory_name(self, tmp_path: Path) -> None:
@@ -1218,13 +1228,14 @@ class TestCloneWorkspace:
         source_repo = tmp_path / "source"
         _make_source_repo(source_repo)
 
-        result, recovered = clone_workspace(
+        result = clone_workspace(
             ticket_identifier="Team/With Spaces",
             repo_url=str(source_repo),
             workspace_root=str(workspace_root),
+            sandbox_hide_paths=[],
+            tmp_path=str(tmp_path),
         )
 
-        assert not recovered
         expected_dir = workspace_root / "Team_With_Spaces" / "repo"
         assert os.path.realpath(result) == os.path.realpath(expected_dir)
 
@@ -1236,9 +1247,25 @@ class TestCloneWorkspace:
 # ---------------------------------------------------------------------------
 
 
+@pytest.mark.integration
 class TestDirtySummary:
     """dirty_summary returns None when there is nothing to protect, and a
-    short Markdown summary otherwise."""
+    short Markdown summary otherwise.
+
+    The git commands run inside the sandbox since the ticket task, so this
+    class needs bwrap as well as git.
+    """
+
+    @pytest.fixture(autouse=True)
+    def _require_sandbox(self) -> None:
+        _require_bwrap()
+
+    @staticmethod
+    def _sandbox_tmp(tmp_path: Path) -> str:
+        """Create and return the tmp dir the sandbox mounts at /tmp."""
+        sandbox_tmp = tmp_path / "sandbox-tmp"
+        sandbox_tmp.mkdir(exist_ok=True)
+        return str(sandbox_tmp)
 
     def test_clean_clone_returns_none(self, tmp_path: Path) -> None:
         """A freshly-cloned repo with no modifications has nothing to protect."""
@@ -1255,7 +1282,10 @@ class TestDirtySummary:
             check=True,
         )
 
-        assert dirty_summary(str(workspace)) is None
+        assert (
+            dirty_summary(str(workspace), [], tmp_path=self._sandbox_tmp(tmp_path))
+            is None
+        )
 
     @pytest.mark.parametrize(
         ("filename", "contents"),
@@ -1281,7 +1311,9 @@ class TestDirtySummary:
 
         (workspace / filename).write_text(contents)
 
-        summary = dirty_summary(str(workspace))
+        summary = dirty_summary(
+            str(workspace), [], tmp_path=self._sandbox_tmp(tmp_path)
+        )
         assert summary is not None
         assert "1 uncommitted file," in summary
         assert filename in summary
@@ -1317,7 +1349,9 @@ class TestDirtySummary:
             cwd=workspace,
         )
 
-        summary = dirty_summary(str(workspace))
+        summary = dirty_summary(
+            str(workspace), [], tmp_path=self._sandbox_tmp(tmp_path)
+        )
         assert summary is not None
         assert "1 commit not on any remote" in summary
 
@@ -1355,7 +1389,9 @@ class TestDirtySummary:
         )
         _run_git(["checkout", "main"], cwd=workspace)
 
-        summary = dirty_summary(str(workspace))
+        summary = dirty_summary(
+            str(workspace), [], tmp_path=self._sandbox_tmp(tmp_path)
+        )
         assert summary is not None
         assert "1 commit not on any remote" in summary
 
@@ -1383,7 +1419,9 @@ class TestDirtySummary:
 
         (workspace / "untracked.txt").write_text("hello")
 
-        summary = dirty_summary(str(workspace))
+        summary = dirty_summary(
+            str(workspace), [], tmp_path=self._sandbox_tmp(tmp_path)
+        )
         assert summary is not None
         assert "untracked.txt" in summary
 
@@ -1393,26 +1431,122 @@ class TestDirtySummary:
         plain = tmp_path / "plain"
         plain.mkdir()
 
-        summary = dirty_summary(str(plain))
+        sandbox_tmp = self._sandbox_tmp(tmp_path)
+        summary = dirty_summary(str(plain), [], tmp_path=sandbox_tmp)
         assert summary is not None
         assert "Could not verify workspace state" in summary
 
         # A path that does not exist has nothing to protect.
-        assert dirty_summary(str(tmp_path / "does-not-exist")) is None
+        assert (
+            dirty_summary(str(tmp_path / "does-not-exist"), [], tmp_path=sandbox_tmp)
+            is None
+        )
 
 
 # ---------------------------------------------------------------------------
-# Integration: clone_workspace recovery path
+# Integration: git commands in a checkout run inside the sandbox
 # ---------------------------------------------------------------------------
 
 
 @pytest.mark.integration
-class TestCloneWorkspaceRecovery:
-    """clone_workspace auto-recovers from fetch failures on clean workspaces."""
+class TestSandboxedGitCommands:
+    """The dirty check and branch switch run the checkout's git programs in bwrap.
 
-    def test_fetch_failure_on_clean_workspace_reclones(self, tmp_path: Path) -> None:
-        """When fetch fails on a clean workspace, it is nuked and re-cloned."""
+    A ticket checkout is writable by the agent, so ``core.fsmonitor`` (started
+    by ``git status``) and the ``post-checkout`` hook (started by
+    ``git switch``) are agent-controlled programs.  Each fixture program writes
+    one marker inside the checkout — the positive control that proves it ran —
+    and one into a host directory the sandbox mounts read-only.  A host
+    invocation would create both; a sandboxed one can create only the inside
+    marker, which is exactly what fails if the commands move back out of bwrap.
+    """
+
+    def test_checkout_hooks_run_inside_the_sandbox(self) -> None:
         _require_git()
+        _require_bwrap()
+
+        # The fixture lives outside /tmp: the sandbox replaces /tmp with the
+        # per-ticket tmp dir, so an outside marker there would be invisible for
+        # the wrong reason and the test would pass vacuously (gnosis njnsrm).
+        with tempfile.TemporaryDirectory(
+            prefix=".symphony-git-", dir=str(_base_outside_tmp())
+        ) as fixture_root:
+            root = Path(fixture_root)
+            repo = root / "workspaces" / "SANDBOX-GIT" / "repo"
+            sandbox_tmp = root / "workspaces" / "SANDBOX-GIT" / "tmp"
+            outside = root / "outside"
+            sandbox_tmp.mkdir(parents=True)
+            outside.mkdir()
+
+            _make_source_repo(repo)
+
+            fsmonitor_script = repo / "fsmonitor.sh"
+            fsmonitor_script.write_text(
+                "#!/bin/bash\n"
+                "echo ran >> ./fsmonitor-inside.txt\n"
+                f"echo ran >> {outside / 'fsmonitor-outside.txt'}\n"
+                "exit 0\n"
+            )
+            fsmonitor_script.chmod(0o755)
+            _run_git(["config", "core.fsmonitor", str(fsmonitor_script)], cwd=repo)
+
+            post_checkout = repo / ".git" / "hooks" / "post-checkout"
+            post_checkout.write_text(
+                "#!/bin/bash\n"
+                "echo ran >> ./post-checkout-inside.txt\n"
+                f"echo ran >> {outside / 'post-checkout-outside.txt'}\n"
+                "exit 0\n"
+            )
+            post_checkout.chmod(0o755)
+
+            # The fsmonitor program runs during the dirty check.
+            summary = dirty_summary(str(repo), [], tmp_path=str(sandbox_tmp))
+            assert summary is not None
+
+            # The post-checkout hook runs when the branch is created.
+            _git_switch_branch(
+                "symphony/sandbox-git", str(repo), [], tmp_path=str(sandbox_tmp)
+            )
+
+            assert (repo / "fsmonitor-inside.txt").exists()
+            assert (repo / "post-checkout-inside.txt").exists()
+            assert not (outside / "fsmonitor-outside.txt").exists()
+            assert not (outside / "post-checkout-outside.txt").exists()
+
+            branch = subprocess.run(
+                ["git", "branch", "--show-current"],
+                cwd=repo,
+                capture_output=True,
+                text=True,
+            )
+            assert branch.stdout.strip() == "symphony/sandbox-git"
+
+
+# ---------------------------------------------------------------------------
+# Integration: clone_workspace decision for an existing checkout
+# ---------------------------------------------------------------------------
+
+
+@pytest.mark.integration
+class TestCloneWorkspaceExistingCheckout:
+    """An existing checkout is replaced when clean, kept when dirty."""
+
+    @staticmethod
+    def _agent_sentinel(path: str) -> Path:
+        """Return a marker inside .git, invisible to git status.
+
+        A file in the working tree would make the checkout dirty and defeat
+        the clean case; a file under .git survives only if the directory is
+        not deleted.
+        """
+        sentinel = Path(path) / ".git" / "agent-sentinel"
+        sentinel.write_text("agent was here")
+        return sentinel
+
+    def test_clean_checkout_is_cloned_again(self, tmp_path: Path) -> None:
+        """No unsaved work → the checkout is deleted and re-cloned."""
+        _require_git()
+        _require_bwrap()
 
         workspace_root = tmp_path / "workspaces"
         workspace_root.mkdir()
@@ -1420,86 +1554,62 @@ class TestCloneWorkspaceRecovery:
         source_repo = tmp_path / "source"
         _make_source_repo(source_repo)
 
-        # First call: normal clone.
-        path1, rec1 = clone_workspace(
-            ticket_identifier="RECOVER-1",
+        path1 = clone_workspace(
+            ticket_identifier="CLEAN-1",
             repo_url=str(source_repo),
             workspace_root=str(workspace_root),
+            sandbox_hide_paths=[],
+            tmp_path=ensure_tmp_dir("CLEAN-1", str(workspace_root)),
         )
-        assert not rec1
-        assert os.path.isdir(path1)
+        sentinel = self._agent_sentinel(path1)
 
-        # Sabotage the remote URL in the workspace so fetch fails.
-        _run_git(
-            ["remote", "set-url", "origin", "/nonexistent/path"],
-            cwd=Path(path1),
-        )
-
-        # Second call: fetch fails, workspace is clean → nuke + re-clone.
-        path2, rec2 = clone_workspace(
-            ticket_identifier="RECOVER-1",
+        path2 = clone_workspace(
+            ticket_identifier="CLEAN-1",
             repo_url=str(source_repo),
             workspace_root=str(workspace_root),
-        )
-        assert rec2
-        assert os.path.isdir(path2)
-        # The re-cloned workspace should have a working .git and valid remote.
-        result = subprocess.run(
-            ["git", "remote", "get-url", "origin"],
-            cwd=path2,
-            capture_output=True,
-            text=True,
-        )
-        assert result.returncode == 0
-        assert result.stdout.strip() == str(source_repo)
-
-        remove("RECOVER-1", str(workspace_root))
-
-    def test_fetch_failure_on_dirty_workspace_preserves(self, tmp_path: Path) -> None:
-        """When fetch fails on a dirty workspace, it is preserved (no exception)."""
-        _require_git()
-
-        workspace_root = tmp_path / "workspaces"
-        workspace_root.mkdir()
-
-        source_repo = tmp_path / "source"
-        _make_source_repo(source_repo)
-
-        # First call: normal clone.
-        path1, rec1 = clone_workspace(
-            ticket_identifier="DIRTY-1",
-            repo_url=str(source_repo),
-            workspace_root=str(workspace_root),
-        )
-        assert not rec1
-
-        # Make the workspace dirty (untracked file).
-        (Path(path1) / "dirty.txt").write_text("please preserve me")
-
-        # Sabotage the remote URL so fetch fails.
-        _run_git(
-            ["remote", "set-url", "origin", "/nonexistent/path"],
-            cwd=Path(path1),
+            sandbox_hide_paths=[],
+            tmp_path=ensure_tmp_dir("CLEAN-1", str(workspace_root)),
         )
 
-        # Second call: fetch fails, workspace is dirty → preserve (no exception).
-        path2, rec2 = clone_workspace(
-            ticket_identifier="DIRTY-1",
-            repo_url=str(source_repo),
-            workspace_root=str(workspace_root),
-        )
-        assert not rec2
         assert path2 == path1
-        # The dirty file should still exist.
-        assert (Path(path2) / "dirty.txt").read_text() == "please preserve me"
-        # The remote URL is still sabotaged (we didn't touch the workspace).
-        result = subprocess.run(
-            ["git", "remote", "get-url", "origin"],
-            cwd=path2,
-            capture_output=True,
-            text=True,
+        # The old checkout, including its agent-written .git, is gone.
+        assert not sentinel.exists()
+        assert (Path(path2) / "README.md").is_file()
+
+        remove("CLEAN-1", str(workspace_root))
+
+    def test_dirty_checkout_is_kept(self, tmp_path: Path) -> None:
+        """Unsaved work → the checkout is returned unchanged."""
+        _require_git()
+        _require_bwrap()
+
+        workspace_root = tmp_path / "workspaces"
+        workspace_root.mkdir()
+
+        source_repo = tmp_path / "source"
+        _make_source_repo(source_repo)
+
+        path1 = clone_workspace(
+            ticket_identifier="DIRTY-1",
+            repo_url=str(source_repo),
+            workspace_root=str(workspace_root),
+            sandbox_hide_paths=[],
+            tmp_path=ensure_tmp_dir("DIRTY-1", str(workspace_root)),
         )
-        assert result.stdout.strip() == "/nonexistent/path"
+        (Path(path1) / "dirty.txt").write_text("please preserve me")
+        sentinel = self._agent_sentinel(path1)
+
+        path2 = clone_workspace(
+            ticket_identifier="DIRTY-1",
+            repo_url=str(source_repo),
+            workspace_root=str(workspace_root),
+            sandbox_hide_paths=[],
+            tmp_path=ensure_tmp_dir("DIRTY-1", str(workspace_root)),
+        )
+
+        assert path2 == path1
+        assert (Path(path2) / "dirty.txt").read_text() == "please preserve me"
+        assert sentinel.exists()
 
         remove("DIRTY-1", str(workspace_root))
 
@@ -1532,10 +1642,12 @@ class TestFinalizeWorkspace:
         )
 
         # Clone first.
-        ws_path, _ = clone_workspace(
+        ws_path = clone_workspace(
             ticket_identifier="FINALIZE-1",
             repo_url=str(source_repo),
             workspace_root=str(workspace_root),
+            sandbox_hide_paths=[],
+            tmp_path=ensure_tmp_dir("FINALIZE-1", str(workspace_root)),
         )
 
         # Then finalize.
@@ -1573,10 +1685,12 @@ class TestFinalizeWorkspace:
         source_repo = tmp_path / "source"
         _make_source_repo(source_repo)
 
-        ws_path, _ = clone_workspace(
+        ws_path = clone_workspace(
             ticket_identifier="NO-BRANCH",
             repo_url=str(source_repo),
             workspace_root=str(workspace_root),
+            sandbox_hide_paths=[],
+            tmp_path=ensure_tmp_dir("NO-BRANCH", str(workspace_root)),
         )
 
         finalize_workspace(
@@ -1610,6 +1724,7 @@ class TestFinalizeWorkspace:
     def test_no_setup_script_succeeds(self, tmp_path: Path) -> None:
         """finalize_workspace succeeds when .symphony/setup is absent."""
         _require_git()
+        _require_bwrap()
 
         workspace_root = tmp_path / "workspaces"
         workspace_root.mkdir()
@@ -1617,10 +1732,12 @@ class TestFinalizeWorkspace:
         source_repo = tmp_path / "source"
         _make_source_repo(source_repo)  # no setup script
 
-        ws_path, _ = clone_workspace(
+        ws_path = clone_workspace(
             ticket_identifier="NO-SETUP-F",
             repo_url=str(source_repo),
             workspace_root=str(workspace_root),
+            sandbox_hide_paths=[],
+            tmp_path=ensure_tmp_dir("NO-SETUP-F", str(workspace_root)),
         )
 
         # Should not raise.
@@ -1648,10 +1765,12 @@ class TestFinalizeWorkspace:
             setup_script=("#!/bin/bash\necho 'fail' >&2\nexit 13\n"),
         )
 
-        ws_path, _ = clone_workspace(
+        ws_path = clone_workspace(
             ticket_identifier="FAIL-FIN",
             repo_url=str(source_repo),
             workspace_root=str(workspace_root),
+            sandbox_hide_paths=[],
+            tmp_path=ensure_tmp_dir("FAIL-FIN", str(workspace_root)),
         )
 
         with pytest.raises(SetupFailed) as exc_info:
@@ -1670,6 +1789,7 @@ class TestFinalizeWorkspace:
     def test_default_branch_naming(self, tmp_path: Path) -> None:
         """When branch_name is None, default naming is used."""
         _require_git()
+        _require_bwrap()
 
         workspace_root = tmp_path / "workspaces"
         workspace_root.mkdir()
@@ -1677,10 +1797,12 @@ class TestFinalizeWorkspace:
         source_repo = tmp_path / "source"
         _make_source_repo(source_repo)
 
-        ws_path, _ = clone_workspace(
+        ws_path = clone_workspace(
             ticket_identifier="My-Team.42",
             repo_url=str(source_repo),
             workspace_root=str(workspace_root),
+            sandbox_hide_paths=[],
+            tmp_path=ensure_tmp_dir("My-Team.42", str(workspace_root)),
         )
 
         finalize_workspace(

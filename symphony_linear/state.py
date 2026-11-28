@@ -88,6 +88,13 @@ class TicketState(BaseModel):
     setup_error: str | None = Field(
         None, description="Non-null when a setup step failed; prevents re-spam"
     )
+    turn_timeout_seconds: int | None = Field(
+        None,
+        description="Per-project turn timeout override read from .symphony/config.yaml "
+        "once at preparation. Holds the override, not the effective value, so a "
+        "later change to the global setting still reaches tickets without one. "
+        "None means no override (use the global setting)",
+    )
     cleanup_refused_state: str | None = Field(
         None,
         description="Non-None when step-3 cleanup was refused because the workspace "

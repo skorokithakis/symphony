@@ -1,7 +1,10 @@
 """Per-ticket workspace lifecycle: clone, branch, setup, serve, remove.
 
-Git operations run outside the sandbox using the daemon's credentials.
-The ``.symphony/setup`` and ``.symphony/serve`` scripts run inside the sandbox
+``git clone`` into a new directory runs outside the sandbox using the daemon's
+credentials.  Every git command in an existing ticket checkout — ``status``,
+``rev-list`` and ``switch`` — runs inside the sandbox, because the agent that
+worked in the checkout can write its configuration and hooks.  The
+``.symphony/setup`` and ``.symphony/serve`` scripts also run inside the sandbox
 via the sandbox wrapper.
 """
 
@@ -48,6 +51,12 @@ _REMOTE_SCHEMES = frozenset({"ssh", "https", "http", "git"})
 
 # Default timeout for the setup script (5 minutes).
 SETUP_TIMEOUT_SECONDS = 300
+
+# Time limit for a git command run in a ticket checkout inside the sandbox.
+# dirty_summary runs on the poll loop thread, so a hung git would stall every
+# ticket; these commands (status, rev-list, switch) are short even on a large
+# checkout, which makes 60 seconds generous rather than tight.
+SANDBOX_GIT_TIMEOUT_SECONDS = 60
 
 # Default branch name is derived from the ticket identifier (lowercased).
 _DEFAULT_BRANCH_PREFIX = "symphony/"
@@ -96,6 +105,14 @@ class ServeScriptMissing(WorkspaceError):
 class SecretsError(WorkspaceError):
     """A repo URL could not be mapped to a secrets file, or the mapped path
     escapes the configured secrets directory (security invariant)."""
+
+
+class _SandboxGitTimeout(Exception):
+    """A git command in a ticket checkout exceeded its time limit.
+
+    Separate from a non-zero exit so a caller can tell "the command failed"
+    apart from "we had to kill it and cannot trust anything it did".
+    """
 
 
 # ---------------------------------------------------------------------------
@@ -535,6 +552,90 @@ def _run_git(
     return result
 
 
+def _run_git_in_sandbox(
+    workspace_path: str,
+    args: list[str],
+    hide_paths: list[str],
+    *,
+    tmp_path: str,
+) -> subprocess.CompletedProcess[str]:
+    """Run ``git <args>`` in *workspace_path* inside the sandbox.
+
+    A ticket checkout is writable by the agent, so ``.git/config`` and
+    ``.git/hooks`` are untrusted input.  ``git status`` starts whatever
+    ``core.fsmonitor`` names and ``git switch`` runs ``post-checkout``, so a
+    host invocation would execute agent-written programs outside bwrap.
+    Running the same commands through :func:`run_in_sandbox` keeps them inside
+    the boundary the agent itself runs in.
+
+    Only *hide_paths* and *tmp_path* are passed.  These commands need nothing
+    else, and the setup script's write mounts, secrets file and attachments
+    mount would widen what a hook spawned here can reach.
+
+    The process is killed and :class:`_SandboxGitTimeout` raised when it
+    exceeds :data:`SANDBOX_GIT_TIMEOUT_SECONDS`, so callers can stop rather
+    than treat a killed command as an ordinary failure.  ``dirty_summary``
+    turns it into its "could not verify" summary; ``_git_switch_branch``
+    raises :class:`BranchFailed` without a second attempt.
+
+    Args:
+        workspace_path: Host path to the checkout; mounted read-write and used
+            as the working directory inside the sandbox.
+        args: Git arguments without the leading ``git``.
+        hide_paths: Host paths to conceal inside the sandbox.
+        tmp_path: Host path to the per-ticket tmp directory, mounted at
+            ``/tmp`` inside the sandbox.  Must exist on the host.
+
+    Returns:
+        A :class:`subprocess.CompletedProcess` with decoded ``stdout`` and
+        ``stderr``.
+    """
+    cmd = ["git", *args]
+    logger.debug(
+        "Running sandboxed git: %s (cwd=%s)",
+        " ".join(_redact_url(arg) for arg in cmd),
+        workspace_path,
+    )
+
+    proc = run_in_sandbox(
+        cmd=cmd,
+        workspace_path=workspace_path,
+        tmp_path=tmp_path,
+        hide_paths=hide_paths,
+        env={"HOME": os.environ.get("HOME", str(Path.home()))},
+        stdout=subprocess.PIPE,
+        stderr=subprocess.PIPE,
+    )
+
+    try:
+        stdout_bytes, stderr_bytes = proc.communicate(
+            timeout=SANDBOX_GIT_TIMEOUT_SECONDS
+        )
+    except subprocess.TimeoutExpired as exc:
+        proc.kill()
+        try:
+            _, stderr_bytes = proc.communicate(timeout=10)
+        except subprocess.TimeoutExpired:
+            stderr_bytes = b""
+        logger.error(
+            "Sandboxed git %s timed out after %ss in %s",
+            args[0],
+            SANDBOX_GIT_TIMEOUT_SECONDS,
+            workspace_path,
+        )
+        raise _SandboxGitTimeout(
+            f"git {args[0]} timed out after {SANDBOX_GIT_TIMEOUT_SECONDS}s\n"
+            + _tail(stderr_bytes.decode(errors="replace"))
+        ) from exc
+
+    return subprocess.CompletedProcess(
+        cmd,
+        proc.returncode,
+        stdout_bytes.decode(errors="replace"),
+        stderr_bytes.decode(errors="replace"),
+    )
+
+
 def _run_setup_script(
     workspace_path: str,
     hide_paths: list[str],
@@ -708,24 +809,32 @@ def _tail(text: str, lines: int = 20) -> str:
 def _git_switch_branch(
     branch_name: str,
     workspace_path: str,
+    hide_paths: list[str],
+    *,
+    tmp_path: str,
 ) -> None:
     """Switch to *branch_name*, creating it if it does not exist.
 
     Tries ``git switch <branch>`` first (which auto-creates from a matching
-    remote).  If that fails, falls back to ``git switch -c <branch>``.
+    remote).  If that fails, falls back to ``git switch -c <branch>``.  Both
+    attempts run inside the sandbox: ``git switch`` executes the checkout's
+    ``post-checkout`` hook, which the agent can write.
 
     Raises:
-        BranchFailed: If both attempts fail.
+        BranchFailed: If both attempts fail or either times out.
     """
     # Attempt 1: plain switch (works if branch exists locally or on remote).
     # ``--`` terminates option parsing so a branch name beginning with ``-``
     # cannot be interpreted as a git option.
-    result = subprocess.run(
-        ["git", "switch", "--", branch_name],
-        cwd=workspace_path,
-        capture_output=True,
-        text=True,
-    )
+    try:
+        result = _run_git_in_sandbox(
+            workspace_path,
+            ["switch", "--", branch_name],
+            hide_paths,
+            tmp_path=tmp_path,
+        )
+    except _SandboxGitTimeout as exc:
+        raise BranchFailed(f"git switch {branch_name} timed out: {exc}") from exc
     if result.returncode == 0:
         logger.debug("Switched to existing branch '%s'", branch_name)
         return
@@ -743,12 +852,15 @@ def _git_switch_branch(
     # terminates option parsing (``git switch -c -- <name>`` is not valid
     # syntax); the value is already attached to ``-c`` so it is never treated
     # as an option.
-    result = subprocess.run(
-        ["git", "switch", "-c", branch_name, "--"],
-        cwd=workspace_path,
-        capture_output=True,
-        text=True,
-    )
+    try:
+        result = _run_git_in_sandbox(
+            workspace_path,
+            ["switch", "-c", branch_name, "--"],
+            hide_paths,
+            tmp_path=tmp_path,
+        )
+    except _SandboxGitTimeout as exc:
+        raise BranchFailed(f"git switch -c {branch_name} timed out: {exc}") from exc
     if result.returncode != 0:
         stderr_tail = result.stderr.strip().splitlines()
         tail = "\n".join(stderr_tail[-5:]) if stderr_tail else "(no stderr)"
@@ -769,7 +881,12 @@ def _git_failure_summary(command: str, stderr: str) -> str:
     return f"Could not verify workspace state (`{command}` failed): {tail}"
 
 
-def dirty_summary(path: str) -> str | None:
+def dirty_summary(
+    path: str,
+    hide_paths: list[str],
+    *,
+    tmp_path: str,
+) -> str | None:
     """Return a short Markdown summary of uncommitted work at *path*.
 
     Returns ``None`` when there is nothing to protect: *path* is not a
@@ -781,9 +898,17 @@ def dirty_summary(path: str) -> str | None:
     comment: counts of uncommitted files and commits not on any remote, plus
     up to 10 ``git status --porcelain`` lines in a fenced block.
 
-    If any git command fails or raises (e.g. the path is not a repository),
-    the workspace is treated as dirty and the summary says so — conservative,
-    since the caller can decide to override.
+    Both commands run inside the sandbox through
+    :func:`_run_git_in_sandbox`, because the checkout's ``core.fsmonitor``
+    program is agent-writable.  If either command fails or times out (e.g. the
+    path is not a repository), the workspace is treated as dirty and the
+    summary says so — conservative, since the caller can decide to override.
+
+    Args:
+        path: Host path to the checkout being inspected.
+        hide_paths: Host paths to conceal inside the sandbox.
+        tmp_path: Host path to the per-ticket tmp directory, mounted at ``/tmp``
+            inside the sandbox.  Must exist on the host.
     """
     if not os.path.isdir(path):
         return None
@@ -793,11 +918,11 @@ def dirty_summary(path: str) -> str | None:
     # cannot hide untracked work — a false "clean" would let the workspace
     # be deleted.
     try:
-        result = subprocess.run(
-            ["git", "status", "--porcelain", "--untracked-files=normal"],
-            cwd=path,
-            capture_output=True,
-            text=True,
+        result = _run_git_in_sandbox(
+            path,
+            ["status", "--porcelain", "--untracked-files=normal"],
+            hide_paths,
+            tmp_path=tmp_path,
         )
     except Exception as exc:
         logger.debug("git status failed during dirtiness check", exc_info=True)
@@ -816,11 +941,11 @@ def dirty_summary(path: str) -> str | None:
     # commits are the only copy of the agent's work, so every local branch
     # must be considered before we call the workspace clean.
     try:
-        result = subprocess.run(
-            ["git", "rev-list", "--branches", "--not", "--remotes"],
-            cwd=path,
-            capture_output=True,
-            text=True,
+        result = _run_git_in_sandbox(
+            path,
+            ["rev-list", "--branches", "--not", "--remotes"],
+            hide_paths,
+            tmp_path=tmp_path,
         )
     except Exception as exc:
         logger.debug("git rev-list failed during dirtiness check", exc_info=True)
@@ -848,16 +973,19 @@ def clone_workspace(
     ticket_identifier: str,
     repo_url: str,
     workspace_root: str,
-) -> tuple[str, bool]:
-    """Clone or fetch the repository for *ticket_identifier*.
+    sandbox_hide_paths: list[str],
+    *,
+    tmp_path: str,
+) -> str:
+    """Clone the repository for *ticket_identifier*.
 
     1. Compute the workspace path (``<ticket_dir>/repo``, sanitizing the
        identifier) and verify it is within *workspace_root*.
-    2. Clone the repository into ``repo/`` if it does not already exist,
-       otherwise fetch to pick up new remote branches.
-    3. On fetch failure: if the workspace is clean, nuke ``repo/`` and
-       re-clone from scratch (no exception).  If it has local state to
-       preserve, log a warning and return normally (no exception).
+    2. Clone the repository into ``repo/`` if it does not already exist.
+    3. If ``repo/`` exists, inspect it with :func:`dirty_summary` inside the
+       sandbox.  No unsaved work means the checkout can be deleted and cloned
+       again from *repo_url*; any summary (unsaved work, or "could not verify")
+       means it is kept unchanged.
 
     .. note::
        Clone has no ``-b`` — it checks out the remote's default branch.
@@ -867,17 +995,19 @@ def clone_workspace(
         ticket_identifier: Human-readable ticket ID (e.g. ``TEAM-42``).
         repo_url: Git clone URL (supports local paths for testing).
         workspace_root: Root directory under which all workspaces live.
+        sandbox_hide_paths: Paths to conceal inside the sandbox when an
+            existing checkout is inspected with :func:`dirty_summary`.
+        tmp_path: Host path to the per-ticket tmp directory, mounted at
+            ``/tmp`` inside the sandbox.  Must exist on the host.
 
     Returns:
-        A ``(path, recovered)`` tuple where *path* is the real path to the
-        cloned/existing workspace and *recovered* is ``True`` only when the
-        workspace had to be nuked and re-cloned after a fetch failure.
+        The real path to the cloned workspace.
 
     Raises:
         PathContainmentError: If the computed workspace path escapes
             *workspace_root*.
         CloneFailed: If *repo_url* begins with ``-`` or ``git clone`` fails
-            (initial clone or re-clone).
+            (initial clone or replacement clone).
     """
     # Reject a repo_url that git would parse as an option.  The URL comes from
     # the tracker's project external link, so it is untrusted input.
@@ -888,48 +1018,39 @@ def clone_workspace(
     workspace_path = compute_workspace_path(ticket_identifier, workspace_root)
     real_path = _check_containment(workspace_path, workspace_root)
 
-    # 3. Clone if the workspace does not exist; refresh if it does.
+    # 2. Clone if the workspace does not exist.
     if not os.path.isdir(real_path):
         logger.info("Cloning %s into %s", _redact_url(repo_url), real_path)
         _run_git(
             ["clone", "--", repo_url, real_path],
             description="clone",
         )
-        return real_path, False
+        return real_path
 
-    logger.info("Workspace %s already exists – reusing", real_path)
-    result = subprocess.run(
-        ["git", "fetch", "origin"],
-        cwd=real_path,
-        capture_output=True,
-        text=True,
+    # 3. An existing checkout is not trustworthy even when it looks clean: the
+    # agent could have written .git/config (core.fsmonitor) or a hook that a
+    # later git command would run, and it may sit on an old default branch.
+    # Cloning again is therefore the normal path, not a recovery.  It is also
+    # how a corrected .symphony/config.yaml on the remote reaches a ticket that
+    # failed with "Invalid project config", because that retry runs the initial
+    # pipeline again.  Only unsaved work justifies keeping the old checkout.
+    summary = dirty_summary(real_path, sandbox_hide_paths, tmp_path=tmp_path)
+    if summary is not None:
+        logger.info("Workspace %s has unsaved work — keeping it", real_path)
+        return real_path
+
+    logger.info("Workspace %s has no unsaved work — cloning it again", real_path)
+    try:
+        _rmtree_with_retry(real_path)
+    except OSError as exc:
+        raise CloneFailed(
+            f"Could not delete workspace {real_path} before re-cloning it: {exc}"
+        ) from exc
+    _run_git(
+        ["clone", "--", repo_url, real_path],
+        description="clone (replace)",
     )
-    if result.returncode == 0:
-        return real_path, False
-
-    # Fetch failed.  Decide whether we can safely nuke and re-clone.
-    stderr_tail = result.stderr.strip().splitlines()
-    tail = "\n".join(stderr_tail[-5:]) if stderr_tail else "(no stderr)"
-    logger.debug("git fetch failed (rc=%d): %s", result.returncode, tail)
-
-    if dirty_summary(real_path) is None:
-        logger.info(
-            "Workspace %s is clean — nuking and re-cloning after fetch failure",
-            real_path,
-        )
-        shutil.rmtree(real_path, ignore_errors=False)
-        _run_git(
-            ["clone", "--", repo_url, real_path],
-            description="clone (recovery)",
-        )
-        return real_path, True
-
-    logger.warning(
-        "Workspace %s has local state — preserving after fetch failure: %s",
-        real_path,
-        tail,
-    )
-    return real_path, False
+    return real_path
 
 
 def finalize_workspace(
@@ -975,8 +1096,8 @@ def finalize_workspace(
             :func:`ensure_secrets_file`, exported to the setup script's
             sandbox as :data:`SECRETS_ENV_VAR`.  ``None`` leaves it unset.
         auto_branch: If true (default), switch to a per-ticket branch after
-            clone/fetch. If false, skip the branch switch entirely and leave
-            the workspace on the cloned default branch.
+            cloning. If false, skip the branch switch entirely and leave the
+            workspace on the cloned default branch.
         tmp_path: Host path to the per-ticket tmp directory, mounted at
             ``/tmp`` inside the sandbox.  Must exist on the host (bwrap
             ``--bind`` is fatal otherwise).
@@ -992,7 +1113,12 @@ def finalize_workspace(
     # 1. Switch to (or create) the target branch — unless disabled.
     if auto_branch:
         logger.info("Switching to branch '%s' in %s", branch_name, workspace_path)
-        _git_switch_branch(branch_name, workspace_path)
+        _git_switch_branch(
+            branch_name,
+            workspace_path,
+            sandbox_hide_paths,
+            tmp_path=tmp_path,
+        )
     else:
         logger.info(
             "auto_branch disabled — staying on cloned default branch in %s",
@@ -1031,8 +1157,9 @@ def prepare(
 
     Also creates the per-ticket attachments and tmp directories at
     ``<workspace_root>/<sanitized_identifier>/{attachments,tmp}/`` with
-    mode 0700.  The tmp directory is created **before** the setup script
-    runs, because the sandbox binds it at ``/tmp``.
+    mode 0700.  The tmp directory is created **before** the clone runs,
+    because the sandboxed git checks in :func:`clone_workspace` and the setup
+    script both bind it at ``/tmp``.
 
     Returns:
         The real path to the prepared workspace.
@@ -1040,15 +1167,21 @@ def prepare(
     Raises:
         PathContainmentError: If the computed workspace path escapes
             *workspace_root*.
-        CloneFailed: If ``git clone`` or ``git fetch`` fails.
+        CloneFailed: If ``git clone`` fails (initial or replacement clone).
         BranchFailed: If ``git switch`` fails.
         SetupFailed: If ``.symphony/setup`` fails or times out.
     """
-    real_path, _ = clone_workspace(ticket_identifier, repo_url, workspace_root)
-
-    # Ensure the per-ticket tmp directory exists before the setup script runs
-    # inside the sandbox — bwrap --bind is fatal when the source is missing.
+    # The tmp dir must exist before both the sandboxed git checks and the setup
+    # script run — bwrap --bind is fatal when the source is missing.
     tmp_path = ensure_tmp_dir(ticket_identifier, workspace_root)
+
+    real_path = clone_workspace(
+        ticket_identifier,
+        repo_url,
+        workspace_root,
+        sandbox_hide_paths,
+        tmp_path=tmp_path,
+    )
 
     finalize_workspace(
         workspace_path=real_path,
@@ -1153,6 +1286,27 @@ def _make_tree_dirs_owner_writable(ticket_dir: str) -> None:
             pass
 
 
+def _rmtree_with_retry(path: str) -> None:
+    """Remove *path* recursively, retrying once after granting owner access.
+
+    Agents leave read-only directories behind (a Go module cache is mode
+    ``0555``), and an ignored cache does not make a checkout dirty, so both
+    ``remove`` and the re-clone of a clean checkout can meet one.  The retry
+    walks by descriptor with ``O_NOFOLLOW``, so a symlink is unlinked rather
+    than followed (see :func:`_make_tree_dirs_owner_writable`).
+    """
+    try:
+        shutil.rmtree(path, ignore_errors=False)
+    except PermissionError:
+        logger.info(
+            "Ticket directory %s contains read-only directories; granting "
+            "owner access and retrying",
+            path,
+        )
+        _make_tree_dirs_owner_writable(path)
+        shutil.rmtree(path)
+
+
 def remove(
     ticket_identifier: str,
     workspace_root: str,
@@ -1180,16 +1334,7 @@ def remove(
 
     if os.path.isdir(ticket_dir):
         logger.info("Removing ticket directory %s", ticket_dir)
-        try:
-            shutil.rmtree(ticket_dir, ignore_errors=False)
-        except PermissionError:
-            logger.info(
-                "Ticket directory %s contains read-only directories; granting "
-                "owner access and retrying",
-                ticket_dir,
-            )
-            _make_tree_dirs_owner_writable(ticket_dir)
-            shutil.rmtree(ticket_dir)
+        _rmtree_with_retry(ticket_dir)
         logger.info("Ticket directory %s removed", ticket_dir)
     else:
         logger.debug(

@@ -2,8 +2,8 @@
 
 from __future__ import annotations
 
-import shutil
-import subprocess
+import os
+import threading
 from pathlib import Path
 
 import pytest
@@ -23,68 +23,6 @@ def _write_project_config(workspace: Path, data: object) -> Path:
     path = cfg_dir / "config.yaml"
     path.write_text(yaml.dump(data) if not isinstance(data, str) else data)
     return path
-
-
-def _require_git() -> None:
-    if shutil.which("git") is None:
-        pytest.skip("git not available")
-
-
-def _make_source_repo(path: Path, *, config_data: str | None = None) -> None:
-    """Create a minimal git repo at *path* with one commit.
-
-    If *config_data* is provided, it is committed as ``.symphony/config.yaml``.
-    """
-    path.mkdir(parents=True, exist_ok=True)
-    subprocess.run(
-        ["git", "init", "-b", "main"],
-        cwd=str(path),
-        capture_output=True,
-        text=True,
-        check=True,
-    )
-    subprocess.run(
-        ["git", "config", "user.email", "test@symphony.local"],
-        cwd=str(path),
-        capture_output=True,
-        text=True,
-        check=True,
-    )
-    subprocess.run(
-        ["git", "config", "user.name", "Test User"],
-        cwd=str(path),
-        capture_output=True,
-        text=True,
-        check=True,
-    )
-    (path / "README.md").write_text("# Test Repo\n")
-
-    if config_data is not None:
-        cfg_dir = path / ".symphony"
-        cfg_dir.mkdir(exist_ok=True)
-        (cfg_dir / "config.yaml").write_text(config_data)
-        subprocess.run(
-            ["git", "add", ".symphony/config.yaml"],
-            cwd=str(path),
-            capture_output=True,
-            text=True,
-            check=True,
-        )
-
-    subprocess.run(
-        ["git", "add", "README.md"],
-        cwd=str(path),
-        capture_output=True,
-        text=True,
-        check=True,
-    )
-    subprocess.run(
-        ["git", "commit", "-m", "initial commit"],
-        cwd=str(path),
-        capture_output=True,
-        text=True,
-        check=True,
-    )
 
 
 # ---------------------------------------------------------------------------
@@ -188,147 +126,60 @@ def test_invalid_value_raises_project_config_error(
 
 
 # ---------------------------------------------------------------------------
-# Git-based tests: load_project_config reads from origin/HEAD
+# Symlinks and special files
 # ---------------------------------------------------------------------------
 
 
-class TestLoadProjectConfigFromOrigin:
-    """load_project_config reads from origin/HEAD via git show."""
+@pytest.mark.parametrize(
+    "shape", ["file", "directory"], ids=["symlinked-file", "symlinked-dir"]
+)
+def test_config_symlink_raises(tmp_path: Path, shape: str) -> None:
+    """A config path with a symlink in it is refused, even inside the checkout.
 
-    def test_origin_differs_from_disk_origin_wins(self, tmp_path: Path) -> None:
-        """When the origin version differs from disk, origin is used."""
-        _require_git()
+    The agent can write the checkout, so no symbolic link at either component
+    is followed by this host-side read.
+    """
+    checkout = tmp_path / "checkout"
+    checkout.mkdir()
+    outside = tmp_path / "outside"
+    outside.mkdir()
+    (outside / "config.yaml").write_text("turn_timeout_seconds: 60\n")
 
-        # 1. Create source repo with config version A.
-        source = tmp_path / "source"
-        _make_source_repo(source, config_data="auto_branch: false\n")
-        source_config = source / ".symphony" / "config.yaml"
-        assert source_config.is_file()
+    if shape == "file":
+        (checkout / ".symphony").mkdir()
+        (checkout / ".symphony" / "config.yaml").symlink_to(outside / "config.yaml")
+    else:
+        (checkout / ".symphony").symlink_to(outside)
 
-        # 2. Clone into workspace.
-        workspace = tmp_path / "workspace"
-        subprocess.run(
-            ["git", "clone", str(source), str(workspace)],
-            capture_output=True,
-            text=True,
-            check=True,
-        )
-        # Workspace starts with version A.
-        ws_config = workspace / ".symphony" / "config.yaml"
-        assert ws_config.read_text() == "auto_branch: false\n"
+    with pytest.raises(ProjectConfigError, match="symbolic link is not allowed"):
+        load_project_config(str(checkout))
 
-        # 3. Update the config on origin (version B).
-        source_config.write_text("auto_branch: true\n")
-        subprocess.run(
-            ["git", "add", ".symphony/config.yaml"],
-            cwd=str(source),
-            capture_output=True,
-            text=True,
-            check=True,
-        )
-        subprocess.run(
-            ["git", "commit", "-m", "update config to B"],
-            cwd=str(source),
-            capture_output=True,
-            text=True,
-            check=True,
-        )
 
-        # 4. Also modify the working-tree file locally (version C).
-        ws_config.write_text("turn_timeout_seconds: 999\n")
+def test_config_fifo_returns_error_promptly(tmp_path: Path) -> None:
+    """A FIFO is refused without blocking the worker thread.
 
-        # 5. load_project_config should do git fetch + git show, getting version B.
-        result = load_project_config(str(workspace))
-        assert result.auto_branch is True
-        assert result.turn_timeout_seconds is None  # not version C from disk
+    A read-only open of a FIFO blocks until a writer appears, so the
+    descriptor is opened ``O_NONBLOCK`` and its type is checked with fstat.  A
+    daemon thread turns a regression into a prompt failure instead of a hung
+    test run.
+    """
+    checkout = tmp_path / "checkout"
+    (checkout / ".symphony").mkdir(parents=True)
+    os.mkfifo(checkout / ".symphony" / "config.yaml")
 
-    def test_file_missing_in_origin_returns_empty(self, tmp_path: Path) -> None:
-        """When origin/HEAD exists but file is missing there, return empty config."""
-        _require_git()
+    errors: list[BaseException] = []
 
-        # 1. Create source repo WITHOUT config.yaml.
-        source = tmp_path / "source"
-        _make_source_repo(source)
+    def load() -> None:
+        try:
+            load_project_config(str(checkout))
+        except BaseException as exc:
+            errors.append(exc)
 
-        # 2. Clone into workspace.
-        workspace = tmp_path / "workspace"
-        subprocess.run(
-            ["git", "clone", str(source), str(workspace)],
-            capture_output=True,
-            text=True,
-            check=True,
-        )
+    worker = threading.Thread(target=load, daemon=True)
+    worker.start()
+    worker.join(timeout=5)
 
-        # 3. Write a local config file on disk (not committed, not on origin).
-        _write_project_config(workspace, {"auto_branch": True})
-
-        # 4. load_project_config: origin/HEAD is reachable, but no config there.
-        result = load_project_config(str(workspace))
-        assert result.auto_branch is None  # empty — local file ignored
-
-    def test_not_a_git_repo_falls_back_to_disk(self, tmp_path: Path) -> None:
-        """When workspace is not a git repo, falls back to working-tree file."""
-        # Just a plain directory with a config file.
-        workspace = tmp_path / "not-a-repo"
-        workspace.mkdir()
-        _write_project_config(workspace, {"turn_timeout_seconds": 900})
-
-        result = load_project_config(str(workspace))
-        assert result.turn_timeout_seconds == 900
-        assert result.auto_branch is None
-
-    def test_origin_fetch_failure_falls_back_to_disk(self, tmp_path: Path) -> None:
-        """When git fetch fails (e.g. offline), falls back to working-tree file."""
-        _require_git()
-
-        # 1. Create source repo with config.
-        source = tmp_path / "source"
-        _make_source_repo(source, config_data="auto_branch: false\n")
-
-        # 2. Clone into workspace.
-        workspace = tmp_path / "workspace"
-        subprocess.run(
-            ["git", "clone", str(source), str(workspace)],
-            capture_output=True,
-            text=True,
-            check=True,
-        )
-
-        # 3. Point origin to a non-existent URL so fetch fails.
-        subprocess.run(
-            ["git", "remote", "set-url", "origin", "/nonexistent/path"],
-            cwd=str(workspace),
-            capture_output=True,
-            text=True,
-            check=True,
-        )
-
-        # 4. Modify the local file on disk.
-        ws_config = workspace / ".symphony" / "config.yaml"
-        ws_config.write_text("auto_branch: true\nturn_timeout_seconds: 600\n")
-
-        # 5. Should fall back to disk after fetch failure.
-        result = load_project_config(str(workspace))
-        assert result.auto_branch is True
-        assert result.turn_timeout_seconds == 600
-
-    def test_malformed_origin_config_raises(self, tmp_path: Path) -> None:
-        """Malformed YAML on origin raises ProjectConfigError."""
-        _require_git()
-
-        # 1. Create source repo with malformed config.
-        source = tmp_path / "source"
-        _make_source_repo(source, config_data="key: [unclosed\n")
-
-        # 2. Clone into workspace.
-        workspace = tmp_path / "workspace"
-        subprocess.run(
-            ["git", "clone", str(source), str(workspace)],
-            capture_output=True,
-            text=True,
-            check=True,
-        )
-
-        # Should raise because origin/config is malformed.
-        with pytest.raises(ProjectConfigError, match="Invalid YAML"):
-            load_project_config(str(workspace))
+    assert not worker.is_alive(), "load_project_config blocked on a FIFO"
+    assert len(errors) == 1
+    assert isinstance(errors[0], ProjectConfigError)
+    assert "not a regular file" in str(errors[0])

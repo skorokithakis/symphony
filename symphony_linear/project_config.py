@@ -1,24 +1,26 @@
 """Per-project .symphony/config.yaml loader.
 
 Reads an optional YAML config from ``<workspace_path>/.symphony/config.yaml``
-that can override select global settings on a per-project basis.
-
-On each call, attempts to read the config from ``origin/HEAD`` via
-``git show`` so that repo-side fixes to the file are picked up regardless
-of which branch the workspace is on.  Falls back to the working-tree file
-when the workspace is not a git clone or ``origin/HEAD`` is unavailable.
+that can override select global settings on a per-project basis.  The file is
+read from the checkout's working tree, never from git, and no symbolic link is
+followed.
 """
 
 from __future__ import annotations
 
 import logging
-import subprocess
+import os
+import stat
 from pathlib import Path
 
 import yaml
 from pydantic import BaseModel, ConfigDict, Field, ValidationError
 
 logger = logging.getLogger(__name__)
+
+# A settings file this large is a mistake, not a configuration; refusing it
+# also caps how much the daemon reads from an agent-writable checkout.
+MAX_PROJECT_CONFIG_BYTES = 64 * 1024
 
 
 class ProjectConfigError(Exception):
@@ -83,110 +85,130 @@ def _parse_yaml_config(raw: str, source: str) -> ProjectConfig:
         raise ProjectConfigError(msg) from exc
 
 
-def _try_read_from_origin(workspace_path: str) -> str | None:
-    """Try to read ``.symphony/config.yaml`` from ``origin/HEAD``.
+def _read_limited(fd: int, limit: int) -> bytes:
+    """Read at most ``limit + 1`` bytes from *fd*.
 
-    Args:
-        workspace_path: Path to the workspace directory (a git clone).
-
-    Returns:
-        - The raw file content if the file exists in ``origin/HEAD``.
-        - ``""`` if ``origin/HEAD`` exists but the file does not exist there.
-        - ``None`` if ``origin/HEAD`` is unresolvable, ``git fetch`` failed,
-          the workspace is not a git repo, or the remote is unreachable
-          (caller should fall back to the working-tree file).
+    The extra byte is how a file that grew after the size check is still
+    detected as oversized rather than silently truncated.
     """
-    # Best-effort fetch so origin refs are fresh.
-    fetch_ok = True
-    try:
-        result = subprocess.run(
-            ["git", "fetch", "origin"],
-            cwd=workspace_path,
-            capture_output=True,
-            text=True,
-            timeout=30,
-        )
-        if result.returncode != 0:
-            logger.debug(
-                "git fetch origin failed in %s (rc=%d) — will fall back to working tree",
-                workspace_path,
-                result.returncode,
-            )
-            fetch_ok = False
-    except Exception:
-        logger.debug(
-            "git fetch origin failed in %s — will fall back to working tree",
-            workspace_path,
-        )
-        fetch_ok = False
-
-    if not fetch_ok:
-        return None
-
-    # Check if origin/HEAD is resolvable.
-    rev_parse = subprocess.run(
-        ["git", "rev-parse", "--verify", "origin/HEAD"],
-        cwd=workspace_path,
-        capture_output=True,
-        text=True,
-    )
-    if rev_parse.returncode != 0:
-        logger.debug(
-            "origin/HEAD not resolvable in %s — falling back to working tree",
-            workspace_path,
-        )
-        return None
-
-    # Try to read the file via git show.
-    show = subprocess.run(
-        ["git", "show", "origin/HEAD:.symphony/config.yaml"],
-        cwd=workspace_path,
-        capture_output=True,
-        text=True,
-    )
-    if show.returncode == 0:
-        logger.debug("Read project config from origin/HEAD in %s", workspace_path)
-        return show.stdout
-
-    # origin/HEAD exists but the file does not — treat as no config.
-    logger.debug(
-        ".symphony/config.yaml not found in origin/HEAD for %s — returning empty config",
-        workspace_path,
-    )
-    return ""
+    chunks: list[bytes] = []
+    remaining = limit + 1
+    while remaining > 0:
+        chunk = os.read(fd, remaining)
+        if not chunk:
+            break
+        chunks.append(chunk)
+        remaining -= len(chunk)
+    return b"".join(chunks)
 
 
 def load_project_config(workspace_path: str) -> ProjectConfig:
-    """Load and validate an optional per-project config file.
+    """Load and validate the optional per-project config file.
 
-    Attempts to read ``.symphony/config.yaml`` from ``origin/HEAD`` first,
-    falling back to the working-tree file when the remote copy is unavailable.
+    The file is read from ``<workspace_path>/.symphony/config.yaml`` on the
+    filesystem, once per workspace preparation.  It is deliberately not read
+    on resume: the checkout is writable by the agent, so a later read would
+    let the agent change its own turn limit, and a file the agent broke would
+    stop the ticket before the agent could repair it.
+
+    The read is descriptor based: the checkout is opened, ``.symphony`` is
+    opened relative to it with ``O_DIRECTORY | O_NOFOLLOW``, and the file is
+    opened relative to that with ``O_RDONLY | O_NOFOLLOW | O_NONBLOCK``.  No
+    symbolic link is followed.  A process that still runs in the checkout (a
+    QA serve can) could otherwise swap a path component between a check and
+    the open, and a FIFO there would block the worker thread indefinitely.
 
     Args:
-        workspace_path: Path to the workspace directory. The config file is
-            expected at ``<workspace_path>/.symphony/config.yaml``.
+        workspace_path: Path to the checkout. The config file is expected at
+            ``<workspace_path>/.symphony/config.yaml``.
 
     Returns:
         A ``ProjectConfig`` instance. Returns an empty config (all fields
-        ``None``) when no config file exists.
+        ``None``) when ``.symphony`` or the file does not exist.
 
     Raises:
-        ProjectConfigError: If the YAML is malformed or validation fails.
+        ProjectConfigError: If either path component is a symbolic link, the
+            file is not a regular file, larger than
+            :data:`MAX_PROJECT_CONFIG_BYTES`, not valid UTF-8, or its YAML is
+            malformed or fails validation.
     """
-    # Try to read from origin/HEAD first.
-    remote_content = _try_read_from_origin(workspace_path)
-    if remote_content is not None:
-        if remote_content == "":
-            # File missing on origin — return empty config.
-            return ProjectConfig()
-        return _parse_yaml_config(remote_content, f"origin/HEAD in {workspace_path}")
-
-    # Fall back to working-tree file.
     config_file = Path(workspace_path) / ".symphony" / "config.yaml"
 
-    if not config_file.is_file():
-        logger.debug("No project config found at %s", config_file)
-        return ProjectConfig()
+    try:
+        checkout_fd = os.open(workspace_path, os.O_RDONLY | os.O_DIRECTORY)
+    except OSError as exc:
+        raise ProjectConfigError(
+            f"Cannot open workspace checkout {workspace_path} to read its "
+            f"project config: {exc}."
+        ) from exc
 
-    raw = config_file.read_text()
+    try:
+        try:
+            symphony_fd = os.open(
+                ".symphony",
+                os.O_RDONLY | os.O_DIRECTORY | os.O_NOFOLLOW,
+                dir_fd=checkout_fd,
+            )
+        except FileNotFoundError:
+            logger.debug("No .symphony directory at %s", config_file)
+            return ProjectConfig()
+        except OSError as exc:
+            raise ProjectConfigError(
+                f"Cannot read project config from {config_file}: .symphony is "
+                f"not a real directory ({exc}). A symbolic link is not "
+                f"allowed; replace it with a directory inside the checkout."
+            ) from exc
+
+        try:
+            try:
+                config_fd = os.open(
+                    "config.yaml",
+                    os.O_RDONLY | os.O_NOFOLLOW | os.O_NONBLOCK,
+                    dir_fd=symphony_fd,
+                )
+            except FileNotFoundError:
+                logger.debug("No project config found at %s", config_file)
+                return ProjectConfig()
+            except OSError as exc:
+                raise ProjectConfigError(
+                    f"Cannot open project config {config_file}: {exc}. A "
+                    f"symbolic link is not allowed; replace it with a regular "
+                    f"file inside .symphony."
+                ) from exc
+
+            try:
+                file_stat = os.fstat(config_fd)
+                if not stat.S_ISREG(file_stat.st_mode):
+                    raise ProjectConfigError(
+                        f"Project config {config_file} is not a regular file. "
+                        f"Replace it with a normal file."
+                    )
+                if file_stat.st_size > MAX_PROJECT_CONFIG_BYTES:
+                    raise ProjectConfigError(
+                        f"Project config {config_file} is larger than "
+                        f"{MAX_PROJECT_CONFIG_BYTES} bytes. Remove the settings "
+                        f"you do not use."
+                    )
+                raw_bytes = _read_limited(config_fd, MAX_PROJECT_CONFIG_BYTES)
+            finally:
+                os.close(config_fd)
+        finally:
+            os.close(symphony_fd)
+    finally:
+        os.close(checkout_fd)
+
+    if len(raw_bytes) > MAX_PROJECT_CONFIG_BYTES:
+        raise ProjectConfigError(
+            f"Project config {config_file} is larger than "
+            f"{MAX_PROJECT_CONFIG_BYTES} bytes. Remove the settings you do not "
+            f"use."
+        )
+
+    try:
+        raw = raw_bytes.decode("utf-8")
+    except UnicodeDecodeError as exc:
+        raise ProjectConfigError(
+            f"Project config {config_file} is not valid UTF-8: {exc}. Save it as UTF-8."
+        ) from exc
+
     return _parse_yaml_config(raw, str(config_file))

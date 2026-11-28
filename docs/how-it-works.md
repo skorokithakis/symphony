@@ -52,9 +52,17 @@ the ticket's own `tmp/` directory on disk, so scratch files are per-ticket,
 survive the sandbox process, and are deleted along with the ticket's
 directory when the ticket is cleaned up.
 
-Git operations run outside the sandbox using the daemon's own credentials,
+The clone runs outside the sandbox using the daemon's own credentials,
 so cloning private repositories works without your SSH private key files
-being readable by the agent. Note the narrowness of that: HTTPS credential
+being readable by the agent. It is the only git command the daemon runs on
+the host for a ticket. The agent can write to its checkout, `.git/config` and
+`.git/hooks` included, and git starts the programs those name, so after the
+clone the daemon runs git there only inside the sandbox (to check for
+unsaved work and to switch branches) and never fetches. When a ticket starts
+again on a checkout that already exists, the daemon deletes it and clones
+again if a check finds no uncommitted or unpushed work in it. It keeps the
+checkout exactly as it is when the check finds such work, and also when the
+check itself fails. Note the narrowness of the credential point: HTTPS credential
 stores such as `~/.config/gh` stay readable on purpose, because the agent is
 meant to use the `gh` binary and check repositories out. Pushing is left to
 you, after reviewing.
@@ -73,7 +81,7 @@ the default one, so keep the default entries in it. This closes those
 particular paths: `gh` finds no login and the agent socket is not there. A
 path that does not exist when a turn starts is not hidden, and a `dir_map`
 entry is applied after the hides and can expose a path again. The daemon
-still clones for the agent, because git runs outside the sandbox.
+still clones for the agent, because the clone runs outside the sandbox.
 
 Even then, the sandbox shares your network and runs as your user. Treat it
 as protection against an agent that blunders, not against one that is trying

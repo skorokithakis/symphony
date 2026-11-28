@@ -24,7 +24,6 @@ from symphony_linear.linear import (
     Issue,
 )
 from symphony_linear.project_config import (
-    ProjectConfig,
     ProjectConfigError,
     load_project_config,
 )
@@ -236,7 +235,6 @@ class _PreparedWorkspace:
     repo_url: str
     workspace_path: str
     ticket_state: TicketState
-    project_config: ProjectConfig
     tmp_path: str
     dir_map: list[tuple[str, str]]
     secrets_file: str | None
@@ -703,10 +701,10 @@ class Orchestrator:
                                 existing.updated_at = _iso_now()
                                 self._state.upsert(existing)
                                 self._state.save()
-                            # Route to resume if the existing state already has a
-                            # session (e.g. ProjectConfigError fired during a resume
-                            # turn).  Otherwise start a fresh initial pipeline,
-                            # carrying the pending comment into the prompt.
+                            # Route to resume when the entry already has a
+                            # session, otherwise start a fresh initial
+                            # pipeline, carrying the pending comment into the
+                            # prompt.
                             if existing.session_id:
                                 self._schedule_task(
                                     issue.id,
@@ -777,7 +775,35 @@ class Orchestrator:
                 # path below agrees on whether a turn was actually running.
                 in_flight = self._is_task_in_flight(tid)
 
-                summary = dirty_summary(workspace_path)
+                if not os.path.isdir(workspace_path):
+                    # The checkout is already gone, so there is nothing to
+                    # inspect or protect; creating its tmp dir here would only
+                    # delete it again below.
+                    summary = None
+                else:
+                    try:
+                        # dirty_summary runs git inside the sandbox, so it needs
+                        # the same hide list and tmp dir as a turn would.
+                        hide_paths = self._sandbox_hide_paths_for(
+                            ticket_state.ticket_identifier, workspace_path
+                        )
+                        tmp_path = ensure_tmp_dir(
+                            ticket_state.ticket_identifier, str(self._workspace)
+                        )
+                    except WorkspaceError:
+                        # No safe sandbox can be built, so the checkout cannot
+                        # be inspected.  Keep the state entry and the workspace
+                        # and retry next tick rather than deleting a checkout
+                        # whose contents we could not read.
+                        logger.exception(
+                            "Cannot sandbox the dirty check for %s — skipping cleanup",
+                            tid,
+                        )
+                        continue
+
+                    summary = dirty_summary(
+                        workspace_path, hide_paths, tmp_path=tmp_path
+                    )
                 if summary is not None:
                     if ticket_state.cleanup_refused_state is None:
                         # First time cleanup fires on a dirty workspace: refuse.
@@ -1229,7 +1255,11 @@ class Orchestrator:
 
         with self._serve_lock:
             av = self._active_serve
-        if av is not None and av.proc.poll() is not None:
+        if (
+            av is not None
+            and not av.intentional_kill.is_set()
+            and av.proc.poll() is not None
+        ):
             rc = av.proc.returncode
             logger.info(
                 "QA serve for %s exited (rc=%s) post-watchdog — notifying",
@@ -1680,14 +1710,21 @@ class Orchestrator:
         except Exception:
             pass
 
-    def _kill_active_serve(self) -> None:
+    def _kill_active_serve(self, *, ticket_id: str | None = None) -> None:
         """Kill the active serve process and clear _active_serve (under _serve_lock).
 
-        Sets intentional_kill before killing so the watchdog suppresses the
-        failure comment.
+        With *ticket_id*, the method is a no-op unless the active serve belongs
+        to that ticket.  The ownership test and the detach happen in the same
+        lock acquisition, so a serve replaced between a caller's own check and
+        this call can never be killed by mistake.
+
+        Sets intentional_kill before killing so the watchdog and the
+        post-watchdog reconcile suppress the failure comment.
         """
         with self._serve_lock:
             if self._active_serve is None:
+                return
+            if ticket_id is not None and self._active_serve.ticket_id != ticket_id:
                 return
             av = self._active_serve
             self._active_serve = None
@@ -1957,6 +1994,13 @@ class Orchestrator:
             last_seen_comment_id=(
                 previous_state.last_seen_comment_id if previous_state else None
             ),
+            # Carry the previous override across the fresh entry so a failure
+            # before the config is read (a clone error on a retry) does not
+            # silently fall back to the global timeout on the next resume.
+            # The read below overwrites it with the file's current value.
+            turn_timeout_seconds=(
+                previous_state.turn_timeout_seconds if previous_state else None
+            ),
             # This fresh state would wipe the interruption streak; carry it
             # over when the pipeline is a recovery re-run, else start clean.
             interrupted_turns=(
@@ -1973,12 +2017,30 @@ class Orchestrator:
         if self._is_cancelled(tid):
             return None
 
+        # A clean checkout is deleted and cloned again below, so a QA serve
+        # still running in it would lose the files under it.  If such a serve
+        # then exited by itself the next reconcile would report "serve died"
+        # and move the ticket to Needs Input, and the leave-In-Progress stop
+        # would kill this turn.  Killing it intentionally is silent, and the
+        # next tick does the same anyway because this turn takes the ticket out
+        # of QA.  The ownership test and the detach share one lock acquisition
+        # inside _kill_active_serve, so another ticket's newer serve is safe.
+        self._kill_active_serve(ticket_id=tid)
+
         # --- Clone workspace ---
         try:
-            workspace_path, recovered = clone_workspace(
+            # The tmp dir and hide list are needed by clone_workspace's
+            # existing-checkout branch, which inspects the checkout with git
+            # inside the sandbox.  Creating the tmp dir first also creates the
+            # workspace root, which the mask helper has to list.
+            tmp_path = ensure_tmp_dir(issue.identifier, str(self._workspace))
+            clone_hide_paths = self._sandbox_hide_paths_for(issue.identifier)
+            workspace_path = clone_workspace(
                 ticket_identifier=issue.identifier,
                 repo_url=repo_url,
                 workspace_root=str(self._workspace),
+                sandbox_hide_paths=clone_hide_paths,
+                tmp_path=tmp_path,
             )
         except (WorkspaceError, FileNotFoundError) as exc:
             logger.error("Workspace clone failed for %s: %s", tid, exc)
@@ -1994,14 +2056,6 @@ class Orchestrator:
         # B2: check cancellation after clone returns.
         if self._is_cancelled(tid):
             return None
-
-        # Notify the user when the workspace had to be nuked and re-cloned.
-        if recovered:
-            self._post_comment_safe(
-                tid,
-                "Workspace was reset due to stale git state and rebuilt from origin.",
-                kind="workspace",
-            )
 
         ticket_state.workspace_path = workspace_path
         with self._state_lock:
@@ -2022,6 +2076,10 @@ class Orchestrator:
             self._save_setup_error(tid, issue, "project_config_invalid", err_comment)
             return None
 
+        # Store the override rather than the effective value, so a later change
+        # to the global setting still reaches tickets that set none.
+        ticket_state.turn_timeout_seconds = project_config.turn_timeout_seconds
+
         # Compute effective auto_branch from project config, falling back to global.
         effective_auto_branch = (
             project_config.auto_branch
@@ -2041,10 +2099,6 @@ class Orchestrator:
 
         # --- Finalize workspace (B2: pass on_subprocess for setup script) ---
         try:
-            # Ensure the per-ticket tmp directory exists before the setup
-            # script runs inside the sandbox (bwrap --bind is fatal when the
-            # source dir is missing).
-            tmp_path = ensure_tmp_dir(issue.identifier, str(self._workspace))
             dir_map = ensure_dir_map(
                 self._config.sandbox.dir_map, issue.identifier, str(self._workspace)
             )
@@ -2058,6 +2112,9 @@ class Orchestrator:
                 workspace_path=workspace_path,
                 ticket_identifier=issue.identifier,
                 branch_name=issue.branch_name,
+                # Recompute rather than reuse the clone-time list: a clone can
+                # take minutes, and a sibling ticket directory created meanwhile
+                # must still be masked for the setup run.
                 sandbox_hide_paths=self._sandbox_hide_paths_for(issue.identifier),
                 on_subprocess=lambda proc: (self._register_subprocess(tid, proc), None)[
                     1
@@ -2102,7 +2159,6 @@ class Orchestrator:
             repo_url=repo_url,
             workspace_path=workspace_path,
             ticket_state=ticket_state,
-            project_config=project_config,
             tmp_path=tmp_path,
             dir_map=dir_map,
             secrets_file=secrets_file,
@@ -2175,7 +2231,6 @@ class Orchestrator:
         repo_url = prepared.repo_url
         workspace_path = prepared.workspace_path
         ticket_state = prepared.ticket_state
-        project_config = prepared.project_config
         tmp_path = prepared.tmp_path
         dir_map = prepared.dir_map
         secrets_file = prepared.secrets_file
@@ -2380,9 +2435,10 @@ class Orchestrator:
         with self._task_lock:
             self._turn_input_marker[tid] = marker
 
-        # Compute effective turn timeout from project config, falling back to global.
+        # Compute effective turn timeout from the stored per-project override,
+        # falling back to the global setting.
         effective_turn_timeout = (
-            project_config.turn_timeout_seconds or self._config.turn_timeout_seconds
+            ticket_state.turn_timeout_seconds or self._config.turn_timeout_seconds
         )
 
         try:
@@ -2710,37 +2766,6 @@ class Orchestrator:
 
         rewritten_message = self._with_question_format_note(rewritten_message)
 
-        # Load per-project config (re-read on every resume to pick up in-repo
-        # changes).  The In Progress transition above runs first on purpose, so
-        # the human sees the pickup at once.  A malformed config still ends in
-        # Needs Input, because the failure path below transitions there before
-        # it comments; the cost is a brief In Progress -> Needs Input step.
-        #
-        # load_project_config now reads directly from origin/HEAD via git show,
-        # so repo-side config fixes are picked up regardless of which branch the
-        # workspace is on — no working-tree refresh needed.
-        try:
-            project_config = load_project_config(ticket_state.workspace_path)
-        except ProjectConfigError as exc:
-            logger.error("Project config invalid for %s on resume: %s", tid, exc)
-            self._transition_failed_to_needs_input(tid)
-            err_comment = self._post_comment_safe(
-                tid,
-                f"**Symphony error**: Invalid project config:\n```\n{exc}\n```",
-                return_comment=True,
-            )
-            with self._state_lock:
-                ticket_state.status = TicketStatus.failed
-                ticket_state.setup_error = "project_config_invalid"
-                ticket_state.updated_at = _iso_now()
-                if err_comment is not None:
-                    ticket_state.last_seen_comment_id = err_comment.id
-                elif ticket_state.last_seen_comment_id is None:
-                    ticket_state.last_seen_comment_id = self._baseline_comment_id(tid)
-                self._state.upsert(ticket_state)
-                self._state.save()
-            return
-
         if self._is_cancelled(tid):
             return
 
@@ -2774,9 +2799,10 @@ class Orchestrator:
         if self._is_cancelled(tid):
             return
 
-        # Compute effective turn timeout from project config, falling back to global.
+        # Compute effective turn timeout from the stored per-project override,
+        # falling back to the global setting.
         effective_turn_timeout = (
-            project_config.turn_timeout_seconds or self._config.turn_timeout_seconds
+            ticket_state.turn_timeout_seconds or self._config.turn_timeout_seconds
         )
 
         try:
