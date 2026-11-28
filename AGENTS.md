@@ -695,7 +695,11 @@ shutting down, or the ticket is no longer triggered — see `_is_still_triggered
   existing subscription on every load (the store dedupes by endpoint, so a save
   that failed earlier repairs itself), and a notification click focuses a window
   already at exactly that URL and otherwise opens a new one, never navigating
-  an existing tab because it may hold unsaved text. `POST
+  an existing tab because it may hold unsaved text. A new window gets
+  `?from=notification`, which `ticket.js` strips on load and answers with one
+  `CloseWatcher` whose close replaces the page with `/`, so the first Android
+  Back goes to the list instead of leaving the app (a `pushState` trick fails:
+  Chrome skips entries added without a user tap). `POST
   /api/push-subscriptions` takes the browser's `PushSubscription.toJSON()`
   shape (`keys.p256dh` / `keys.auth`) and the CSP needs `worker-src 'self'`,
   which `default-src 'none'` would otherwise block. `/sw.js` is a root route

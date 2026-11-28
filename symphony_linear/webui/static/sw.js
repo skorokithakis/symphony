@@ -64,8 +64,15 @@ self.addEventListener("notificationclick", function (event) {
           }
         }
         /* Any other window is deliberately left alone: an editor or a reply
-         * box there may hold unsaved text, and navigating it would lose it. */
-        return self.clients.openWindow(target);
+         * box there may hold unsaved text, and navigating it would lose it.
+         *
+         * The marker tells ticket.js that this window starts on the ticket
+         * with no history, so it can send the first Android Back to the list
+         * instead of leaving the app.  An already open window is matched on
+         * the plain URL above, because ticket.js strips the marker on load. */
+        var opened = new URL(target);
+        opened.searchParams.set("from", "notification");
+        return self.clients.openWindow(opened.href);
       })
       .catch(function (error) {
         console.error("Symphony: opening the ticket from a notification failed", error);

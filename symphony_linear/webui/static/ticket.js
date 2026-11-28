@@ -1209,6 +1209,42 @@
     }
   });
 
+  /* A window that sw.js opened from a notification has only this ticket in
+   * its history, so Android Back would leave the app.  A CloseWatcher catches
+   * that first Back and replaces the page with the list, so the next Back
+   * leaves the app as if it had opened on the list.  A history trick
+   * (replaceState to "/" and pushState the ticket) was rejected: Chrome skips
+   * entries that a page adds without a user tap, so Back would still exit.
+   * The marker is removed at once so a reload does not arm this again.  On
+   * desktop the watcher also takes the first unhandled Esc; that is accepted
+   * because only notification windows get it.  Browsers without CloseWatcher
+   * keep the default Back. */
+  var pageParams = new URLSearchParams(window.location.search);
+  if (pageParams.get("from") === "notification") {
+    pageParams.delete("from");
+    var remainingQuery = pageParams.toString();
+    history.replaceState(
+      history.state,
+      "",
+      window.location.pathname + (remainingQuery ? "?" + remainingQuery : "") + window.location.hash
+    );
+    if (typeof window.CloseWatcher === "function") {
+      var backToList = new window.CloseWatcher();
+      // Back can fire inside the autosave delay, so save the reply first, as
+      // goToNextTicket in app.js does; a failed save stays on the ticket with
+      // the error already shown.
+      backToList.addEventListener("close", function () {
+        Sym.flushDraft()
+          .then(function (saved) {
+            if (saved) {
+              window.location.replace("/");
+            }
+          })
+          .catch(function () {});
+      });
+    }
+  }
+
   if ("scrollRestoration" in history) {
     history.scrollRestoration = "manual";
   }
