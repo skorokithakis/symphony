@@ -372,6 +372,35 @@ affects the turn. The icon is the copy of `static/icon.png` in the public
 Symphony GitHub repository, because a notification's icon is fetched without
 the page's Basic credentials.
 
+## Metrics
+
+The daemon records Prometheus metrics and serves them at `GET /metrics` on the
+web UI port. There is nothing to configure: the endpoint is part of the web UI,
+so it uses the same Basic auth as every page. A scraper sends any username (it
+is ignored, like the browser's) and the `webui.password`:
+
+```yaml
+scrape_configs:
+  - job_name: symphony
+    scheme: https
+    metrics_path: /metrics
+    static_configs:
+      - targets: ["symphony.example.com"]
+    basic_auth:
+      username: symphony
+      password: <webui.password>
+```
+
+The names are `symphony_turns_total` (per agent, kind and outcome),
+`symphony_turn_duration_seconds`, `symphony_tickets` (one series per internal
+ticket status), `symphony_active_tasks`, `symphony_qa_serve_active`,
+`symphony_tick_duration_seconds` and `symphony_last_tick_timestamp_seconds`.
+The state gauges are sampled once per poll tick, so they can lag by up to
+`poll_interval_seconds`. There are no per-ticket labels. Counters live in
+memory and start at zero after a daemon restart. The Linear and GitHub
+backends record the same metrics, but they have no web UI server, so nothing
+serves them.
+
 ## Agent API
 
 An external agent can drive the built-in tracker over HTTP instead of using

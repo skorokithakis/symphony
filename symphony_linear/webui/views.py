@@ -12,6 +12,7 @@ from collections.abc import Iterable, Mapping
 from dataclasses import asdict, dataclass
 from datetime import datetime, timezone
 
+from symphony_linear import metrics
 from symphony_linear.local_tracker import (
     STATE_DONE,
     STATE_DRAFT,
@@ -349,6 +350,15 @@ def archive(request: Request) -> Response:
             push_public_key=request.app.push_public_key,
         )
     )
+
+
+def metrics_page(request: Request) -> Response:
+    """Serve the daemon's metrics in the Prometheus text exposition format.
+
+    Read-only: the registry is in memory and every series was populated by the
+    orchestrator already, so this never touches the ticket store or state.
+    """
+    return Response(body=metrics.exposition(), content_type=metrics.CONTENT_TYPE_LATEST)
 
 
 def next_ticket(request: Request) -> Response:

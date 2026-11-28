@@ -874,6 +874,25 @@ shutting down, or the ticket is no longer triggered — see `_is_still_triggered
   cleanly and the port is free when the new process binds it). The orchestrator
   holds no reference to the server and stays tracker-agnostic; keep it that
   way so it can be tested without one.
+- **Metrics live on prometheus_client's default registry and are served only
+  by the web UI.** `symphony_linear/metrics.py` declares every metric at module
+  level; there is one daemon per process, so no registry is passed around and
+  nothing else may construct a second `CollectorRegistry`. The orchestrator
+  records turns through `record_turn` (kind `initial` or `resume`; an
+  `AgentTimeout.reason` becomes `idle_timeout` or `total_timeout`, every other
+  exception `failed`, a kill `cancelled`) and the tick through `record_tick`,
+  which sets `symphony_last_tick_timestamp_seconds` only when the tick did not
+  raise. `GET /metrics` is an ordinary entry in `ROUTES`, so Basic auth, the
+  body cap and the security headers apply by construction, and as a GET view it
+  must never write anything; the Linear and GitHub backends record the same
+  metrics but have no server to scrape them. There are no per-ticket labels:
+  the series would never be removed and the cardinality is unbounded. The three
+  state gauges are sampled at the end of each completed tick, never through a
+  callback gauge, because a callback would bind a module-level metric to one
+  orchestrator instance and the default registry rejects a second constructor
+  in the same process (tests build several). Staleness of up to one poll
+  interval and a reset to zero after a restart are accepted; counters are
+  in-memory by design.
 - **The web UI backend asks the agent to format questions, on every message.**
   `LocalTracker.question_format_note` returns `QUESTION_FORMAT_NOTE`, a fixed
   sentence telling the agent to put each question for the human in a

@@ -94,7 +94,7 @@ from symphony_linear.webui.ticket import (
     post_state,
     ticket_page,
 )
-from symphony_linear.webui.views import archive, home, next_ticket
+from symphony_linear.webui.views import archive, home, metrics_page, next_ticket
 
 _TICKET_EDIT = re.compile(r"^/tickets/(?P<ticket_id>[^/]+)/edit$")
 _TICKET_START = re.compile(r"^/tickets/(?P<ticket_id>[^/]+)/start$")
@@ -129,6 +129,10 @@ ROUTES: tuple[Route, ...] = (
     Route("GET", re.compile(r"^/$"), home),
     Route("GET", re.compile(r"^/archive$"), archive),
     Route("GET", re.compile(r"^/next$"), next_ticket),
+    # The Prometheus exposition.  Always on, including for the Linear and
+    # GitHub backends (they record the same metrics, nobody scrapes them);
+    # an unauthenticated scrape gets the ordinary Basic auth challenge.
+    Route("GET", re.compile(r"^/metrics$"), metrics_page),
     Route("GET", re.compile(r"^/repos$"), repos_page),
     Route("POST", re.compile(r"^/repos$"), post_add_repo),
     Route("POST", re.compile(r"^/repos/remove$"), post_remove_repo),

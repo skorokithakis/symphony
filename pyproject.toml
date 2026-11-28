@@ -17,6 +17,7 @@ dependencies = [
     "jinja2>=3.1.6",
     "http-ece>=1.2.1",
     "cryptography>=50.0.2",
+    "prometheus-client>=0.26.0",
 ]
 
 [project.urls]

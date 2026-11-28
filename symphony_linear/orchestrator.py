@@ -14,7 +14,7 @@ from datetime import datetime, timezone
 from pathlib import Path
 from typing import Any, Callable, TypeVar
 
-from symphony_linear import omp, opencode, pi
+from symphony_linear import metrics, omp, opencode, pi
 from symphony_linear.agent_runner import AgentCancelled, AgentError, AgentTimeout
 from symphony_linear.attachments import process_attachments
 from symphony_linear.checkout import CheckoutWatcher, validate_checkout
@@ -377,7 +377,8 @@ class Orchestrator:
                     # validated; honour it instead of running another tick.
                     break
                 try:
-                    self._tick()
+                    with metrics.record_tick():
+                        self._tick()
                 except Exception:
                     logger.exception("Unhandled error during poll tick")
                 self._wake.wait(timeout=self._config.poll_interval_seconds)
@@ -1176,6 +1177,33 @@ class Orchestrator:
                                     tracked_issue,
                                     pending,
                                 )
+
+            self._record_state_metrics()
+
+    def _record_state_metrics(self) -> None:
+        """Sample the gauges that describe the daemon's current state.
+
+        Called at the end of every completed tick.  A gauge set from a
+        callback instead would bind one module-level metric to one
+        orchestrator instance, and the default registry would then reject a
+        second instance in the same process (tests construct several).  The
+        cost is up to one poll interval of staleness, which the scrape
+        config's interval dwarfs.
+        """
+        counts = {status.value: 0 for status in TicketStatus}
+        for ticket_state in self._state.tickets:
+            counts[ticket_state.status.value] += 1
+        metrics.set_ticket_counts(counts)
+
+        with self._task_lock:
+            active = sum(
+                1 for future in self._active_tasks.values() if not future.done()
+            )
+        metrics.active_tasks.set(active)
+
+        with self._serve_lock:
+            serving = self._active_serve is not None
+        metrics.qa_serve_active.set(1 if serving else 0)
 
     # ==================================================================
     # QA serve reconciliation
@@ -2359,26 +2387,33 @@ class Orchestrator:
 
         try:
             agent_run_initial, _ = _agent_callables(self._config.agent)
-            session_id, final_message, _context_tokens = agent_run_initial(
-                workspace_path=workspace_path,
-                prompt=prompt,
-                timeout_seconds=effective_turn_timeout,
-                idle_timeout_seconds=self._config.turn_idle_timeout_seconds,
-                on_subprocess=lambda proc: (self._register_subprocess(tid, proc), None)[
-                    1
-                ],
-                # Only agent turns count; .symphony/setup and the QA serve run
-                # outside the adapter and never report output.
-                on_output=self._output_callback(tid),
-                hide_paths=self._sandbox_hide_paths_for(issue.identifier),
-                extra_rw_paths=self._config.sandbox.extra_rw_paths,
-                attachments_path=host_attachments_dir,
-                dir_map=dir_map,
-                secrets_file=secrets_file,
-                tmp_path=tmp_path,
-                files=files,
-                model=model,
-            )
+            # Computed before record_turn so a WorkspaceError from the hide
+            # list is not counted as a failed turn; the agent call is the only
+            # thing the metric covers.
+            hide_paths = self._sandbox_hide_paths_for(issue.identifier)
+            on_output = self._output_callback(tid)
+            with metrics.record_turn(self._config.agent, "initial"):
+                session_id, final_message, _context_tokens = agent_run_initial(
+                    workspace_path=workspace_path,
+                    prompt=prompt,
+                    timeout_seconds=effective_turn_timeout,
+                    idle_timeout_seconds=self._config.turn_idle_timeout_seconds,
+                    on_subprocess=lambda proc: (
+                        self._register_subprocess(tid, proc),
+                        None,
+                    )[1],
+                    # Only agent turns count; .symphony/setup and the QA serve
+                    # run outside the adapter and never report output.
+                    on_output=on_output,
+                    hide_paths=hide_paths,
+                    extra_rw_paths=self._config.sandbox.extra_rw_paths,
+                    attachments_path=host_attachments_dir,
+                    dir_map=dir_map,
+                    secrets_file=secrets_file,
+                    tmp_path=tmp_path,
+                    files=files,
+                    model=model,
+                )
         except AgentTimeout as exc:
             logger.error("Agent turn timed out for %s", tid)
             body = f"**Symphony error**: The AI turn timed out ({exc.reason})."
@@ -2746,27 +2781,34 @@ class Orchestrator:
 
         try:
             _, agent_run_resume = _agent_callables(self._config.agent)
-            final_message, _context_tokens = agent_run_resume(
-                workspace_path=ticket_state.workspace_path,
-                session_id=ticket_state.session_id,
-                message=rewritten_message,
-                timeout_seconds=effective_turn_timeout,
-                idle_timeout_seconds=self._config.turn_idle_timeout_seconds,
-                on_subprocess=lambda proc: (self._register_subprocess(tid, proc), None)[
-                    1
-                ],
-                on_output=self._output_callback(tid),
-                hide_paths=self._sandbox_hide_paths_for(
-                    ticket_state.ticket_identifier, ticket_state.workspace_path
-                ),
-                extra_rw_paths=self._config.sandbox.extra_rw_paths,
-                attachments_path=host_attachments_dir,
-                dir_map=dir_map,
-                secrets_file=secrets_file,
-                tmp_path=tmp_path,
-                files=files_attach,
-                model=model,
+            # Computed before record_turn so a WorkspaceError from the hide
+            # list is not counted as a failed turn; the agent call is the only
+            # thing the metric covers.
+            hide_paths = self._sandbox_hide_paths_for(
+                ticket_state.ticket_identifier, ticket_state.workspace_path
             )
+            on_output = self._output_callback(tid)
+            with metrics.record_turn(self._config.agent, "resume"):
+                final_message, _context_tokens = agent_run_resume(
+                    workspace_path=ticket_state.workspace_path,
+                    session_id=ticket_state.session_id,
+                    message=rewritten_message,
+                    timeout_seconds=effective_turn_timeout,
+                    idle_timeout_seconds=self._config.turn_idle_timeout_seconds,
+                    on_subprocess=lambda proc: (
+                        self._register_subprocess(tid, proc),
+                        None,
+                    )[1],
+                    on_output=on_output,
+                    hide_paths=hide_paths,
+                    extra_rw_paths=self._config.sandbox.extra_rw_paths,
+                    attachments_path=host_attachments_dir,
+                    dir_map=dir_map,
+                    secrets_file=secrets_file,
+                    tmp_path=tmp_path,
+                    files=files_attach,
+                    model=model,
+                )
         except AgentTimeout as exc:
             logger.error("Agent resume timed out for %s", tid)
             body = f"**Symphony error**: The AI turn timed out ({exc.reason})."

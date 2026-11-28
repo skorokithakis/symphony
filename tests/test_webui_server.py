@@ -779,6 +779,24 @@ class TestAuthentication:
         assert status == expected
 
 
+class TestMetrics:
+    def test_metrics_requires_basic_auth_and_serves_exposition(
+        self, tmp_path: Path
+    ) -> None:
+        with _running_server(tmp_path) as (port, _tracker, _state):
+            unauthenticated, auth_headers, _body = _request(
+                port, "GET", "/metrics", auth=False
+            )
+            status, headers, body = _request(port, "GET", "/metrics")
+
+        assert unauthenticated == 401
+        assert auth_headers["WWW-Authenticate"].startswith("Basic")
+        assert status == 200
+        assert headers["Content-Type"].startswith("text/plain")
+        assert b"symphony_turns_total" in body
+        assert b"symphony_tickets" in body
+
+
 class TestRawRequestLines:
     """Raw-socket checks for cases the base handler would answer itself."""
 
