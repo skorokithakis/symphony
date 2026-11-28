@@ -1010,14 +1010,19 @@ a.file:hover { border-color: var(--ink-3); background: var(--sunken); }
    follows: without model aliases an In Progress ticket has none, and a lone
    rule at the row's end would separate nothing.  The menu button is matched
    rather than the wrapper, because the poll leaves the wrapper in place with
-   only whitespace inside, which :empty does not match. */
-.tools-sep { display: none; flex: none; width: 1px; height: 20px; margin: 0 var(--s1); background: var(--rule-2); }
+   only whitespace inside, which :empty does not match.  The expand glyph is
+   12 px wide inside its 20 px box, so its visible right edge sits
+   (tap - 20) / 2 + 4 from the button's right edge; the rule's right margin
+   matches that inset (the flex gap is on both sides and cancels), making the
+   glyph-to-rule and rule-to-select gaps equal.  The saved check sits 3.2 px
+   inside its 16 px icon, which its -3 px margin offsets. */
+.tools-sep { display: none; flex: none; width: 1px; height: 20px; margin: 0 calc((var(--tap) - 20px) / 2 + 4px) 0 0; background: var(--rule-2); }
 .tools-sep:has(~ .composer-model, ~ .state-menu-wrap #state-menu-button) { display: block; }
 .saved {
   display: inline-flex; align-items: center; gap: 6px;
   font: 400 var(--t-xs)/1 var(--font-mono); color: var(--ink-3);
 }
-.composer-tools .saved { margin-left: var(--s2); }
+.composer-tools .saved { margin-left: -3px; }
 /* The composer's Model select is a native control, so Send and Retry carry
    the choice without JavaScript.  It is compact because it shares the tools
    row with the icon buttons and the saved indicator; the .composer prefix is
@@ -1072,7 +1077,9 @@ a.file:hover { border-color: var(--ink-3); background: var(--sunken); }
   .composer { padding-inline: var(--s3); }
   .composer-foot { column-gap: var(--s2); }
   .composer-tools { gap: 2px; }
-  .composer-tools .saved { min-width: 0; margin-left: var(--s1); }
+  /* No margin override: the base -3px lines the check glyph up with the
+     select-to-Change-state gap; the button's own inset is the rest. */
+  .composer-tools .saved { min-width: 0; }
   .composer-actions .btn--primary { padding: 0 var(--s3); }
   .composer-tools .composer-model { max-width: 5rem; text-overflow: ellipsis; }
   .composer-tools .saved [data-saved-text] {
