@@ -322,6 +322,8 @@ def api_speech(request: Request) -> Response:
         stream = stream_speech(
             script,
             api_key=(webui.soniox_api_key or "").strip(),
+            voice=webui.tts_voice,
+            speed=webui.tts_speed,
             region=webui.soniox_region,
         )
     except SonioxError as exc:

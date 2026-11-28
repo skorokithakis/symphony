@@ -35,6 +35,8 @@ from tests.test_webui_server import (
 
 _ANTHROPIC_KEY = "sk-ant-test"
 _SONIOX_KEY = "soniox-test"
+_VOICE = "Adrian"
+_SPEED = 1.15
 _BOTH_KEYS = {
     "anthropic_api_key": _ANTHROPIC_KEY,
     "soniox_api_key": _SONIOX_KEY,
@@ -152,11 +154,13 @@ def _serve_stream(
         return "A spoken script."
 
     def fake_stream(
-        text: str, *, api_key: str, region: str = "us"
+        text: str, *, api_key: str, voice: str, speed: float, region: str = "us"
     ) -> soniox.SpeechStream:
         return soniox.stream_speech(
             text,
             api_key=api_key,
+            voice=voice,
+            speed=speed,
             region=region,
             transport=httpx.MockTransport(handler),
         )
@@ -353,7 +357,7 @@ class TestSpeakButton:
 
 
 class TestSonioxStream:
-    def test_sends_one_request_with_the_fixed_voice_and_format(self) -> None:
+    def test_sends_one_request_with_the_given_voice_and_speed(self) -> None:
         transport, seen = _capture(
             lambda request: httpx.Response(
                 200,
@@ -363,7 +367,11 @@ class TestSonioxStream:
         )
 
         stream = soniox.stream_speech(
-            "A spoken script.", api_key=_SONIOX_KEY, transport=transport
+            "A spoken script.",
+            api_key=_SONIOX_KEY,
+            voice="Kai",
+            speed=0.9,
+            transport=transport,
         )
         audio = b"".join(stream.iter_chunks())
 
@@ -376,11 +384,43 @@ class TestSonioxStream:
         assert json.loads(request.content) == {
             "model": "tts-rt-v2",
             "language": "en",
-            "voice": "Adrian",
+            "voice": "Kai",
+            "speed": 0.9,
             "audio_format": "mp3",
             "bitrate": 64000,
             "text": "A spoken script.",
         }
+
+    @pytest.mark.parametrize(
+        ("overrides", "voice", "speed"),
+        [
+            ({}, "Adrian", 1.15),
+            ({"tts_voice": "Kai", "tts_speed": 0.9}, "Kai", 0.9),
+        ],
+    )
+    def test_the_route_sends_the_configured_voice_and_speed(
+        self,
+        tmp_path: Path,
+        monkeypatch: pytest.MonkeyPatch,
+        overrides: dict[str, object],
+        voice: str,
+        speed: float,
+    ) -> None:
+        seen = _serve_stream(monkeypatch, iter([b"mp3"]))
+
+        with _running_server(tmp_path, **dict(_BOTH_KEYS), **overrides) as (
+            port,
+            tracker,
+            _state,
+        ):
+            ticket_id, comment_id = _reply_ticket(tracker)
+            status, _headers, _body = _speech_request(port, ticket_id, comment_id)
+
+        assert status == 200
+        assert len(seen) == 1
+        body = json.loads(seen[0].content)
+        assert body["voice"] == voice
+        assert body["speed"] == speed
 
     def test_an_error_relays_the_message_with_the_key_redacted(self) -> None:
         refused = httpx.Response(
@@ -396,6 +436,8 @@ class TestSonioxStream:
             soniox.stream_speech(
                 "x",
                 api_key=_SONIOX_KEY,
+                voice=_VOICE,
+                speed=_SPEED,
                 transport=httpx.MockTransport(lambda request: refused),
             )
 
@@ -432,6 +474,8 @@ class TestSonioxStream:
             soniox.stream_speech(
                 "x",
                 api_key=_SONIOX_KEY,
+                voice=_VOICE,
+                speed=_SPEED,
                 transport=httpx.MockTransport(lambda request: refused),
             )
 
@@ -460,6 +504,8 @@ class TestSonioxStream:
             soniox.stream_speech(
                 "x",
                 api_key=_SONIOX_KEY,
+                voice=_VOICE,
+                speed=_SPEED,
                 transport=httpx.MockTransport(lambda request: refused),
             )
 
@@ -471,7 +517,11 @@ class TestSonioxStream:
 
         with pytest.raises(soniox.SonioxError) as error:
             soniox.stream_speech(
-                "x", api_key=_SONIOX_KEY, transport=httpx.MockTransport(unreachable)
+                "x",
+                api_key=_SONIOX_KEY,
+                voice=_VOICE,
+                speed=_SPEED,
+                transport=httpx.MockTransport(unreachable),
             )
         assert str(error.value) == "Could not reach Soniox. Try again."
 
@@ -480,6 +530,8 @@ class TestSonioxStream:
             soniox.stream_speech(
                 "x",
                 api_key=_SONIOX_KEY,
+                voice=_VOICE,
+                speed=_SPEED,
                 transport=httpx.MockTransport(
                     lambda request: httpx.Response(
                         200,
@@ -533,7 +585,9 @@ class TestRegion:
         ) -> str:
             return "A spoken script."
 
-        def fake_stream(text: str, *, api_key: str, region: str = "us") -> _FakeStream:
+        def fake_stream(
+            text: str, *, api_key: str, voice: str, speed: float, region: str = "us"
+        ) -> _FakeStream:
             regions.append(region)
             return _FakeStream([b"mp3-bytes"])
 
@@ -739,7 +793,9 @@ class TestSpeechRoute:
             calls.append("script")
             return "A spoken script."
 
-        def fake_stream(text: str, *, api_key: str, region: str = "us") -> _FakeStream:
+        def fake_stream(
+            text: str, *, api_key: str, voice: str, speed: float, region: str = "us"
+        ) -> _FakeStream:
             calls.append("stream")
             return _FakeStream([b"mp3-bytes"])
 
@@ -780,7 +836,9 @@ class TestSpeechRoute:
             calls.append("script")
             return "A spoken script."
 
-        def fake_stream(text: str, *, api_key: str, region: str = "us") -> _FakeStream:
+        def fake_stream(
+            text: str, *, api_key: str, voice: str, speed: float, region: str = "us"
+        ) -> _FakeStream:
             calls.append("stream")
             return _FakeStream([b"mp3-bytes"])
 
@@ -879,13 +937,15 @@ class TestSpeechRoute:
             return "A spoken script."
 
         def fake_stream(
-            text: str, *, api_key: str, region: str = "us"
+            text: str, *, api_key: str, voice: str, speed: float, region: str = "us"
         ) -> soniox.SpeechStream:
             attempts.append(text)
             response = responses[len(attempts) - 1]
             return soniox.stream_speech(
                 text,
                 api_key=api_key,
+                voice=voice,
+                speed=speed,
                 region=region,
                 transport=httpx.MockTransport(lambda request: response),
             )
@@ -960,7 +1020,9 @@ class TestSpeechRoute:
         ) -> str:
             return "A spoken script."
 
-        def fake_stream(text: str, *, api_key: str, region: str = "us") -> _FakeStream:
+        def fake_stream(
+            text: str, *, api_key: str, voice: str, speed: float, region: str = "us"
+        ) -> _FakeStream:
             streams.append(text)
             return _FakeStream(bodies[len(streams) - 1])
 

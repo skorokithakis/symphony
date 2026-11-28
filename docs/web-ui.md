@@ -391,7 +391,7 @@ You hear a summary, not the full text. The daemon first asks the Anthropic
 Messages API for a spoken version of the reply, written for a listener who
 cannot see the screen: what the agent did, the context needed to decide, and
 every question with its options. It asks for at most about 250 words, which was
-97 seconds of speech with this voice in a test. It then asks Soniox's
+97 seconds of speech with the default voice in a test. It then asks Soniox's
 text-to-speech API, on the hosts of `webui.soniox_region`, for the audio in one
 request. Soniox generates at about 1.2 times real time, with the first bytes in
 under a second, so the page plays the audio as it arrives: sound starts a few
@@ -399,6 +399,14 @@ seconds after the click and continues while the rest downloads. Soniox
 documents a two-minute cut on one request, but it was not observed: a 362 word
 script returned 144 seconds. Keeping the summary to about 250 words stays well
 inside that, and a longer script is not split.
+
+`webui.tts_voice` selects the voice (default `Adrian`), either a built-in
+Soniox voice name or the ID of a cloned voice; `webui.tts_speed` selects the
+speed (default `1.15`). A zero, negative or non-finite speed fails at startup,
+while a positive speed outside Soniox's 0.7-1.3 range is sent to Soniox and
+refused there, with its message shown on the button. Both values are
+read when the daemon starts, so a change takes effect after a restart, which
+also clears the in-memory audio cache.
 
 Each first click on a reply therefore costs one Haiku call and one Soniox
 call; clicking the same reply again returns the audio already in memory.

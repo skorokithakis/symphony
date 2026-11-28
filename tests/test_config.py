@@ -449,6 +449,39 @@ class TestWebUIConfig:
         with pytest.raises(ValueError, match="soniox_region"):
             load_config(tmp_path)
 
+    def test_tts_defaults_to_adrian_at_1_15(self, tmp_path: Path) -> None:
+        _write_yaml(tmp_path / "config.yaml", {"webui": _webui_block()})
+
+        config = load_config(tmp_path)
+        assert config.webui is not None
+        assert config.webui.tts_voice == "Adrian"
+        assert config.webui.tts_speed == 1.15
+
+    @pytest.mark.parametrize("speed", [0, -0.5, float("inf"), float("nan")])
+    def test_a_non_positive_or_non_finite_tts_speed_is_rejected(
+        self, tmp_path: Path, speed: float
+    ) -> None:
+        # No upper or lower bound is checked: Soniox owns the accepted range
+        # and its refusal is shown on the button.  Zero and below cannot mean
+        # anything, though, and an infinity or NaN cannot even be encoded as
+        # JSON, so it would fail locally instead of being refused by Soniox.
+        _write_yaml(
+            tmp_path / "config.yaml",
+            {"webui": _webui_block(tts_speed=speed)},
+        )
+
+        with pytest.raises(ValueError, match="tts_speed"):
+            load_config(tmp_path)
+
+    def test_an_empty_tts_voice_is_rejected(self, tmp_path: Path) -> None:
+        _write_yaml(
+            tmp_path / "config.yaml",
+            {"webui": _webui_block(tts_voice="  ")},
+        )
+
+        with pytest.raises(ValueError, match="non-empty"):
+            load_config(tmp_path)
+
     def test_public_url_loses_trailing_slash(self, tmp_path: Path) -> None:
         _write_yaml(
             tmp_path / "config.yaml",

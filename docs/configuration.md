@@ -123,6 +123,14 @@ linear:
 #   # only on its own region's hosts; a key from another region is refused
 #   # with "Incorrect API key provided".
 #   # soniox_region: us
+#   # Optional. Speed of the spoken reply, default 1.15. A zero, negative or
+#   # non-finite value fails at startup. A positive value outside Soniox's
+#   # 0.7-1.3 range is sent to Soniox, which refuses it with a message the
+#   # speak button shows.
+#   # tts_speed: 1.15
+#   # Optional. Soniox voice for the spoken reply, default Adrian. A built-in
+#   # voice name or a cloned-voice ID, passed to Soniox unchecked.
+#   # tts_voice: Adrian
 #   # Optional. Bearer token for the JSON API at /api/v1, for an external
 #   # agent. Unset disables the API: /api/v1 then answers 404.
 #   # api_token: ${SYMPHONY_WEBUI_API_TOKEN}

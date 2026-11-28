@@ -1,7 +1,7 @@
 """Client for the Soniox text-to-speech REST API.
 
-This is the only place that asks Soniox for speech, so the endpoint, the fixed
-voice and format, and the key handling exist once.  The web UI's speak route
+This is the only place that asks Soniox for speech, so the endpoint, the
+request shape and the key handling exist once.  The web UI's speak route
 makes one request per agent reply and hands the unread response body back;
 the audio is pulled as it arrives, because Soniox produces it at about 1.2
 times real time and waiting for the whole clip would leave the listener
@@ -17,7 +17,8 @@ speech would silently end up in different regions.
 
 The request shape follows the current Generate speech reference:
 ``POST https://tts-rt.soniox.com/tts`` with a bearer key and a JSON body of
-``model``, ``language``, ``voice``, ``audio_format``, ``bitrate`` and ``text``.
+``model``, ``language``, ``voice``, ``speed``, ``audio_format``, ``bitrate``
+and ``text``.
 A successful response is raw audio.  A failure before the audio starts is a
 JSON body with ``error_code``, ``error_type``, ``error_message``, ``more_info``
 and ``request_id``; once streaming has begun an error cannot be delivered, so
@@ -113,13 +114,15 @@ def transcription_websocket_origin(region: str) -> str:
     return f"wss://{hosts_for(region).transcription_host}"
 
 
-#: The generation options are fixed rather than configurable.  The speak
-#: button reads one reply aloud; a per-workspace voice would make the same
-#: reply sound different depending on which daemon produced it, and the model,
-#: format and bitrate are the ones the design picked for speech.
+#: The model, language, audio format and bitrate stay fixed: they are the ones
+#: the design picked for reading one reply aloud, and nothing about a
+#: workspace should change them.  The voice and speed do come from
+#: ``webui.tts_voice`` and ``webui.tts_speed``, because they are the two
+#: things a listener may need to change without editing this module.  A speed
+#: outside Soniox's own accepted range is left for Soniox to refuse; its
+#: message is shown on the speak button.
 MODEL = "tts-rt-v2"
 LANGUAGE = "en"
-VOICE = "Adrian"
 AUDIO_FORMAT = "mp3"
 BITRATE = 64_000
 
@@ -185,6 +188,8 @@ def stream_speech(
     text: str,
     *,
     api_key: str,
+    voice: str,
+    speed: float,
     region: str = DEFAULT_REGION,
     transport: httpx.BaseTransport | None = None,
 ) -> SpeechStream:
@@ -196,13 +201,16 @@ def stream_speech(
     request leaves the process.  The key is only ever placed in the request
     headers.  The region selects the host, because a key answers only on its
     own region's hosts; any other region's host refuses it as an incorrect
-    key.
+    key.  *voice* is a built-in voice name or a cloned-voice ID, and *speed*
+    is passed as given: Soniox accepts its own range and refuses anything else
+    with a message the caller can show.
     """
     headers = {"Authorization": f"Bearer {api_key}"}
     body = {
         "model": MODEL,
         "language": LANGUAGE,
-        "voice": VOICE,
+        "voice": voice,
+        "speed": speed,
         "audio_format": AUDIO_FORMAT,
         "bitrate": BITRATE,
         "text": text,

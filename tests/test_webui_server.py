@@ -61,6 +61,8 @@ def _config(
     soniox_api_key: str | None = None,
     soniox_region: str | None = None,
     anthropic_api_key: str | None = None,
+    tts_speed: float | None = None,
+    tts_voice: str | None = None,
     models: dict[str, str] | None = None,
 ) -> AppConfig:
     block: dict[str, object] = {
@@ -75,6 +77,10 @@ def _config(
         block["soniox_region"] = soniox_region
     if anthropic_api_key is not None:
         block["anthropic_api_key"] = anthropic_api_key
+    if tts_speed is not None:
+        block["tts_speed"] = tts_speed
+    if tts_voice is not None:
+        block["tts_voice"] = tts_voice
     data: dict[str, object] = {"webui": block}
     if models is not None:
         data["models"] = models
@@ -238,6 +244,8 @@ def _running_server(
     soniox_api_key: str | None = None,
     soniox_region: str | None = None,
     anthropic_api_key: str | None = None,
+    tts_speed: float | None = None,
+    tts_voice: str | None = None,
     webpush: WebPushStore | None = None,
 ) -> Iterator[tuple[int, LocalTracker, StateManager]]:
     tracker = LocalTracker(tmp_path, webpush=webpush)
@@ -250,6 +258,8 @@ def _running_server(
             soniox_api_key=soniox_api_key,
             soniox_region=soniox_region,
             anthropic_api_key=anthropic_api_key,
+            tts_speed=tts_speed,
+            tts_voice=tts_voice,
         ),
         on_wake=Mock(),
         port=0,

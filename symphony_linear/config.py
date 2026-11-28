@@ -308,6 +308,24 @@ class _WebUIConfig(BaseModel):
             "region is refused with 'Incorrect API key provided'."
         ),
     )
+    tts_speed: float = Field(
+        1.15,
+        gt=0,
+        allow_inf_nan=False,
+        description=(
+            "Speed of the spoken reply.  A zero, negative or non-finite value "
+            "fails at startup; a positive value outside Soniox's 0.7-1.3 "
+            "range is sent to Soniox, which refuses it with a message shown "
+            "on the speak button."
+        ),
+    )
+    tts_voice: str = Field(
+        "Adrian",
+        description=(
+            "Soniox voice for the spoken reply: a built-in voice name or a "
+            "cloned-voice ID.  Passed to Soniox unchecked."
+        ),
+    )
     api_token: str | None = Field(
         None,
         description=(
@@ -323,7 +341,7 @@ class _WebUIConfig(BaseModel):
         ),
     )
 
-    @field_validator("password")
+    @field_validator("password", "tts_voice")
     @classmethod
     def _validate_non_empty(cls, v: str) -> str:
         if not v.strip():
