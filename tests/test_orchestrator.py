@@ -41,6 +41,7 @@ from symphony_linear.opencode import (
     OpenCodeTimeout,
 )
 from symphony_linear.orchestrator import (
+    SECRETS_FILE_NOTE,
     Orchestrator,
     _ActiveServe,
     _IGNORED_COMMENT_BODY,
@@ -2598,6 +2599,30 @@ class TestPipelineTwins:
         assert text.endswith(f"\n\n{QUESTION_FORMAT_NOTE}")
         if pipeline == "initial":
             assert text.index("HUMAN CONTEXT") < text.index(QUESTION_FORMAT_NOTE)
+
+    @pytest.mark.parametrize("has_secrets", [True, False])
+    @pytest.mark.parametrize("pipeline", ["initial", "resume"])
+    def test_secrets_note_only_when_secrets_file_installed(
+        self,
+        orchestrator: Orchestrator,
+        linear: FakeLinearClient,
+        pipeline: Literal["initial", "resume"],
+        has_secrets: bool,
+    ) -> None:
+        with (
+            mock.patch(
+                "symphony_linear.orchestrator.ensure_secrets_file",
+                return_value="/tmp/ws/TEAM-1/secrets.env" if has_secrets else None,
+            ),
+            mock.patch.object(
+                LinearTracker, "question_format_note", QUESTION_FORMAT_NOTE
+            ),
+        ):
+            launch = self._run_pipeline(orchestrator, linear, pipeline)
+        text = launch.call_args.kwargs["prompt" if pipeline == "initial" else "message"]
+        assert (SECRETS_FILE_NOTE in text) is has_secrets
+        # The question-format note must stay the last text of the message.
+        assert text.endswith(f"\n\n{QUESTION_FORMAT_NOTE}")
 
     @pytest.mark.parametrize("pipeline", ["initial", "resume"])
     def test_turn_output_activity_is_recorded_and_cleared(

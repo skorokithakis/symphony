@@ -276,6 +276,12 @@ load the values into the environment itself. Your scripts do that; see
 not set. Changes take effect on the next launch, so you do not need to
 restart the daemon.
 
+When the file exists, every message Symphony sends to the agent (the first
+prompt and each reply) includes one sentence near the end. The sentence names
+the file and tells the agent to load it with
+`set -a; . "$SYMPHONY_SECRETS_FILE"; set +a` in the command that needs it. The agent does not need instructions in the repo to
+find its secrets.
+
 The source directory is hidden from the sandbox, so one repo cannot see
 another repo's secrets. However, the agent can read its own repo's secrets
 file, and it can put what it reads into a ticket comment. Use development

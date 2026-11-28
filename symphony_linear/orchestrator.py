@@ -154,6 +154,25 @@ def _build_restored_comment(
     )
 
 
+# The agent is otherwise never told the file exists: the env var is set, but the
+# prompt warns it away from secret files and the docs that describe the file
+# live in this repo, not the ticket's. It is sent on every turn for the same
+# reason as the question-format note (compaction can drop a one-time
+# instruction), and the values stay out of the environment on purpose (gnosis
+# ywwbnx), so the agent has to load them itself.
+SECRETS_FILE_NOTE = (
+    "When a command needs this repo's secrets, they are in the KEY=value file "
+    'at $SYMPHONY_SECRETS_FILE: load them with `set -a; . "$SYMPHONY_SECRETS_FILE"; '
+    "set +a` in that same command, and never print or post the values."
+)
+
+
+def _with_secrets_note(text: str, secrets_file: str | None) -> str:
+    if secrets_file is None:
+        return text
+    return f"{text}\n\n{SECRETS_FILE_NOTE}"
+
+
 def _build_initial_prompt(title: str, description: str | None) -> str:
     desc = description.strip() if description else "(no description)"
     return (
@@ -2421,7 +2440,9 @@ class Orchestrator:
         if extra_context:
             prompt += f"\n\n---\n\n{extra_context}"
 
-        prompt = self._with_question_format_note(prompt)
+        prompt = self._with_question_format_note(
+            _with_secrets_note(prompt, secrets_file)
+        )
 
         if self._is_cancelled(tid):
             return
@@ -2779,7 +2800,9 @@ class Orchestrator:
                 self._state.upsert(ticket_state)
                 self._state.save()
 
-        rewritten_message = self._with_question_format_note(rewritten_message)
+        rewritten_message = self._with_question_format_note(
+            _with_secrets_note(rewritten_message, secrets_file)
+        )
 
         if self._is_cancelled(tid):
             return
