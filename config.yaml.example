@@ -127,6 +127,18 @@ linear:
 #   # permission and the real-time speech-to-text permission.
 #   # soniox_api_key: ${SONIOX_API_KEY}
 #
+#   # Optional. Soniox project region: us (default), eu, jp or in.  A key works
+#   # only on its own project region's hosts; a key from another region is
+#   # refused with "Incorrect API key provided".  It selects the hosts for
+#   # dictation and for the text-to-speech request alike.
+#   # soniox_region: us
+#
+#   # Reading agent replies aloud needs both this Soniox key and the Anthropic
+#   # key above: the Anthropic key writes the spoken script and Soniox makes
+#   # the audio.  The Soniox key then also needs the text-to-speech permission.
+#   # With both keys set, every agent reply gets a speaker button; without
+#   # either, it is absent.
+#
 #   # Optional. Bearer token for the read/write JSON API at /api/v1, used by
 #   # an external agent rather than a browser.  Leave it unset to disable the
 #   # API: /api/v1 then answers 404.  The token lives in config.yaml, which

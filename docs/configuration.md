@@ -119,6 +119,10 @@ linear:
 #   # replies aloud. Unset hides the microphone button. Reading aloud needs the
 #   # key's text-to-speech permission.
 #   # soniox_api_key: ${SONIOX_API_KEY}
+#   # Optional. Soniox project region: us (default), eu, jp or in. A key works
+#   # only on its own region's hosts; a key from another region is refused
+#   # with "Incorrect API key provided".
+#   # soniox_region: us
 #   # Optional. Bearer token for the JSON API at /api/v1, for an external
 #   # agent. Unset disables the API: /api/v1 then answers 404.
 #   # api_token: ${SYMPHONY_WEBUI_API_TOKEN}

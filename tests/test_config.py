@@ -438,6 +438,17 @@ class TestWebUIConfig:
         with pytest.raises(ValueError, match="non-empty"):
             load_config(tmp_path)
 
+    def test_an_unknown_soniox_region_is_rejected(self, tmp_path: Path) -> None:
+        _write_yaml(
+            tmp_path / "config.yaml",
+            {"webui": _webui_block(soniox_region="mars")},
+        )
+
+        # A typo must fail at load time, not at the first dictation or speak
+        # click, where the only symptom would be "Incorrect API key provided".
+        with pytest.raises(ValueError, match="soniox_region"):
+            load_config(tmp_path)
+
     def test_public_url_loses_trailing_slash(self, tmp_path: Path) -> None:
         _write_yaml(
             tmp_path / "config.yaml",

@@ -54,7 +54,7 @@ import logging
 import re
 import socket
 import threading
-from collections.abc import Sequence
+from collections.abc import Iterator, Sequence
 from http import HTTPStatus
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from pathlib import Path
@@ -64,6 +64,7 @@ from urllib.parse import parse_qs, urlsplit
 from symphony_linear.config import AppConfig
 from symphony_linear.local_tracker import LocalTicketStore
 from symphony_linear.presence import TicketPresence
+from symphony_linear.soniox import DEFAULT_REGION, transcription_websocket_origin
 from symphony_linear.state import StateManager
 from symphony_linear.turn_activity import TurnActivity
 from symphony_linear.webpush import WebPushStore
@@ -101,21 +102,24 @@ _SERVE_POLL_INTERVAL = 0.1  # seconds — keeps stop() responsive in tests
 
 #: Only same-origin scripts and styles; the time formatter is an external
 #: file because inline script is deliberately not allowed.
-#: ``connect-src`` gains the Soniox WebSocket origin only when dictation is
-#: configured, because the browser then streams audio to it directly.
-#: ``media-src`` gains ``blob:`` and ``data:`` only when speech is configured:
-#: the speak button plays a fetched mp3 from a blob URL, after unlocking the
-#: audio element with a very short ``data:`` clip, and those are the only
+#: ``connect-src`` gains the configured Soniox region's WebSocket origin only
+#: when dictation is configured, because the browser then streams audio to it
+#: directly.
+#: ``media-src`` gains ``'self'``, ``blob:`` and ``data:`` only when speech is
+#: configured: the speak button plays the audio from this server's streamed
+#: ``GET`` (the ``'self'`` source), falls back to a fetched blob, and unlocks
+#: the audio element with a very short ``data:`` clip.  Those are the only
 #: media sources it needs.  Every other page keeps the original policy, byte
 #: for byte.
-_SONIOX_WEBSOCKET = "wss://stt-rt.soniox.com"
 
 
-def _build_csp(*, dictation: bool, speech: bool = False) -> str:
+def _build_csp(
+    *, dictation: bool, region: str = DEFAULT_REGION, speech: bool = False
+) -> str:
     connect_src = "connect-src 'self'"
     if dictation:
-        connect_src = f"{connect_src} {_SONIOX_WEBSOCKET}"
-    media_src = "media-src blob: data:; " if speech else ""
+        connect_src = f"{connect_src} {transcription_websocket_origin(region)}"
+    media_src = "media-src 'self' blob: data:; " if speech else ""
     return (
         "default-src 'none'; "
         "script-src 'self'; "
@@ -715,16 +719,42 @@ class _WebUIHandler(BaseHTTPRequestHandler):
         # for Content-Type to describe.  The preflight answer is the only 204.
         if response.status != HTTPStatus.NO_CONTENT:
             self.send_header("Content-Type", response.content_type)
-            self.send_header("Content-Length", str(len(response.body)))
+            # A streamed body has no known total; the connection closing ends
+            # it, which HTTP/1.0 allows without chunked transfer encoding.
+            if response.body_chunks is None:
+                self.send_header("Content-Length", str(len(response.body)))
         for name, value in response.headers:
             self.send_header(name, value)
         self.end_headers()
-        if self.command == "HEAD" or not response.body:
+        if self.command == "HEAD":
+            return
+        if response.body_chunks is not None:
+            self._send_stream(response.body_chunks)
+            return
+        if not response.body:
             return
         try:
             self.wfile.write(response.body)
         except (BrokenPipeError, ConnectionError, OSError):
             logger.debug("webui: client disconnected before the response was sent")
+
+    def _send_stream(self, body_chunks: Iterator[bytes]) -> None:
+        """Write each chunk and flush it, ending quietly if the client leaves.
+
+        The socket keeps the per-operation timeout installed in ``setup``: a
+        reader waiting for the next chunk between writes is not doing a socket
+        operation, so it is never cut, while a stalled client's ``write`` fails
+        after that timeout instead of pinning the handler thread forever.  A
+        broken pipe or a timeout means this one response is over; the producer
+        is a separate thread and still completes the entry, so a second listen
+        is immediate.
+        """
+        try:
+            for chunk in body_chunks:
+                self.wfile.write(chunk)
+                self.wfile.flush()
+        except (BrokenPipeError, ConnectionError, OSError):
+            logger.debug("webui: client disconnected while streaming a response")
 
 
 # ---------------------------------------------------------------------------
@@ -890,6 +920,7 @@ class WebUIServer:
         self._api_token = webui.api_token
         self._csp = _build_csp(
             dictation=webui.soniox_api_key is not None,
+            region=webui.soniox_region,
             speech=speech_is_enabled(config),
         )
         self._routes = tuple(routes if routes is not None else routes_for(config))

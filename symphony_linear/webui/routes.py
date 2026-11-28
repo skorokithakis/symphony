@@ -62,6 +62,7 @@ from symphony_linear.webui.api import (
     api_seen,
     api_soniox_key,
     api_speech,
+    api_speech_audio,
     api_start_draft,
     api_start_new,
     api_state,
@@ -224,7 +225,10 @@ SONIOX_KEY_ROUTE: Route = Route(
 
 #: Reading an agent reply aloud needs both the Anthropic key (the listening
 #: script) and the Soniox key (the audio), so it is absent unless both are set.
+#: The POST starts generation and costs money; the GET on the same path streams
+#: the entry it made, which is why the two are separate routes.
 SPEECH_ROUTE: Route = Route("POST", _API_TICKET_COMMENT_SPEECH, api_speech)
+SPEECH_AUDIO_ROUTE: Route = Route("GET", _API_TICKET_COMMENT_SPEECH, api_speech_audio)
 
 
 def routes_for(config: AppConfig) -> tuple[Route, ...]:
@@ -232,7 +236,7 @@ def routes_for(config: AppConfig) -> tuple[Route, ...]:
 
     Two routes are conditional today.  Without ``webui.soniox_api_key`` the
     temporary-key route is absent, so ``/api/soniox-key`` is an unknown route
-    and the page never renders the microphone button.  The speak route is
+    and the page never renders the microphone button.  The speak routes are
     present only when both ``webui.anthropic_api_key`` and
     ``webui.soniox_api_key`` are set, for the same reason: a click must not
     reach an endpoint that cannot produce audio.
@@ -242,5 +246,5 @@ def routes_for(config: AppConfig) -> tuple[Route, ...]:
     if webui is not None and webui.soniox_api_key is not None:
         routes = (*routes, SONIOX_KEY_ROUTE)
     if speech_is_enabled(config):
-        routes = (*routes, SPEECH_ROUTE)
+        routes = (*routes, SPEECH_ROUTE, SPEECH_AUDIO_ROUTE)
     return routes

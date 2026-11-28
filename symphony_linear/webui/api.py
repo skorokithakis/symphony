@@ -36,7 +36,12 @@ from symphony_linear.local_tracker import (
     ReplyAnswers,
     image_content_type,
 )
-from symphony_linear.soniox import SonioxError, synthesise
+from symphony_linear.soniox import (
+    SonioxError,
+    stream_speech,
+    temporary_key_url,
+    transcription_websocket_url,
+)
 from symphony_linear.tracker import TrackerError, TrackerNotFoundError, is_agent_kind
 from symphony_linear.webui import editor, views
 from symphony_linear.webui.http_types import Request, Response
@@ -150,8 +155,9 @@ def api_archive(request: Request) -> Response:
 #: Soniox mints a short-lived key here.  The browser never sees the long-lived
 #: key; it connects to the WebSocket with the temporary one over the
 #: ``soniox-api-key`` subprotocol.  A single-use key with a 60-second window is
-#: plenty: it only has to survive the connection handshake.
-_SONIOX_TEMPORARY_KEY_URL = "https://api.soniox.com/v1/auth/temporary-api-key"
+#: plenty: it only has to survive the connection handshake.  The host comes
+#: from the configured region in :mod:`symphony_linear.soniox`, because a key
+#: minted in one region is only valid there.
 _SONIOX_KEY_TIMEOUT_SECONDS = 10.0
 
 
@@ -180,11 +186,17 @@ def api_soniox_key(request: Request) -> Response:
     Soniox's error message is relayed so the page can show why dictation
     failed; the long-lived key itself is only ever in the request header and
     is never logged or returned.
+
+    The answer also carries the region's WebSocket URL.  The page must not
+    hold a host of its own: the request, the socket it opens and the CSP
+    origin all have to name the same region, and this is the one response that
+    already knows the configured one.
     """
     webui = request.app.config.webui
-    api_key = webui.soniox_api_key if webui is not None else None
-    if not api_key:
+    if webui is None or not webui.soniox_api_key:
         return _error("Dictation is not configured.", status=404)
+    api_key = webui.soniox_api_key
+    region = webui.soniox_region
     body = {
         "usage_type": "transcribe_websocket",
         "expires_in_seconds": 60,
@@ -193,7 +205,7 @@ def api_soniox_key(request: Request) -> Response:
     headers = {"Authorization": f"Bearer {api_key}"}
     try:
         response = httpx.post(
-            _SONIOX_TEMPORARY_KEY_URL,
+            temporary_key_url(region),
             headers=headers,
             json=body,
             timeout=_SONIOX_KEY_TIMEOUT_SECONDS,
@@ -223,7 +235,12 @@ def api_soniox_key(request: Request) -> Response:
     if not isinstance(temporary, str) or not temporary:
         logger.warning("Soniox temporary key response was not in the expected shape")
         return _error("Soniox returned no temporary key.", status=502)
-    return _json({"api_key": temporary})
+    return _json(
+        {
+            "api_key": temporary,
+            "websocket_url": transcription_websocket_url(region),
+        }
+    )
 
 
 # ---------------------------------------------------------------------------
@@ -234,24 +251,14 @@ def api_soniox_key(request: Request) -> Response:
 _SPEECH_CONTENT_TYPE = "audio/mpeg"
 
 
-def api_speech(request: Request) -> Response:
-    """Read one agent reply aloud and return its mp3.
+def _readable_reply(request: Request) -> tuple[str, str] | Response:
+    """Return the comment id and text this request may speak, or a refusal.
 
-    The route is registered only when both keys are set, and this second check
-    keeps a direct caller from reaching either paid API without them.  It
-    takes a comment id rather than text so a client cannot use the daemon as a
-    general speech service, and it is a POST so a GET stays free of cost and
-    of the same-origin check's exemption.
-
-    The text is exactly what the entry's copy button offers: the stored body
-    without the bot footer.  Only an agent reply is accepted; a human comment,
-    a notice, an unknown comment or an unknown ticket is a 404, so the route
-    cannot be pointed at arbitrary text stored elsewhere on the ticket.
-
-    A cached clip is returned before either upstream call.  A failure after
-    that answers 502 with a short readable message, never a mirrored 401: the
-    browser would read that as "your Basic password is wrong" and prompt
-    again.  Neither key is ever logged or returned.
+    Both the POST that starts generation and the GET that streams the audio
+    accept exactly the same thing: an agent reply with a body on an existing
+    ticket.  Sharing the rule keeps a path one of them refuses from existing
+    only in the other, which would let a client start audio it cannot fetch or
+    fetch a reply that must not be read out.
     """
     if not request.app.speech_enabled:
         return _error("Speech is not configured.", status=404)
@@ -266,26 +273,92 @@ def api_speech(request: Request) -> Response:
     text = strip_footer(comment.body).strip()
     if not text:
         return _error("That reply cannot be read aloud.", status=404)
+    return comment.id, text
 
-    audio = request.app.speech_cache.get(comment.id, text)
-    if audio is None:
-        webui = request.app.config.webui
-        # ``speech_enabled`` is the conjunction of both keys, so the block is
-        # present and the Anthropic key alone cannot have enabled the route.
-        assert webui is not None
-        script = script_for_reply(
-            text,
-            api_key=(webui.anthropic_api_key or "").strip(),
-            base_url=webui.anthropic_base_url,
+
+def api_speech(request: Request) -> Response:
+    """Start reading one agent reply aloud and answer without the audio.
+
+    The route is registered only when both keys are set, and this second check
+    keeps a direct caller from reaching either paid API without them.  It
+    takes a comment id rather than text so a client cannot use the daemon as a
+    general speech service, and it is a POST because each uncached call costs
+    money: a GET is not same-origin checked, so another site could otherwise
+    trigger one.
+
+    It waits for Soniox's status and headers only, then lets a background
+    thread fill a cache entry while the answer goes out at once; the audio is
+    fetched by ``api_speech_audio``.  The text is exactly what the entry's copy
+    button offers: the stored body without the bot footer.  An existing entry,
+    complete or still filling, answers before either API is called, so a
+    second click on the same reply costs nothing.
+
+    A failure before the audio starts answers 502 with a short readable
+    message, never a mirrored 401: the browser would read that as "your Basic
+    password is wrong" and prompt again.  Neither key is ever logged or
+    returned.
+    """
+    resolved = _readable_reply(request)
+    if isinstance(resolved, Response):
+        return resolved
+    comment_id, text = resolved
+
+    cache = request.app.speech_cache
+    if cache.entry(comment_id, text) is not None:
+        return _json({"status": "generating"})
+
+    webui = request.app.config.webui
+    # ``speech_enabled`` is the conjunction of both keys, so the block is
+    # present and the Anthropic key alone cannot have enabled the route.
+    assert webui is not None
+    script = script_for_reply(
+        text,
+        api_key=(webui.anthropic_api_key or "").strip(),
+        base_url=webui.anthropic_base_url,
+    )
+    if script is None:
+        return _error("Could not summarise the reply. Try again.", status=502)
+    try:
+        stream = stream_speech(
+            script,
+            api_key=(webui.soniox_api_key or "").strip(),
+            region=webui.soniox_region,
         )
-        if script is None:
-            return _error("Could not summarise the reply. Try again.", status=502)
-        try:
-            audio = synthesise(script, api_key=(webui.soniox_api_key or "").strip())
-        except SonioxError as exc:
-            return _error(str(exc), status=502)
-        request.app.speech_cache.put(comment.id, text, audio)
-    return Response(body=audio, content_type=_SPEECH_CONTENT_TYPE)
+    except SonioxError as exc:
+        return _error(str(exc), status=502)
+
+    if not cache.start_filling(comment_id, text, stream):
+        # Another request won the race while the script and the request were
+        # being made.  Its producer owns the entry, so this stream is unused.
+        stream.close()
+    return _json({"status": "generating"})
+
+
+def api_speech_audio(request: Request) -> Response:
+    """Stream the audio of an existing entry as Soniox produces it.
+
+    Never calls Anthropic or Soniox and never creates an entry, so the GET
+    costs nothing and writes no state, which is what lets it be a GET at all.
+    A complete entry is sent the same way: every chunk from the start, ending
+    when the connection closes.
+    """
+    resolved = _readable_reply(request)
+    if isinstance(resolved, Response):
+        return resolved
+    comment_id, text = resolved
+    entry = request.app.speech_cache.entry(comment_id, text)
+    if entry is None:
+        return _error("No audio for that reply.", status=404)
+    # The media element fetches this address itself and cannot ask for a cache
+    # mode, so the response must forbid caching: a stored partial body would
+    # be replayed on the next listen and sound cut off.  A cache-busting query
+    # string would defeat the cache too, but it would make every listen a
+    # different address for no gain.
+    return Response(
+        content_type=_SPEECH_CONTENT_TYPE,
+        headers=_NO_STORE,
+        body_chunks=entry.iter_chunks(),
+    )
 
 
 # ---------------------------------------------------------------------------

@@ -59,6 +59,7 @@ def _config(
     *,
     api_token: str | None = None,
     soniox_api_key: str | None = None,
+    soniox_region: str | None = None,
     anthropic_api_key: str | None = None,
     models: dict[str, str] | None = None,
 ) -> AppConfig:
@@ -70,6 +71,8 @@ def _config(
         block["api_token"] = api_token
     if soniox_api_key is not None:
         block["soniox_api_key"] = soniox_api_key
+    if soniox_region is not None:
+        block["soniox_region"] = soniox_region
     if anthropic_api_key is not None:
         block["anthropic_api_key"] = anthropic_api_key
     data: dict[str, object] = {"webui": block}
@@ -233,6 +236,7 @@ def _running_server(
     max_concurrent: int = 32,
     api_token: str | None = None,
     soniox_api_key: str | None = None,
+    soniox_region: str | None = None,
     anthropic_api_key: str | None = None,
     webpush: WebPushStore | None = None,
 ) -> Iterator[tuple[int, LocalTracker, StateManager]]:
@@ -244,6 +248,7 @@ def _running_server(
         config=_config(
             api_token=api_token,
             soniox_api_key=soniox_api_key,
+            soniox_region=soniox_region,
             anthropic_api_key=anthropic_api_key,
         ),
         on_wake=Mock(),
@@ -1566,7 +1571,10 @@ class TestSonioxDictation:
                 )
 
         assert status == 200
-        assert json.loads(body) == {"api_key": "snx_temp_test"}
+        assert json.loads(body) == {
+            "api_key": "snx_temp_test",
+            "websocket_url": "wss://stt-rt.soniox.com/transcribe-websocket",
+        }
         # The long-lived key must only ever travel in the outbound header.
         assert b"long-lived-soniox-key" not in body
         assert post.call_args.args[0] == (

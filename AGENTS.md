@@ -801,27 +801,84 @@ shutting down, or the ticket is no longer triggered — see `_is_still_triggered
   and a GET never generates one.
 - **Reading an agent reply aloud needs both keys and takes a comment id.** With
   both `webui.anthropic_api_key` and `webui.soniox_api_key` set,
-  `POST /api/tickets/<ticket>/comments/<comment>/speech` is registered and
-  every agent reply with a body gets a speaker button; `api_speech` re-checks
-  the same gate, so a bypassed route table still cannot reach either paid API.
-  It takes a comment id, never text, and accepts only an agent comment with a
-  body, so the daemon cannot be used as a general speech service, and it is a
-  POST because each uncached call costs money: a GET is not same-origin
-  checked, so another site could trigger one. One Anthropic call turns the
-  reply into a listening script and one Soniox request synthesises the whole
-  script. The prompt asks for at most about 250 words, which is under two
-  minutes of speech; Soniox cuts the audio of one request at two minutes
-  without an error, and that is accepted. Splitting the script and joining the
-  audio was deferred until a cut-off reply is actually seen. The mp3 lives in
-  `WebUIApp.speech_cache` (in memory, newest 50, keyed by comment id and body)
-  and is never written to disk; a restart regenerates it. `static/speech.js`
-  fetches on click through one page-wide `Audio` element: the click starts
-  that element with a short silent `data:` clip before the fetch, which is what
-  makes the later `play()` of the `blob:` mp3 allowed on iPhone Safari, and a
-  media element is used rather than Web Audio because Web Audio is silent with
-  the ringer switch off. A click while busy is ignored, a click on another
-  reply stops the current one, and a failure shows on the button until the
-  next click. The CSP gains `media-src blob: data:` only under the same gate.
+  `POST /api/tickets/<ticket>/comments/<comment>/speech` starts generation and
+  `GET` on the same path streams the audio; both are registered, and every
+  agent reply with a body gets a speaker button. Both views re-check the gate,
+  so a bypassed route table still cannot reach either paid API. They take a
+  comment id, never text, and accept only an agent comment with a body, so the
+  daemon cannot be used as a general speech service, and generation is a POST
+  because each uncached call costs money: a GET is not same-origin checked, so
+  another site could otherwise trigger one. One Anthropic call turns the
+  reply into a listening script and one Soniox request synthesises it. The
+  prompt asks for at most about 250 words, which was 97 seconds with this voice
+  in a test. Soniox documents a two-minute cut on one request, but it was not
+  observed: a 362 word script returned 144 seconds. The 250-word target keeps
+  the summary well inside that, and a longer script is not split. Splitting
+  the script and joining the audio stays deferred until a cut-off reply is
+  actually seen.
+  The POST waits only for Soniox's status and headers, creates a cache entry,
+  starts one daemon producer thread that copies the body into it, and answers
+  at once with a small JSON body; an existing entry for the same comment and
+  body, complete or still filling, answers without calling either API. A
+  refusal before the audio starts (a non-success status, a non-audio content
+  type, a transport error) is a 502 with the readable message and leaves no
+  entry. The GET never calls either API and never creates an entry: it sends
+  the entry's bytes as `audio/mpeg` from the start, waits for each new chunk as
+  the producer appends it, and ends when the producer is done or has failed.
+  Soniox generates at about 1.2 times real time with the first bytes in under a
+  second, which is why the page streams: it starts sound a few seconds after
+  the click while the rest downloads, instead of waiting for the whole clip.
+  No entry, or an entry made from a different body, is a 404, so a GET costs
+  nothing and writes nothing. HEAD runs the GET view, but the server never
+  consumes the chunk iterator for it, so it sends the headers and no body.
+  `Response.body_chunks` is the only streamed body: no `Content-Length`, one
+  write and flush per chunk, and because the handler speaks HTTP/1.0 the
+  connection closing ends the body; there is no chunked transfer encoding. The
+  GET sends `Cache-Control: no-store`, because the media element cannot ask
+  for a cache mode and a stored partial body would be replayed on the next
+  listen. A broken pipe or reset ends that one response quietly and leaves the
+  background producer to complete the entry, so a second listen is immediate.
+  The socket's 10-second timeout is per operation: a reader waiting between
+  chunks does no socket operation and is never cut, while a stalled client's
+  write fails after it instead of pinning the handler thread forever.
+  A cache entry holds the body, the chunks so far, a done flag, a failed flag
+  and one condition variable shared by the producer and every reader. A
+  producer that fails mid-stream (Soniox drops the connection) removes the
+  entry, wakes the readers so their responses end, and the next click
+  generates again. The mp3 lives in `WebUIApp.speech_cache` (in memory, newest
+  50, keyed by comment id and body) and is never written to disk; a restart
+  regenerates it. `static/speech.js` drives the button through one page-wide
+  `Audio` element: the click starts that element with a short silent `data:`
+  clip before the POST, which is what makes the later `play()` allowed on
+  iPhone Safari, and a media element is used rather than Web Audio because Web
+  Audio is silent with the ringer switch off. After the POST the element's
+  `src` becomes the GET address and `play()` is called; the busy state lasts
+  until the element's `playing` event, and stopping pauses the element, removes
+  its `src` and calls `load()`, which closes the GET. If the element reports an
+  error or its `play()` rejects before any sound, the script fetches the same
+  GET in full and plays it from a `blob:` URL, once; that covers a browser that
+  will not send Basic credentials on a media request and one that will not play
+  audio of unknown length. The same fallback runs when no `playing` event has
+  arrived eight seconds after `play()` was called on the streamed source
+  (`STREAM_START_TIMEOUT_MS`), because iPhone Safari may accept the stream and
+  never play it; that deadline is cleared on `playing`, on any cancel or stop,
+  on an error, and whenever the fallback starts. A click on a speaker button
+  during a preparation cancels it with `AbortController`: the same button goes
+  back to idle, another reply's starts that reply. Every continuation checks
+  that its button is still the pending one, so a late answer from a cancelled
+  request changes nothing. A failure shows on the button until the next click.
+  The CSP gains `media-src 'self' blob: data:` only under the same gate:
+  `self` for the streamed GET, `blob:` for the page's fallback and `data:` for
+  the unlock clip.
+  Every Soniox URL comes from `symphony_linear/soniox.py`'s region mapping —
+  `webui.soniox_region`, one of `us` (default), `eu`, `jp` or `in`, where `us`
+  keeps the bare hosts and the others insert the label before `soniox.com` —
+  for the temporary key, the dictation WebSocket and the speech request alike,
+  and no other file may hold a Soniox host string: a key works only on the
+  hosts of its own project region and is otherwise refused with "Incorrect API
+  key provided". The temporary-key answer carries the WebSocket URL so the
+  page holds no host, and `_build_csp` takes the region for its dictation
+  origin. An unknown region is rejected by the config model.
 - **Every web UI request goes through one dispatch choke point.**
   `_WebUIHandler.handle_one_request` parses the request and `_dispatch` does,
   in order: authentication (Basic for the browser routes, including static

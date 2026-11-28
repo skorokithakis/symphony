@@ -9,7 +9,7 @@ in :mod:`symphony_linear.webui.server` and are applied to every route.
 from __future__ import annotations
 
 import re
-from collections.abc import Callable, Mapping
+from collections.abc import Callable, Iterator, Mapping
 from dataclasses import dataclass, field
 from pathlib import Path
 from typing import BinaryIO
@@ -77,10 +77,11 @@ class WebUIApp:
     #: source in its own response (the Web Push service worker's notification
     #: icon) derives its override from this rather than restating the policy.
     csp: str = ""
-    #: The speak route's audio, held for this server only.  A cache per app
-    #: instance rather than a module-level one keeps two servers in one process
-    #: (tests, or a daemon restarting in-process) from serving each other's
-    #: audio; it is never written anywhere.
+    #: The speak route's audio, held for this server only.  An entry fills
+    #: while the GET route streams it, and it is never written anywhere.  A
+    #: cache per app instance rather than a module-level one keeps two servers
+    #: in one process (tests, or a daemon restarting in-process) from serving
+    #: each other's audio.
     speech_cache: SpeechCache = field(default_factory=SpeechCache)
 
     @property
@@ -135,6 +136,13 @@ class Response:
     The server always adds its security headers (CSP, nosniff, frame denial)
     and ``Content-Type``/``Content-Length`` when it writes this object.
 
+    ``body_chunks`` is the streaming form of the body: an iterator of byte
+    chunks that the server writes and flushes one at a time.  A response with
+    chunks carries no ``Content-Length``, because the total is not known while
+    the producer is still filling it; the handler speaks HTTP/1.0, so the body
+    ends when the connection closes.  ``body`` stays empty then.  A HEAD
+    response never consumes the iterator.
+
     ``csp`` overrides the server-wide Content-Security-Policy for this one
     response.  ``None``, the only value every route but the Web Push service
     worker uses, keeps the server's policy byte for byte.
@@ -145,6 +153,7 @@ class Response:
     content_type: str = "text/html; charset=utf-8"
     headers: tuple[tuple[str, str], ...] = ()
     csp: str | None = None
+    body_chunks: Iterator[bytes] | None = None
 
     @classmethod
     def html(

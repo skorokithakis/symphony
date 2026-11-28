@@ -300,6 +300,14 @@ class _WebUIConfig(BaseModel):
             "needs the key's text-to-speech permission."
         ),
     )
+    soniox_region: Literal["us", "eu", "jp", "in"] = Field(
+        "us",
+        description=(
+            "Soniox project region: 'us' (default), 'eu', 'jp' or 'in'.  A key "
+            "works only on the hosts of its own region; a key from another "
+            "region is refused with 'Incorrect API key provided'."
+        ),
+    )
     api_token: str | None = Field(
         None,
         description=(

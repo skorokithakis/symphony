@@ -17,7 +17,10 @@
   }
 
   var KEY_URL = "/api/soniox-key";
-  var SOCKET_URL = "wss://stt-rt.soniox.com/transcribe-websocket";
+  /* The WebSocket URL arrives with the temporary key, because it depends on
+     the project's Soniox region.  A host hard-coded here would send the
+     browser to another region's endpoint while the CSP allows only the
+     configured one, and the key is only valid on its own region's hosts. */
   /* Small enough to feel live, large enough not to flood the socket with
      tiny binary frames. */
   var TIMESLICE_MS = 250;
@@ -491,9 +494,15 @@
             ) {
               throw new Error("No temporary key was returned.");
             }
+            if (
+              typeof payload.websocket_url !== "string" ||
+              !payload.websocket_url
+            ) {
+              throw new Error("Could not connect to Soniox.");
+            }
             var socket;
             try {
-              socket = new WebSocket(SOCKET_URL, [
+              socket = new WebSocket(payload.websocket_url, [
                 "soniox-api-key",
                 payload.api_key,
               ]);

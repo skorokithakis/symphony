@@ -26,6 +26,10 @@ webui:
   # and with the Anthropic key, reading agent replies aloud (see Dictation and
   # Speech below).
   # soniox_api_key: ${SONIOX_API_KEY}
+  # Optional. Soniox project region: us (default), eu, jp or in. A key works
+  # only on its own region's hosts; a key from another region is refused with
+  # "Incorrect API key provided".
+  # soniox_region: us
   # Optional. Bearer token for the JSON API at /api/v1, for an external agent
   # (see Agent API below). Unset disables the API: /api/v1 then answers 404.
   # api_token: ${SYMPHONY_WEBUI_API_TOKEN}
@@ -345,12 +349,21 @@ idle state.
 
 The long-lived key stays on the daemon. Each recording first asks
 `POST /api/soniox-key` for a single-use temporary key that has 60 seconds in
-which to open the connection, then the browser opens the WebSocket directly to
-`wss://stt-rt.soniox.com`; audio is not proxied through Symphony. The route
-uses the same Basic auth and same-origin check as every other page and is not
-registered at all without the key, and the Content-Security-Policy allows the
-Soniox WebSocket origin only when dictation is configured. The key needs the
-**Temporary API keys** permission and the real-time speech-to-text permission.
+which to open the connection; the answer also names the WebSocket URL. The
+browser then opens that WebSocket directly to Soniox; audio is not proxied
+through Symphony. The route uses the same Basic auth and same-origin check as
+every other page and is not registered at all without the key, and the
+Content-Security-Policy allows the Soniox WebSocket origin only when dictation
+is configured. The key needs the **Temporary API keys** permission and the
+real-time speech-to-text permission.
+
+Both dictation and speech follow `webui.soniox_region`: `us` (the default),
+`eu`, `jp` or `in`. The region decides all three Soniox hosts — the one that
+mints temporary keys, the dictation WebSocket and the text-to-speech API — and
+nothing else changes. A Soniox key belongs to one project region and works
+only there; a key from another region is refused, and Soniox's message says
+"Incorrect API key provided". The WebSocket URL in the temporary-key answer is
+the region's, so the page holds no host of its own.
 
 The button stays hidden when dictation is not configured, when the page is not
 on HTTPS (or localhost), when the browser has no microphone API, or when it
@@ -363,22 +376,34 @@ With both `webui.anthropic_api_key` and `webui.soniox_api_key` set, every agent
 reply on the ticket page gets a speaker button beside its copy button. Click it
 to hear the reply, and click it again to stop. Only one reply plays at a time:
 starting another stops the first, and the button shows a stop square while it
-plays. A click while the audio is still being made is ignored. A failure puts
-the reason in the button's tooltip and screen-reader label, and the next click
-tries again. The button appears on agent replies only, never on your own
-comments, the ticket text or a notice.
+plays. A click on the same button while the audio is still being made or the
+stream is starting cancels that attempt and returns the button to idle; a
+click on another reply's button cancels the first and starts the second. A
+failure puts the reason in the button's tooltip and screen-reader label, and
+the next click tries again. If the browser refuses the streamed audio, or the
+audio has not started after eight seconds, the page downloads the whole clip
+and plays that instead. The button appears on agent replies only, never
+on your own comments, the ticket text or a notice.
 
 You hear a summary, not the full text. The daemon first asks the Anthropic
 Messages API for a spoken version of the reply, written for a listener who
 cannot see the screen: what the agent did, the context needed to decide, and
-every question with its options. It asks for at most about 250 words, which is
-under two minutes of speech. It then asks Soniox's text-to-speech API for the
-audio in one request. Soniox ends the audio of one request at two minutes, so a
-summary that runs longer is cut off at that point. Each first click on a reply
-therefore costs one Haiku call and one Soniox call; clicking the same reply
-again returns the audio already in memory. Audio is never written to disk and is
-kept only in memory, the newest 50 replies, until the daemon restarts. Both keys
-stay on the daemon.
+every question with its options. It asks for at most about 250 words, which was
+97 seconds of speech with this voice in a test. It then asks Soniox's
+text-to-speech API, on the hosts of `webui.soniox_region`, for the audio in one
+request. Soniox generates at about 1.2 times real time, with the first bytes in
+under a second, so the page plays the audio as it arrives: sound starts a few
+seconds after the click and continues while the rest downloads. Soniox
+documents a two-minute cut on one request, but it was not observed: a 362 word
+script returned 144 seconds. Keeping the summary to about 250 words stays well
+inside that, and a longer script is not split.
+
+Each first click on a reply therefore costs one Haiku call and one Soniox
+call; clicking the same reply again returns the audio already in memory.
+Stopping the sound closes the stream but does not stop the generation: Soniox
+finishes the clip in the background, so a later listen starts at once. Audio is
+never written to disk and is kept only in memory, the newest 50 replies, until
+the daemon restarts. Both keys stay on the daemon.
 
 The Soniox key needs the **text-to-speech** permission as well as the dictation
 permissions. Without it Soniox refuses the request and the button shows
