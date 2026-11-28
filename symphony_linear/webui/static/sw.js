@@ -15,6 +15,15 @@
 
 var ICON_URL = "https://raw.githubusercontent.com/skorokithakis/symphony/master/symphony_linear/webui/static/icon.png";
 
+/* Without this a new version of this file waits until every window of the app
+ * is closed, and an installed PWA kept in Android's recent apps can keep the
+ * old worker (and its old notification click) for days.  Taking over at once
+ * is safe because the worker has no fetch handler and no cache: the only
+ * thing that changes hands is the push and notification click handling. */
+self.addEventListener("install", function () {
+  self.skipWaiting();
+});
+
 self.addEventListener("push", function (event) {
   var payload = {};
   if (event.data) {
