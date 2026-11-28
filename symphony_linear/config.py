@@ -277,7 +277,11 @@ class _WebUIConfig(BaseModel):
     password: str = Field(..., description="HTTP Basic auth password")
     anthropic_api_key: str | None = Field(
         None,
-        description="Optional Anthropic API key for automatic ticket titles",
+        description=(
+            "Optional Anthropic API key for automatic ticket titles and reply "
+            "summaries, and, together with a Soniox key, for reading agent "
+            "replies aloud"
+        ),
     )
     anthropic_base_url: str | None = Field(
         None,
@@ -290,8 +294,10 @@ class _WebUIConfig(BaseModel):
         None,
         description=(
             "Optional Soniox API key enabling microphone dictation in the web "
-            "UI.  Its presence is the on/off switch; the browser only ever "
-            "receives short-lived temporary keys."
+            "UI, and, together with an Anthropic key, reading agent replies "
+            "aloud.  Its presence is the dictation on/off switch; the browser "
+            "only ever receives short-lived temporary keys.  Reading aloud "
+            "needs the key's text-to-speech permission."
         ),
     )
     api_token: str | None = Field(

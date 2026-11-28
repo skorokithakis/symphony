@@ -72,7 +72,13 @@ from symphony_linear.webui.agent_api import (
     error_response,
     is_agent_api_path,
 )
-from symphony_linear.webui.http_types import Request, Response, Route, WebUIApp
+from symphony_linear.webui.http_types import (
+    Request,
+    Response,
+    Route,
+    WebUIApp,
+    speech_is_enabled,
+)
 from symphony_linear.webui.routes import routes_for
 
 logger = logging.getLogger(__name__)
@@ -96,15 +102,20 @@ _SERVE_POLL_INTERVAL = 0.1  # seconds — keeps stop() responsive in tests
 #: Only same-origin scripts and styles; the time formatter is an external
 #: file because inline script is deliberately not allowed.
 #: ``connect-src`` gains the Soniox WebSocket origin only when dictation is
-#: configured, because the browser then streams audio to it directly.  Every
-#: other page keeps the original policy, byte for byte.
+#: configured, because the browser then streams audio to it directly.
+#: ``media-src`` gains ``blob:`` and ``data:`` only when speech is configured:
+#: the speak button plays a fetched mp3 from a blob URL, after unlocking the
+#: audio element with a very short ``data:`` clip, and those are the only
+#: media sources it needs.  Every other page keeps the original policy, byte
+#: for byte.
 _SONIOX_WEBSOCKET = "wss://stt-rt.soniox.com"
 
 
-def _build_csp(*, dictation: bool) -> str:
+def _build_csp(*, dictation: bool, speech: bool = False) -> str:
     connect_src = "connect-src 'self'"
     if dictation:
         connect_src = f"{connect_src} {_SONIOX_WEBSOCKET}"
+    media_src = "media-src blob: data:; " if speech else ""
     return (
         "default-src 'none'; "
         "script-src 'self'; "
@@ -114,6 +125,7 @@ def _build_csp(*, dictation: bool) -> str:
         "worker-src 'self'; "
         "style-src 'self'; "
         "img-src 'self'; "
+        f"{media_src}"
         # default-src 'none' would otherwise block the web app manifest.
         "manifest-src 'self'; "
         "font-src 'self'; "
@@ -876,7 +888,10 @@ class WebUIServer:
         self._port = webui.port if port is None else port
         self._password = webui.password
         self._api_token = webui.api_token
-        self._csp = _build_csp(dictation=webui.soniox_api_key is not None)
+        self._csp = _build_csp(
+            dictation=webui.soniox_api_key is not None,
+            speech=speech_is_enabled(config),
+        )
         self._routes = tuple(routes if routes is not None else routes_for(config))
         self._max_concurrent = max_concurrent
         # Generating the VAPID pair writes webpush.json, and a page GET must

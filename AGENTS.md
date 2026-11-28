@@ -795,6 +795,29 @@ shutting down, or the ticket is no longer triggered — see `_is_still_triggered
   non-failed Needs Input row, and only for the latest agent reply. It is never
   sent as a notification, shown on the ticket page, or exposed by `/api/v1`,
   and a GET never generates one.
+- **Reading an agent reply aloud needs both keys and takes a comment id.** With
+  both `webui.anthropic_api_key` and `webui.soniox_api_key` set,
+  `POST /api/tickets/<ticket>/comments/<comment>/speech` is registered and
+  every agent reply with a body gets a speaker button; `api_speech` re-checks
+  the same gate, so a bypassed route table still cannot reach either paid API.
+  It takes a comment id, never text, and accepts only an agent comment with a
+  body, so the daemon cannot be used as a general speech service, and it is a
+  POST because each uncached call costs money: a GET is not same-origin
+  checked, so another site could trigger one. One Anthropic call turns the
+  reply into a listening script and one Soniox request synthesises the whole
+  script. The prompt asks for at most about 250 words, which is under two
+  minutes of speech; Soniox cuts the audio of one request at two minutes
+  without an error, and that is accepted. Splitting the script and joining the
+  audio was deferred until a cut-off reply is actually seen. The mp3 lives in
+  `WebUIApp.speech_cache` (in memory, newest 50, keyed by comment id and body)
+  and is never written to disk; a restart regenerates it. `static/speech.js`
+  fetches on click through one page-wide `Audio` element: the click starts
+  that element with a short silent `data:` clip before the fetch, which is what
+  makes the later `play()` of the `blob:` mp3 allowed on iPhone Safari, and a
+  media element is used rather than Web Audio because Web Audio is silent with
+  the ringer switch off. A click while busy is ignored, a click on another
+  reply stops the current one, and a failure shows on the button until the
+  next click. The CSP gains `media-src blob: data:` only under the same gate.
 - **Every web UI request goes through one dispatch choke point.**
   `_WebUIHandler.handle_one_request` parses the request and `_dispatch` does,
   in order: authentication (Basic for the browser routes, including static

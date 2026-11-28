@@ -10,7 +10,7 @@ from __future__ import annotations
 
 import re
 from collections.abc import Callable, Mapping
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 from pathlib import Path
 from typing import BinaryIO
 
@@ -20,10 +20,29 @@ from symphony_linear.presence import TicketPresence
 from symphony_linear.state import StateManager
 from symphony_linear.turn_activity import TurnActivity
 from symphony_linear.webpush import WebPushStore
+from symphony_linear.webui.speech import SpeechCache
 
 #: Default request-body limit.  A route may raise it explicitly; the file
 #: upload routes do so and stream the body instead of buffering it.
 DEFAULT_MAX_BODY_BYTES = 1 * 1024 * 1024  # 1 MiB
+
+
+def speech_is_enabled(config: AppConfig) -> bool:
+    """Whether agent replies can be read aloud.
+
+    Both keys are needed: the Anthropic key writes the listening script on the
+    daemon, and the Soniox key generates its audio.  An empty Anthropic key is
+    what an unset ``${VAR}`` leaves behind and cannot make a summary, so it
+    reads as absent; the Soniox key is validated as non-empty in the config.
+    The route table, the Content-Security-Policy and the view all ask this one
+    function so none of them can enable a path the others do not.
+    """
+    webui = config.webui
+    if webui is None:
+        return False
+    return bool((webui.anthropic_api_key or "").strip()) and bool(
+        (webui.soniox_api_key or "").strip()
+    )
 
 
 @dataclass(frozen=True)
@@ -58,6 +77,11 @@ class WebUIApp:
     #: source in its own response (the Web Push service worker's notification
     #: icon) derives its override from this rather than restating the policy.
     csp: str = ""
+    #: The speak route's audio, held for this server only.  A cache per app
+    #: instance rather than a module-level one keeps two servers in one process
+    #: (tests, or a daemon restarting in-process) from serving each other's
+    #: audio; it is never written anywhere.
+    speech_cache: SpeechCache = field(default_factory=SpeechCache)
 
     @property
     def dictation_enabled(self) -> bool:
@@ -69,6 +93,16 @@ class WebUIApp:
         """
         webui = self.config.webui
         return webui is not None and webui.soniox_api_key is not None
+
+    @property
+    def speech_enabled(self) -> bool:
+        """Whether the page may offer to read an agent reply aloud.
+
+        Unlike dictation this needs both keys, because the script is written by
+        the daemon.  The route table and the CSP are built from the same rule,
+        so a page never renders a button the server would answer 404 for.
+        """
+        return speech_is_enabled(self.config)
 
 
 @dataclass(frozen=True)

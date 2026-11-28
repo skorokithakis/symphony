@@ -15,14 +15,16 @@ webui:
   port: 8080
   host: 127.0.0.1          # default
   password: change-me
-  # Optional. Enables automatic titles and reply summaries (see Titles and
-  # summaries below).
+  # Optional. Enables automatic titles and reply summaries, and with the
+  # Soniox key, reading agent replies aloud (see Titles and summaries and
+  # Speech below).
   # anthropic_api_key: ${ANTHROPIC_API_KEY}
   # Optional. Base URL for the Messages API, e.g. an Anthropic-compatible
   # gateway (see Titles and summaries below).
   # anthropic_base_url: https://anthropic-gateway.example.com
-  # Optional. Soniox API key enabling microphone dictation in the reply and
-  # ticket-text boxes (see Dictation below).
+  # Optional. Enables microphone dictation in the reply and ticket-text boxes,
+  # and with the Anthropic key, reading agent replies aloud (see Dictation and
+  # Speech below).
   # soniox_api_key: ${SONIOX_API_KEY}
   # Optional. Bearer token for the JSON API at /api/v1, for an external agent
   # (see Agent API below). Unset disables the API: /api/v1 then answers 404.
@@ -354,6 +356,35 @@ The button stays hidden when dictation is not configured, when the page is not
 on HTTPS (or localhost), when the browser has no microphone API, or when it
 cannot record a format Soniox accepts. Dictation needs JavaScript; without it
 both text boxes work as before.
+
+## Speech
+
+With both `webui.anthropic_api_key` and `webui.soniox_api_key` set, every agent
+reply on the ticket page gets a speaker button beside its copy button. Click it
+to hear the reply, and click it again to stop. Only one reply plays at a time:
+starting another stops the first, and the button shows a stop square while it
+plays. A click while the audio is still being made is ignored. A failure puts
+the reason in the button's tooltip and screen-reader label, and the next click
+tries again. The button appears on agent replies only, never on your own
+comments, the ticket text or a notice.
+
+You hear a summary, not the full text. The daemon first asks the Anthropic
+Messages API for a spoken version of the reply, written for a listener who
+cannot see the screen: what the agent did, the context needed to decide, and
+every question with its options. It asks for at most about 250 words, which is
+under two minutes of speech. It then asks Soniox's text-to-speech API for the
+audio in one request. Soniox ends the audio of one request at two minutes, so a
+summary that runs longer is cut off at that point. Each first click on a reply
+therefore costs one Haiku call and one Soniox call; clicking the same reply
+again returns the audio already in memory. Audio is never written to disk and is
+kept only in memory, the newest 50 replies, until the daemon restarts. Both keys
+stay on the daemon.
+
+The Soniox key needs the **text-to-speech** permission as well as the dictation
+permissions. Without it Soniox refuses the request and the button shows
+Soniox's message, which says that the key does not have the permission. A
+change to the key's permissions takes effect on the next click. Speech needs
+JavaScript; without it the button does nothing.
 
 ## Notifications
 

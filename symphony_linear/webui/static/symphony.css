@@ -1370,6 +1370,16 @@ dialog.confirm:not([open]) { display: none; }
 .dictation-btn[aria-pressed="true"] { background: var(--accent); color: var(--on-accent); }
 .dictation-btn[aria-pressed="true"] .ic { animation: sym-pulse 1.4s ease-in-out infinite; }
 
+/* The speak button reuses .icon-btn.  While playing it shows a stop square in
+   place of the speaker; while the audio is being fetched it pulses, and a
+   failed request or a failed play turns it red.  The message itself is in the
+   button's title and aria-label, never in a page-level alert. */
+.speech-btn .ic-stop { display: none; }
+.speech-btn[aria-pressed="true"] .ic-stop { display: block; }
+.speech-btn[aria-pressed="true"] .ic-speak { display: none; }
+.speech-btn[data-state="busy"] .ic { animation: sym-pulse 1.4s ease-in-out infinite; }
+.speech-btn[data-state="error"] { color: var(--danger); }
+
 /* The Web Push bell reuses .icon-btn and starts hidden; push.js reveals it
    only for a browser that can subscribe.  The design's display rule would
    otherwise win over the hidden attribute. */

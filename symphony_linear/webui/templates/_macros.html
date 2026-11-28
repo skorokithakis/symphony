@@ -80,6 +80,15 @@
 {% if entry.markdown %}<button class="icon-btn" type="button" data-copy="{{ entry.markdown }}" aria-label="Copy the Markdown"><svg class="ic ic--sm" viewBox="0 0 20 20" aria-hidden="true"><path d="M7 7h9v9H7zM4 13V4h9"></path></svg></button>{% endif %}
 {%- endmacro %}
 
+{# Reading an agent reply aloud.  ``speech_url`` is set only when the daemon
+   has both keys and the reply has a body, so the gate needs no second copy in
+   the template.  The URL names the comment, never its text: the server looks
+   the reply up itself.  The script sets the busy, playing and error states on
+   this button, swapping the speaker for a stop square while it plays. #}
+{% macro speak(entry) -%}
+{% if entry.speech_url %}<button class="icon-btn speech-btn" type="button" data-speech="{{ entry.speech_url }}" data-state="idle" aria-pressed="false" aria-label="Read this reply aloud" title="Read this reply aloud"><svg class="ic ic--sm ic-speak" viewBox="0 0 20 20" aria-hidden="true"><path d="M4 8h3l4-3v10l-4-3H4zM14 7.5a4 4 0 010 5M16.5 5a7 7 0 010 10"></path></svg><svg class="ic ic--sm ic-stop" viewBox="0 0 20 20" aria-hidden="true"><path d="M6 6h8v8H6z"></path></svg></button>{% endif %}
+{%- endmacro %}
+
 {% macro entry(entry) -%}
 {% if entry.kind == "user" %}
 <article class="entry entry--user">
@@ -97,6 +106,7 @@
       <button class="link-btn" type="button" id="{{ entry.anchor }}-open" data-open-secs="{{ entry.anchor }}" aria-label="Open all sections" title="Open all sections">[+]</button>
       <button class="link-btn" type="button" id="{{ entry.anchor }}-close" data-close-secs="{{ entry.anchor }}" aria-label="Close all sections" title="Close all sections">[-]</button>
       {{ copy_markdown(entry) }}
+      {{ speak(entry) }}
     </span>
   </header>
   <div class="md">{{ entry.html|safe }}</div>

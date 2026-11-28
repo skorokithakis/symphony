@@ -3,7 +3,7 @@
 
 {% block title %}{{ page.ticket.id }} · {{ page.title }} · symphony{% endblock %}
 
-{% block scripts %}<script src="{{ static_url('lists.js') }}" defer></script><script src="{{ static_url('upload.js') }}" defer></script><script src="{{ static_url('questions.js') }}" defer></script><script src="{{ static_url('ticket.js') }}" defer></script>{% if dictation_enabled %}<script src="{{ static_url('dictation.js') }}" defer></script>{% endif %}{% endblock %}
+{% block scripts %}<script src="{{ static_url('lists.js') }}" defer></script><script src="{{ static_url('upload.js') }}" defer></script><script src="{{ static_url('questions.js') }}" defer></script><script src="{{ static_url('ticket.js') }}" defer></script>{% if dictation_enabled %}<script src="{{ static_url('dictation.js') }}" defer></script>{% endif %}{% if speech_enabled %}<script src="{{ static_url('speech.js') }}" defer></script>{% endif %}{% endblock %}
 
 {% block content %}
 <header class="bar">

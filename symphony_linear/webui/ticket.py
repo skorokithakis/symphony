@@ -130,9 +130,13 @@ class Entry:
     template may mark safe; ``notice`` is escaped plain text.  ``markdown`` is
     the raw stored body behind the entry's copy button, which must paste as
     the agent wrote it (code fences and all), so it is deliberately not
-    derived from ``html`` or from the plain-text form.  ``new`` marks an
-    entry posted after the ticket's seen marker when the page was opened; the
-    page keeps the badge until it is reloaded.
+    derived from ``html`` or from the plain-text form.  ``speech_url`` is the
+    speak route for an agent reply that has a body, and empty for everything
+    else; the URL names the comment rather than carrying its text, so the
+    browser never sends a body back and the server can only read a reply it
+    already stores.  ``new`` marks an entry posted after the ticket's seen
+    marker when the page was opened; the page keeps the badge until it is
+    reloaded.
     """
 
     kind: str
@@ -142,6 +146,10 @@ class Entry:
     html: str = ""
     notice: str = ""
     markdown: str = ""
+    #: Whether the speak button is offered, with the comment id it names.  The
+    #: URL is built here rather than by the page script so an entry appended by
+    #: the poll gets a working button from the same rule as the initial page.
+    speech_url: str = ""
     meta: tuple[str, ...] = ()
     long: bool = False
     detail_html: str = ""
@@ -312,7 +320,9 @@ def _notice_text(plain: str) -> str:
 # ---------------------------------------------------------------------------
 
 
-def _entry_body(comment: LocalComment, ticket_id: str) -> Entry:
+def _entry_body(
+    comment: LocalComment, ticket_id: str, *, speech_enabled: bool = False
+) -> Entry:
     kind = comment.kind
     created_at = comment.created_at
     clock = _clock(created_at)
@@ -340,13 +350,21 @@ def _entry_body(comment: LocalComment, ticket_id: str) -> Entry:
         )
 
     if is_agent_kind(kind):
+        markdown = body.strip()
         return Entry(
             kind="agent",
             who="Agent",
             created_at=created_at,
             clock=clock,
             html=render_markdown_sections(body, f"reply-{comment.id}"),
-            markdown=body.strip(),
+            markdown=markdown,
+            # No body means there is nothing to read: an empty reply gets no
+            # button, exactly as it gets no copy button.
+            speech_url=(
+                f"/api/tickets/{ticket_id}/comments/{comment.id}/speech"
+                if speech_enabled and markdown
+                else ""
+            ),
             meta=_kind_meta(kind),
             anchor=f"reply-{comment.id}",
         )
@@ -403,14 +421,19 @@ def _entry_body(comment: LocalComment, ticket_id: str) -> Entry:
 
 
 def build_entries(
-    ticket: LocalTicket, *, unread_from: int | None = None
+    ticket: LocalTicket,
+    *,
+    unread_from: int | None = None,
+    speech_enabled: bool = False,
 ) -> tuple[Entry, ...]:
     """Return the thread entries, oldest first, starting with the ticket text.
 
     ``unread_from`` is the index in ``ticket.comments`` of the seen marker, or
     ``None`` when nothing has been seen.  Every comment after it carries the
     "New" badge.  This is only used when the page is rendered: a later poll
-    appends entries that are new by construction.
+    appends entries that are new by construction.  ``speech_enabled`` is the
+    daemon's one gate for the speak button, applied to every agent reply here
+    and in the poll so an entry cannot tell the two paths apart.
     """
     entries = [
         Entry(
@@ -425,13 +448,26 @@ def build_entries(
     ]
     for index, comment in enumerate(ticket.comments):
         new = unread_from is None or index > unread_from
-        entries.append(entry_for(comment, new=new, ticket_id=ticket.id))
+        entries.append(
+            entry_for(
+                comment,
+                new=new,
+                ticket_id=ticket.id,
+                speech_enabled=speech_enabled,
+            )
+        )
     return tuple(entries)
 
 
-def entry_for(comment: LocalComment, *, new: bool = False, ticket_id: str) -> Entry:
+def entry_for(
+    comment: LocalComment,
+    *,
+    new: bool = False,
+    ticket_id: str,
+    speech_enabled: bool = False,
+) -> Entry:
     """Return the display entry for one stored comment."""
-    entry = _entry_body(comment, ticket_id)
+    entry = _entry_body(comment, ticket_id, speech_enabled=speech_enabled)
     return replace(entry, new=True) if new else entry
 
 
@@ -538,7 +574,11 @@ def page_for(
     retry = ticket.state == STATE_NEEDS_INPUT and turn_failed(state_entry)
     entries: tuple[Entry, ...] = ()
     if include_entries:
-        entries = build_entries(ticket, unread_from=_seen_index(ticket))
+        entries = build_entries(
+            ticket,
+            unread_from=_seen_index(ticket),
+            speech_enabled=request.app.speech_enabled,
+        )
         if retry:
             entries = _retry_on_newest_error(entries)
     page = TicketPage(
@@ -626,7 +666,14 @@ def snapshot(
         # The page was rendered with no comments at all; anything that exists
         # now is new to it.
         newer = list(ticket.comments)
-    newer_entries = [entry_for(comment, ticket_id=ticket.id) for comment in newer]
+    newer_entries = [
+        entry_for(
+            comment,
+            ticket_id=ticket.id,
+            speech_enabled=request.app.speech_enabled,
+        )
+        for comment in newer
+    ]
 
     steps_html = ""
     steps_turn = ""
@@ -750,6 +797,7 @@ def ticket_page(request: Request) -> Response:
             page=page_for(request, ticket),
             needs_input_count=needs_input_count(request),
             dictation_enabled=request.app.dictation_enabled,
+            speech_enabled=request.app.speech_enabled,
             push_public_key=request.app.push_public_key,
         )
     )

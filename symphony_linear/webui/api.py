@@ -36,9 +36,11 @@ from symphony_linear.local_tracker import (
     ReplyAnswers,
     image_content_type,
 )
-from symphony_linear.tracker import TrackerError, TrackerNotFoundError
+from symphony_linear.soniox import SonioxError, synthesise
+from symphony_linear.tracker import TrackerError, TrackerNotFoundError, is_agent_kind
 from symphony_linear.webui import editor, views
 from symphony_linear.webui.http_types import Request, Response
+from symphony_linear.webui.speech import script_for_reply
 from symphony_linear.webui.templates import render_macro
 from symphony_linear.webui.title import schedule_generation
 from symphony_linear.webui.ticket import (
@@ -48,6 +50,7 @@ from symphony_linear.webui.ticket import (
     retry_allowed,
     snapshot,
     state_action_target,
+    strip_footer,
     ticket_for,
 )
 
@@ -221,6 +224,68 @@ def api_soniox_key(request: Request) -> Response:
         logger.warning("Soniox temporary key response was not in the expected shape")
         return _error("Soniox returned no temporary key.", status=502)
     return _json({"api_key": temporary})
+
+
+# ---------------------------------------------------------------------------
+# Speech
+# ---------------------------------------------------------------------------
+
+#: The speak route answers with the mp3 Soniox generated.
+_SPEECH_CONTENT_TYPE = "audio/mpeg"
+
+
+def api_speech(request: Request) -> Response:
+    """Read one agent reply aloud and return its mp3.
+
+    The route is registered only when both keys are set, and this second check
+    keeps a direct caller from reaching either paid API without them.  It
+    takes a comment id rather than text so a client cannot use the daemon as a
+    general speech service, and it is a POST so a GET stays free of cost and
+    of the same-origin check's exemption.
+
+    The text is exactly what the entry's copy button offers: the stored body
+    without the bot footer.  Only an agent reply is accepted; a human comment,
+    a notice, an unknown comment or an unknown ticket is a 404, so the route
+    cannot be pointed at arbitrary text stored elsewhere on the ticket.
+
+    A cached clip is returned before either upstream call.  A failure after
+    that answers 502 with a short readable message, never a mirrored 401: the
+    browser would read that as "your Basic password is wrong" and prompt
+    again.  Neither key is ever logged or returned.
+    """
+    if not request.app.speech_enabled:
+        return _error("Speech is not configured.", status=404)
+    ticket = _ticket(request)
+    if ticket is None:
+        return _error("Ticket not found.", status=404)
+    match = request.match
+    comment_id = match.group("comment_id") if match is not None else ""
+    comment = next((c for c in ticket.comments if c.id == comment_id), None)
+    if comment is None or not is_agent_kind(comment.kind):
+        return _error("That reply cannot be read aloud.", status=404)
+    text = strip_footer(comment.body).strip()
+    if not text:
+        return _error("That reply cannot be read aloud.", status=404)
+
+    audio = request.app.speech_cache.get(comment.id, text)
+    if audio is None:
+        webui = request.app.config.webui
+        # ``speech_enabled`` is the conjunction of both keys, so the block is
+        # present and the Anthropic key alone cannot have enabled the route.
+        assert webui is not None
+        script = script_for_reply(
+            text,
+            api_key=(webui.anthropic_api_key or "").strip(),
+            base_url=webui.anthropic_base_url,
+        )
+        if script is None:
+            return _error("Could not summarise the reply. Try again.", status=502)
+        try:
+            audio = synthesise(script, api_key=(webui.soniox_api_key or "").strip())
+        except SonioxError as exc:
+            return _error(str(exc), status=502)
+        request.app.speech_cache.put(comment.id, text, audio)
+    return Response(body=audio, content_type=_SPEECH_CONTENT_TYPE)
 
 
 # ---------------------------------------------------------------------------

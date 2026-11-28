@@ -61,6 +61,7 @@ from symphony_linear.webui.api import (
     api_save_draft,
     api_seen,
     api_soniox_key,
+    api_speech,
     api_start_draft,
     api_start_new,
     api_state,
@@ -80,7 +81,7 @@ from symphony_linear.webui.editor import (
     post_start_new,
 )
 from symphony_linear.webui.files import serve_file
-from symphony_linear.webui.http_types import Route
+from symphony_linear.webui.http_types import Route, speech_is_enabled
 from symphony_linear.webui.push import api_push_subscription, serve_service_worker
 from symphony_linear.webui.repos import (
     post_add_repo,
@@ -113,6 +114,9 @@ _API_TICKET_STATE = re.compile(r"^/api/tickets/(?P<ticket_id>[^/]+)/state$")
 _API_TICKET_FILES = re.compile(r"^/api/tickets/(?P<ticket_id>[^/]+)/files$")
 _API_TICKET_FILE = re.compile(
     r"^/api/tickets/(?P<ticket_id>[^/]+)/files/(?P<name>[^/]+)$"
+)
+_API_TICKET_COMMENT_SPEECH = re.compile(
+    r"^/api/tickets/(?P<ticket_id>[^/]+)/comments/(?P<comment_id>[^/]+)/speech$"
 )
 
 _FILES = re.compile(r"^/files/(?P<ticket_id>[^/]+)/(?P<name>[^/]+)$")
@@ -218,15 +222,25 @@ SONIOX_KEY_ROUTE: Route = Route(
     "POST", re.compile(r"^/api/soniox-key$"), api_soniox_key
 )
 
+#: Reading an agent reply aloud needs both the Anthropic key (the listening
+#: script) and the Soniox key (the audio), so it is absent unless both are set.
+SPEECH_ROUTE: Route = Route("POST", _API_TICKET_COMMENT_SPEECH, api_speech)
+
 
 def routes_for(config: AppConfig) -> tuple[Route, ...]:
     """Return the routes enabled by *config*.
 
-    Only dictation is conditional today: without ``webui.soniox_api_key`` the
+    Two routes are conditional today.  Without ``webui.soniox_api_key`` the
     temporary-key route is absent, so ``/api/soniox-key`` is an unknown route
-    and the page never renders the microphone button.
+    and the page never renders the microphone button.  The speak route is
+    present only when both ``webui.anthropic_api_key`` and
+    ``webui.soniox_api_key`` are set, for the same reason: a click must not
+    reach an endpoint that cannot produce audio.
     """
     webui = config.webui
+    routes = ROUTES
     if webui is not None and webui.soniox_api_key is not None:
-        return (*ROUTES, SONIOX_KEY_ROUTE)
-    return ROUTES
+        routes = (*routes, SONIOX_KEY_ROUTE)
+    if speech_is_enabled(config):
+        routes = (*routes, SPEECH_ROUTE)
+    return routes

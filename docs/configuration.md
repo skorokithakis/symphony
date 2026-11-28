@@ -109,12 +109,15 @@ linear:
 #   # REQUIRED. HTTP Basic auth password. The username is ignored, so any
 #   # username (including an empty one) is accepted. There is no login page.
 #   password: change-me
-#   # Optional. Anthropic API key for automatic ticket titles and reply summaries.
+#   # Optional. Anthropic API key for automatic ticket titles and reply
+#   # summaries, and, together with a Soniox key, reading agent replies aloud.
 #   # anthropic_api_key: ${ANTHROPIC_API_KEY}
 #   # Optional. Messages API base URL, e.g. an Anthropic-compatible gateway.
 #   # anthropic_base_url: https://anthropic-gateway.example.com
 #   # Optional. Soniox API key for microphone dictation in the reply and
-#   # ticket-text boxes. Unset hides the microphone button.
+#   # ticket-text boxes, and, together with an Anthropic key, reading agent
+#   # replies aloud. Unset hides the microphone button. Reading aloud needs the
+#   # key's text-to-speech permission.
 #   # soniox_api_key: ${SONIOX_API_KEY}
 #   # Optional. Bearer token for the JSON API at /api/v1, for an external
 #   # agent. Unset disables the API: /api/v1 then answers 404.

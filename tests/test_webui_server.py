@@ -59,6 +59,7 @@ def _config(
     *,
     api_token: str | None = None,
     soniox_api_key: str | None = None,
+    anthropic_api_key: str | None = None,
     models: dict[str, str] | None = None,
 ) -> AppConfig:
     block: dict[str, object] = {
@@ -69,6 +70,8 @@ def _config(
         block["api_token"] = api_token
     if soniox_api_key is not None:
         block["soniox_api_key"] = soniox_api_key
+    if anthropic_api_key is not None:
+        block["anthropic_api_key"] = anthropic_api_key
     data: dict[str, object] = {"webui": block}
     if models is not None:
         data["models"] = models
@@ -230,6 +233,7 @@ def _running_server(
     max_concurrent: int = 32,
     api_token: str | None = None,
     soniox_api_key: str | None = None,
+    anthropic_api_key: str | None = None,
     webpush: WebPushStore | None = None,
 ) -> Iterator[tuple[int, LocalTracker, StateManager]]:
     tracker = LocalTracker(tmp_path, webpush=webpush)
@@ -237,7 +241,11 @@ def _running_server(
     server = WebUIServer(
         store=tracker.store,
         state=state,
-        config=_config(api_token=api_token, soniox_api_key=soniox_api_key),
+        config=_config(
+            api_token=api_token,
+            soniox_api_key=soniox_api_key,
+            anthropic_api_key=anthropic_api_key,
+        ),
         on_wake=Mock(),
         port=0,
         static_root=static_root,
