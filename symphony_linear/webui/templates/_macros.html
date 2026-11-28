@@ -86,7 +86,7 @@
    the reply up itself.  The script sets the busy, playing and error states on
    this button, swapping the speaker for a stop square while it plays. #}
 {% macro speak(entry) -%}
-{% if entry.speech_url %}<button class="icon-btn speech-btn" type="button" data-speech="{{ entry.speech_url }}" data-state="idle" aria-pressed="false" aria-label="Read this reply aloud" title="Read this reply aloud"><svg class="ic ic-speak" viewBox="0 0 20 20" aria-hidden="true"><path d="M4 8h3l4-3v10l-4-3H4zM14 7.5a4 4 0 010 5M16.5 5a7 7 0 010 10"></path></svg><svg class="ic ic-stop" viewBox="0 0 20 20" aria-hidden="true"><path d="M6 6h8v8H6z"></path></svg></button>{% endif %}
+{% if entry.speech_url %}<button class="icon-btn speech-btn" type="button" data-speech="{{ entry.speech_url }}" data-state="idle" aria-pressed="false" aria-label="Read this reply aloud" title="Read this reply aloud"><svg class="ic ic-speak" viewBox="0 0 20 20" aria-hidden="true"><path d="M4 8h3l4-3v10l-4-3H4zM14 7.5a4 4 0 010 5M16.5 5a7 7 0 010 10"></path></svg><svg class="ic ic-stop" viewBox="0 0 20 20" aria-hidden="true"><path d="M6 6h8v8H6z"></path></svg><svg class="ic ic-error" viewBox="0 0 20 20" aria-hidden="true"><path d="M10 3.5L17.5 16.5H2.5zM10 8.5v3.5M10 14.25v.25"></path></svg></button>{% endif %}
 {%- endmacro %}
 
 {% macro entry(entry) -%}

@@ -376,10 +376,12 @@ With both `webui.anthropic_api_key` and `webui.soniox_api_key` set, every agent
 reply on the ticket page gets a speaker button beside its copy button. Click it
 to hear the reply, and click it again to stop. Only one reply plays at a time:
 starting another stops the first, and the button shows a stop square while it
-plays. A click on the same button while the audio is still being made or the
-stream is starting cancels that attempt and returns the button to idle; a
-click on another reply's button cancels the first and starts the second. A
-failure puts the reason in the button's tooltip and screen-reader label, and
+plays. While the audio is being made the icon is dimmed, and it also pulses
+unless your device asks for reduced motion. A click on the same button while
+the audio is still being made or the stream is starting cancels that attempt
+and returns the button to idle; a click on another reply's button cancels the
+first and starts the second. A failure replaces the speaker with a red warning
+triangle and puts the reason in the button's tooltip and screen-reader label;
 the next click tries again. If the browser refuses the streamed audio, or the
 audio has not started after eight seconds, the page downloads the whole clip
 and plays that instead. The button appears on agent replies only, never

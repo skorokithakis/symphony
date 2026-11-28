@@ -1400,14 +1400,20 @@ dialog.confirm:not([open]) { display: none; }
 .dictation-btn[aria-pressed="true"] .ic { animation: sym-pulse 1.4s ease-in-out infinite; }
 
 /* The speak button reuses .icon-btn.  While playing it shows a stop square in
-   place of the speaker; while the audio is being fetched it pulses, and a
-   failed request or a failed play turns it red.  The message itself is in the
-   button's title and aria-label, never in a page-level alert. */
-.speech-btn .ic-stop { display: none; }
+   place of the speaker.  While the audio is being fetched it is dimmed as well
+   as pulsing, because Reduce Motion removes every animation and the pulse
+   alone then left a busy button looking idle.  A failed request or a failed
+   play swaps the speaker for a red warning triangle until the next tap, which
+   speech.js answers with the busy state; a colour change alone was too easy
+   to miss on a phone.  The message itself is in the button's title and
+   aria-label, never in a page-level alert. */
+.speech-btn .ic-stop, .speech-btn .ic-error { display: none; }
 .speech-btn[aria-pressed="true"] .ic-stop { display: block; }
 .speech-btn[aria-pressed="true"] .ic-speak { display: none; }
-.speech-btn[data-state="busy"] .ic { animation: sym-pulse 1.4s ease-in-out infinite; }
+.speech-btn[data-state="busy"] .ic { opacity: 0.5; animation: sym-pulse 1.4s ease-in-out infinite; }
 .speech-btn[data-state="error"] { color: var(--danger); }
+.speech-btn[data-state="error"] .ic-error { display: block; }
+.speech-btn[data-state="error"] .ic-speak { display: none; }
 
 /* The Web Push bell reuses .icon-btn and starts hidden; push.js reveals it
    only for a browser that can subscribe.  The design's display rule would
