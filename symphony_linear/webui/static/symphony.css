@@ -826,15 +826,6 @@ body.sym { min-height: 100dvh; }
   .md .qcard-mark .qcard-num { display: block; }
   .md .qcard-opt.is-picked .qcard-mark { color: var(--on-accent); }
 }
-/* The answered count shares the actions row with Send, so it is a quiet
-   monospace label that never pushes the button off the right edge. */
-.answers-count {
-  font: 400 var(--t-xs)/1.3 var(--font-mono); color: var(--ink-3); white-space: nowrap;
-}
-/* The count and Send wrap together, so the label always sits beside the
-   button rather than at the end of the previous row. */
-.answers-group { display: inline-flex; align-items: center; gap: var(--s2); margin-left: auto; }
-.answers-group .btn--primary { margin-left: 0; }
 /* Markdown images stay inside the reading column.  Their own dimensions
    decide the rest, so an image smaller than the column is not upscaled; the
    lightbox in app.js opens the full-size source. */
@@ -998,29 +989,23 @@ a.file:hover { border-color: var(--ink-3); background: var(--sunken); }
   width: auto; max-width: 12rem; min-height: 32px; padding: 0 var(--s2);
   font-size: var(--t-xs);
 }
-/* The actions take their own row in every state.  Measured with the seeded
-   page, the fullest row (Needs Input with Retry and the answer count beside
-   Send) is about 440 px, and the tools row at its fullest (attach, dictation,
-   Model select, Saved) about 330 px; sharing one line needs more than the
-   reading column's 720 px content width, and whether it just fits would also
-   change as soon as a draft is saved.  One row for every state keeps the
-   composer's height stable.  justify-content keeps the actions on the right,
-   including an internal wrap. */
+/* The actions take their own row in every state, deliberately.  The fullest
+   row (Needs Input with Retry) measures about 318 px at either control size,
+   and the tools row at its fullest (attach, dictation, Model select, Saved)
+   takes about 319 px of its row.  Side by side they need roughly 650 px,
+   which only the widest reading column offers (the composer's content box is
+   460 px at 800 px, 564 px at 1240 px and 718 px at 1440 px), and whether
+   they just fit must not decide the composer's height.  One row for every
+   state keeps the height independent of the state: all four states measure
+   209 px at a 390 px viewport and 194 px from 800 px up.  Below about 360 px
+   the fullest rows wrap onto a second line, so Needs Input with Retry and QA
+   are then one line taller; that is accepted.  justify-content keeps the
+   actions on the right, including an internal wrap. */
 .composer-actions { flex: 1 1 100%; display: flex; flex-wrap: wrap; align-items: center; justify-content: flex-end; gap: var(--s2); margin-left: auto; }
 .composer-actions .btn { padding: 0 var(--s3); }
 .composer-actions .btn--primary { margin-left: auto; padding: 0 var(--s4); }
 .reason { flex: 1 1 8rem; font-size: var(--t-xs); line-height: 1.35; color: var(--ink-2); text-align: right; }
 .reason + .btn--primary { margin-left: 0; }
-/* Below 500 px the fullest action row wraps onto a second line.  In Progress
-   then has one line and Needs Input two, which would resize the composer on
-   every state change, so reserve the second line here.  The limit comes from
-   the measured wrap: the fullest row is about 440 px, and below 800 px the
-   composer is the window minus its 34 px of padding.  The 26 px of headroom
-   covers a two-digit answer count.  align-content keeps a single line at the
-   bottom, where Send sits, so Stop stays in Send's place. */
-@container sym (max-width: 500px) {
-  .composer-actions { min-height: calc(2 * var(--tap) + var(--s2)); align-content: flex-end; }
-}
 
 .jump {
   position: absolute; right: var(--s4); bottom: calc(100% + var(--s3));

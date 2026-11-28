@@ -925,9 +925,9 @@ def render_markdown_sections(text: str, anchor: str | None = None) -> str:
     ``anchor`` is the reply entry's id.  It gives every card a unique id and,
     when the reply's cards fall into two or more groups, puts a list of the
     questions after the reply, where a phone reader finishes next to the
-    composer and the answered count; at the top it cost a scroll back.  Without
-    an anchor the output keeps its previous HTML, links and list absent,
-    because a link would have no target.
+    composer; at the top it cost a scroll back.  Without an anchor the output
+    keeps its previous HTML, links and list absent, because a link would have
+    no target.
     """
     env: EnvType = {}
     tokens = _MD.parse(text, env)

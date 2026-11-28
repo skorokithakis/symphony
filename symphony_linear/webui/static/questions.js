@@ -453,7 +453,7 @@
     field.focus();
     field.select();
     reveal(field);
-    updateCount();
+    syncList();
     syncFormValidation();
     if (changed) {
       notifyChange();
@@ -482,7 +482,7 @@
       answer.otherChosen = false;
     }
     syncSelection(card);
-    updateCount();
+    syncList();
     syncFormValidation();
     notifyChange();
     if (card.__qcardKind === "choose-one") {
@@ -511,7 +511,7 @@
       answer.selected = [];
     }
     syncSelection(card);
-    updateCount();
+    syncList();
     syncFormValidation();
     notifyChange();
     if (card.__qcardKind === "choose-one") {
@@ -552,7 +552,7 @@
       answer.edits[descriptor.index] = field.value;
       descriptor.row.classList.add("is-edited");
     }
-    updateCount();
+    syncList();
     syncFormValidation();
     notifyChange();
   }
@@ -986,7 +986,7 @@
    * check mark once its question is answered; older replies keep plain links.
    * The test is answerOf() alone: it is true in exactly the cases where
    * answeredCount()'s answersFor() is non-empty, so the marks always agree
-   * with the "N of M answered" count. */
+   * with the comment a Send would assemble. */
   function answeredByAnswerOf(card) {
     var answer = answerOf(card);
     return answer.selected.length > 0 || answer.other !== "";
@@ -1115,7 +1115,7 @@
       newest = null;
     }
     if (newest === activeEntry) {
-      updateCount();
+      syncList();
       syncFormValidation();
       return;
     }
@@ -1123,53 +1123,11 @@
     if (newest) {
       activate(newest);
     }
-    updateCount();
+    syncList();
     syncFormValidation();
   }
 
-  /* ---------- count and Send ---------- */
-
-  function updateCount() {
-    /* The list's check marks are part of the same answer state as the count,
-     * so every refresh of one refreshes the other. */
-    syncList();
-    var actions = document.getElementById("composer-actions");
-    var send = document.getElementById("act-send");
-    var count = document.getElementById("answers-count");
-    var group = document.getElementById("answers-group");
-    if (!actions || !send || !activeEntry || !cards.length) {
-      if (count) {
-        count.remove();
-      }
-      /* Do not leave Send boxed in a group that no longer has a count.  An In
-       * Progress action bar has no Send; the poll replaces the whole bar then,
-       * so there is no group to unwind, but the null check keeps a stale
-       * group's teardown from throwing. */
-      if (send && group && group.parentElement === actions) {
-        actions.insertBefore(send, group);
-        group.remove();
-      }
-      return;
-    }
-    /* The count travels with Send as one flex item, so on a phone it wraps
-     * onto the same row as the button instead of ending the previous row. */
-    if (!group) {
-      group = document.createElement("span");
-      group.id = "answers-group";
-      group.className = "answers-group";
-      actions.appendChild(group);
-      group.appendChild(send);
-    }
-    if (!count) {
-      count = document.createElement("span");
-      count.id = "answers-count";
-      count.className = "answers-count";
-    }
-    if (count.parentElement !== group) {
-      group.insertBefore(count, send);
-    }
-    count.textContent = answeredCount() + " of " + cards.length + " answered";
-  }
+  /* ---------- Send ---------- */
 
   /* An answers-only Send must reach ticket.js even though the composer's
    * textarea is required: formnovalidate applies to this Send only, so the
@@ -1507,7 +1465,7 @@
     if (activeCommentId === replyId) {
       deactivate();
     }
-    updateCount();
+    syncList();
     syncFormValidation();
   }
 

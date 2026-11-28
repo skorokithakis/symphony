@@ -877,8 +877,8 @@ shutting down, or the ticket is no longer triggered — see `_is_still_triggered
   link to a card the tabs consider part of another group. `buildGroups` keeps
   a card's server id when it mounts a panel (it only assigns one when absent),
   so those links keep their target. `questions.js` appends a
-  `.qlist-check` to an item from `answerOf` alone, refreshed wherever the
-  "N of M answered" count is, and a list click selects the card's tab with the
+  `.qlist-check` to an item from `answerOf` alone, refreshed whenever the
+  answers change, and a list click selects the card's tab with the
   existing `showTab` and then lets the anchor's own scroll run; it never moves
   focus into a field. Only the newest reply's list gets marks; older replies
   keep the server-rendered links.
