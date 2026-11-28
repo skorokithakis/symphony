@@ -546,19 +546,28 @@ body.sym { min-height: 100dvh; }
 .who { font-weight: 600; color: var(--ink); }
 .entry-tools { margin-left: auto; display: flex; gap: var(--s4); }
 /* The labels are the three-character "[+]" and "[-]", so the side padding
-   (cancelled by the margin, and smaller than half the gap so the two never
-   overlap) keeps the tap target wider than the text.  The link underline is
+   (cancelled by the margin) keeps the tap target wider than the text.  It is
+   4 px because the sibling margins below leave only 10 px between the two
+   labels: the tap areas then sit 2 px apart, and the "[-]" one touches the
+   copy button without overlapping it.  The link underline is
    dropped here only: under brackets and a hyphen it reads as a third stroke,
    and the brackets already mark these as controls. */
-.entry-tools .link-btn { padding: 12px 6px; margin: -12px -6px; text-decoration: none; }
+.entry-tools .link-btn { padding: 12px 4px; margin: -12px -4px; text-decoration: none; }
 /* The entry header is a caption line, so its icon control is sized like the
    Details one rather than the 44 px touch target, and the negative margin
    keeps it from growing the line. */
 .entry-tools .icon-btn { width: 28px; height: 28px; border-radius: var(--r1); margin: -6px 0; }
-/* The row's gap suits the text labels, but each 16 px glyph already has 6 px
-   of button around it, so two icon buttons with the gap between them sat 28 px
-   apart, more than a whole icon.  Cancelling the gap between adjacent icon
-   buttons leaves 12 px between the glyphs and keeps both 28 px targets. */
+/* The owner wants the drawn glyphs about one icon width (14 px) apart, not the
+   boxes.  A link button's ink sits a couple of pixels inside its advance, and
+   a 20 px icon's ink a few pixels inside its 28 px button, so the pairs need
+   different box gaps to look alike.  The close bracket's -10 px margin takes
+   the 16 px row gap to a 10 px advance gap; the copy button's -12 px takes it
+   to 4 px, which is what a 20 px icon's ink inset needs to match.  Both keep
+   the 30 px tap areas clear of each other. */
+.entry-tools .link-btn + .link-btn { margin-left: -10px; }
+.entry-tools .link-btn + .icon-btn { margin-left: -12px; }
+/* The two icon buttons keep touching (28 px centre to centre), never the row
+   gap as well, so the 20 px glyphs end up about one icon width apart. */
 .entry-tools .icon-btn + .icon-btn { margin-left: calc(-1 * var(--s4)); }
 .new {
   display: inline-flex; align-items: center; height: 18px; padding: 0 var(--s2);
@@ -1001,13 +1010,26 @@ a.file:hover { border-color: var(--ink-3); background: var(--sunken); }
 .composer textarea:focus-visible { outline: 0; }
 .composer textarea::placeholder, .input::placeholder { color: var(--ink-3); opacity: 1; }
 .composer-foot { display: flex; flex-wrap: wrap; align-items: center; justify-content: space-between; gap: var(--s2) var(--s3); }
-.composer-tools { display: flex; flex: 1 1 15rem; min-width: 0; align-items: center; gap: var(--s1); margin-left: -10px; }
-/* Tap targets keep their width: only the Model select gives way when the row
-   is tight, so a phone never renders a 20 px icon button.  The tools' 15rem
-   basis and the select's 4.75rem basis keep line breaking from measuring the
-   longest alias as the row's content: the select then grows into the free
-   space (up to 12rem, 5rem on a phone) instead of wrapping the row. */
+.composer-tools { display: flex; flex: 1 1 15rem; min-width: 0; align-items: center; gap: var(--s1); margin-left: -6px; }
+/* The owner chose a visible gap of about one drawn icon width between the
+   composing icons and accepted a 28 px wide, var(--tap) high tap area on the
+   phone.  The drawn icons are about 12 to 13 px wide, and at 28 px centre to
+   centre the measured gaps are about 16 px; 28 px is kept because it is the
+   same distance as the copy and speak buttons in a message header, so every
+   icon row uses one number.  The 20 px glyph sits 4 px inside the narrower
+   button where the old 44 px phone button put it 12 px in (8 px for the
+   desktop's 36 px button), so the left margin moves in by that much too and
+   the first icon keeps its place.  Only the Model select gives way when the
+   row is tight.  The tools' 15rem basis and the select's 4.75rem basis keep
+   line breaking from measuring the longest alias as the row's content: the
+   select then grows into the free space (up to 12rem, 5rem on a phone)
+   instead of wrapping the row. */
+.composer-tools > .icon-btn { width: 28px; }
 .composer-tools .icon-btn, .composer-tools .state-menu-wrap, .composer-tools .saved { flex: none; }
+/* The row gap is sized for the text controls; between the composing icons it
+   would widen the drawn gaps past the owner's one-icon width, so cancel it.
+   The phone's smaller gap needs a smaller cancellation, set below. */
+.composer-tools > .icon-btn + .icon-btn { margin-left: calc(-1 * var(--s1)); }
 .composer-tools .composer-model { flex: 1 1 4.75rem; min-width: 0; }
 /* Splits the composing tools (attach, dictation, size) from the ticket
    controls (Model, Change state).  It shows only when a ticket control
@@ -1015,12 +1037,13 @@ a.file:hover { border-color: var(--ink-3); background: var(--sunken); }
    rule at the row's end would separate nothing.  The menu button is matched
    rather than the wrapper, because the poll leaves the wrapper in place with
    only whitespace inside, which :empty does not match.  The expand glyph is
-   12 px wide inside its 20 px box, so its visible right edge sits
-   (tap - 20) / 2 + 4 from the button's right edge; the rule's right margin
-   matches that inset (the flex gap is on both sides and cancels), making the
-   glyph-to-rule and rule-to-select gaps equal.  The saved check sits 3.2 px
-   inside its 16 px icon, which its -3 px margin offsets. */
-.tools-sep { display: none; flex: none; width: 1px; height: 20px; margin: 0 calc((var(--tap) - 20px) / 2 + 4px) 0 0; background: var(--rule-2); }
+   12 px wide inside its 20 px box, so its visible right edge sits 4 px inside
+   the box plus the button's own 4 px inset, 8 px from the button's right edge;
+   the rule's right margin matches that inset (the flex gap is on both sides
+   and cancels), making the glyph-to-rule and rule-to-select gaps equal.  The
+   saved check sits 3.2 px inside its 16 px icon, which its -3 px margin
+   offsets. */
+.tools-sep { display: none; flex: none; width: 1px; height: 20px; margin: 0 8px 0 0; background: var(--rule-2); }
 .tools-sep:has(~ .composer-model, ~ .state-menu-wrap #state-menu-button) { display: block; }
 .saved {
   display: inline-flex; align-items: center; gap: 6px;
@@ -1073,14 +1096,15 @@ a.file:hover { border-color: var(--ink-3); background: var(--sunken); }
 
 /* Phone density, placed after the rules it overrides.  A phone shows only the
    saved-state icon (the text stays in the accessibility tree) and the row is
-   one line at 390: the tools' natural width is 286 px, 276 px after their
-   -10 px margin; with the 8 px gap and Send's 60 px that is 344 px of the
-   364 px content box, leaving 20 px.  A long Model alias is capped at 5rem so
+   one line at 390: the tools' natural width is 234 px, 232 px after their
+   -2 px margin; with the 8 px gap and Send's 60 px that is 300 px of the
+   364 px content box, leaving 64 px.  A long Model alias is capped at 5rem so
    it shrinks instead of wrapping the row; the same row still fits 375 px. */
 @container sym (max-width: 799px) {
   .composer { padding-inline: var(--s3); }
   .composer-foot { column-gap: var(--s2); }
-  .composer-tools { gap: 2px; }
+  .composer-tools { gap: 2px; margin-left: -2px; }
+  .composer-tools > .icon-btn + .icon-btn { margin-left: -2px; }
   /* No margin override: the base -3px lines the check glyph up with the
      select-to-Change-state gap; the button's own inset is the rest. */
   .composer-tools .saved { min-width: 0; }
