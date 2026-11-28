@@ -37,6 +37,7 @@ from symphony_linear.local_tracker import (
 )
 from symphony_linear.state import TicketState
 from symphony_linear.tracker import is_agent_kind
+from symphony_linear.turn_activity import StepCursor, TurnStep
 from symphony_linear.webui import editor
 from symphony_linear.webui.files import FileChip, chips_for
 from symphony_linear.webui.http_types import Request, Response
@@ -147,6 +148,21 @@ class Entry:
     anchor: str = ""
     new: bool = False
     files: tuple[FileChip, ...] = ()
+
+
+@dataclass(frozen=True)
+class StepView:
+    """One step of the running turn, with its display text already decided.
+
+    ``html`` is rendered Markdown for a text step, and the only value the
+    steps macro may mark safe.  A tool step is plain text: its name in
+    ``tool`` and its one-line summary in ``summary``, both escaped by Jinja.
+    """
+
+    kind: str
+    html: str = ""
+    tool: str = ""
+    summary: str = ""
 
 
 @dataclass(frozen=True)
@@ -538,12 +554,35 @@ def page_for(
     return page
 
 
-def snapshot(request: Request, ticket: LocalTicket, after: str) -> dict[str, object]:
+def step_view(step: TurnStep) -> StepView:
+    """Return the display form of one running-turn step.
+
+    A text step is rendered with the plain Markdown renderer, never with
+    ``render_markdown_sections``: steps must never contain a question card,
+    because ``questions.js`` attaches answer controls to cards and a step is
+    not something a human can answer.
+    """
+    if step.kind == "text":
+        return StepView(kind="text", html=render_markdown(step.text))
+    return StepView(kind="tool", tool=step.tool or "", summary=step.text)
+
+
+def snapshot(
+    request: Request,
+    ticket: LocalTicket,
+    after: str,
+    steps_cursor: StepCursor | None = None,
+) -> dict[str, object]:
     """Build the poll response for a ticket page.
 
     Only comments after *after* are rendered, with the same entry macro as the
     full page.  An unknown anchor yields no entries rather than replaying the
     thread.  The read is side-effect free, as GET must be.
+
+    ``steps_cursor`` is the page's ``(turn_identifier, last_step_number)``, or
+    ``None`` for a page with no steps yet.  The steps are part of the working
+    line's response only: a ticket that is not In Progress has no turn to
+    watch, and its page has already dropped the block.
     """
     # Header data only: rendering the whole thread here and then throwing it
     # away to render the delta again is the poll's dominant cost.
@@ -556,6 +595,28 @@ def snapshot(request: Request, ticket: LocalTicket, after: str) -> dict[str, obj
         # now is new to it.
         newer = list(ticket.comments)
     newer_entries = [entry_for(comment, ticket_id=ticket.id) for comment in newer]
+
+    steps_html = ""
+    steps_turn = ""
+    steps_last = 0
+    steps_total = 0
+    steps_replace = False
+    activity = request.app.turn_activity
+    if page.working_for and activity is not None:
+        step_page = activity.read_steps(ticket.id, steps_cursor)
+        steps_html = "".join(
+            render_macro("step_item", step_view(step)) for step in step_page.steps
+        )
+        steps_turn = step_page.turn_identifier or ""
+        steps_total = step_page.total_steps
+        steps_replace = step_page.replace
+        if step_page.steps:
+            steps_last = step_page.steps[-1].number
+        elif steps_cursor is not None and not step_page.replace:
+            # Nothing new since the cursor; repeat it, because zero would ask
+            # for the whole window again on the next poll.
+            steps_last = steps_cursor[1]
+
     return {
         "entries_html": "".join(
             render_macro("entry", entry) for entry in newer_entries
@@ -574,6 +635,13 @@ def snapshot(request: Request, ticket: LocalTicket, after: str) -> dict[str, obj
         "working_html": render_macro("working", page) if page.working_for else "",
         "has_composer": page.has_composer,
         "needs_input_count": page.needs_input_count,
+        # The running turn's steps, as list items only: the block itself is
+        # part of the full page.  ``steps_last`` is the page's next cursor.
+        "steps_html": steps_html,
+        "steps_turn": steps_turn,
+        "steps_last": steps_last,
+        "steps_total": steps_total,
+        "steps_replace": steps_replace,
     }
 
 

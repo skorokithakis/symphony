@@ -126,6 +126,31 @@
 <p class="working" id="working" role="status">Working, {{ page.working_for }}{% if page.last_output_ago %} · last output {{ page.last_output_ago }} ago{% endif %}</p>
 {%- endmacro %}
 
+{# The running turn's steps, directly above the working line.
+
+   The page renders this empty block and the first poll fills it (a page with
+   no cursor asks for a replacement).  The poll then appends list items only,
+   so the block's own markup lives in one place.  The stylesheet hides all but
+   the last five steps unless the block carries ``steps--all``. #}
+{% macro steps_block() -%}
+<div class="steps" id="steps" hidden>
+  <ol class="steps-list" id="steps-list"></ol>
+  <button class="link-btn steps-more" type="button" id="steps-more" hidden></button>
+</div>
+{%- endmacro %}
+
+{# One step: quiet Markdown for the agent's text, one escaped line for a tool
+   call.  Only ``step.html`` is safe; the tool name and summary are Jinja's. #}
+{% macro step_item(step) -%}
+<li class="step step--{{ step.kind }}">
+{%- if step.kind == "text" -%}
+<div class="md">{{ step.html|safe }}</div>
+{%- else -%}
+<span class="step-tool">{{ step.tool }}</span>{% if step.summary %}: <span class="step-summary">{{ step.summary }}</span>{% endif %}
+{%- endif -%}
+</li>
+{%- endmacro %}
+
 {% macro state_forms(page) -%}
 {% for action in page.state_actions %}
 <form id="ticket-state-{{ action|replace('_', '-') }}" method="post" action="/tickets/{{ page.ticket.id }}/state" data-state-action="{{ action }}" data-api-state="/api/tickets/{{ page.ticket.id }}/state" hidden>

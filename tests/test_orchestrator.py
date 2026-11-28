@@ -63,7 +63,7 @@ from symphony_linear.tracker import (
     TrackerTransientError,
     TransitionTarget,
 )
-from symphony_linear.turn_activity import TurnActivity
+from symphony_linear.turn_activity import AgentStep, TurnActivity
 from symphony_linear.webhook import WebhookServer
 from symphony_linear.workspace import (
     SecretsError,
@@ -2619,6 +2619,28 @@ class TestPipelineTwins:
         assert activity.output_age("ticket-1") is not None
         orchestrator._task_wrapper("ticket-1", lambda: None)
         assert activity.output_age("ticket-1") is None
+
+    @pytest.mark.parametrize("pipeline", ["initial", "resume"])
+    def test_turn_steps_are_recorded_and_cleared(
+        self,
+        orchestrator: Orchestrator,
+        linear: FakeLinearClient,
+        pipeline: Literal["initial", "resume"],
+    ) -> None:
+        # Without a record (Linear and GitHub deployments) adapters get None.
+        assert orchestrator._step_callback("ticket-1") is None
+        activity = TurnActivity()
+        orchestrator._turn_activity = activity
+
+        launch = self._run_pipeline(orchestrator, linear, pipeline)
+
+        on_step = launch.call_args.kwargs["on_step"]
+        assert on_step is not None
+        on_step(AgentStep(kind="text", text="Working."))
+        page = activity.read_steps("ticket-1", None)
+        assert [step.text for step in page.steps] == ["Working."]
+        orchestrator._task_wrapper("ticket-1", lambda: None)
+        assert activity.read_steps("ticket-1", None).steps == ()
 
     @pytest.mark.parametrize(
         ("model", "footer"),

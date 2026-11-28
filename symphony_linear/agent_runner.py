@@ -37,7 +37,8 @@ in seconds to arm, or ``None`` to disarm. A timer thread kills the process
 when the delay expires while the process is still running, and the run
 reports ``planned_stop=True`` so the adapter can treat the turn as a success
 rather than a cancellation. This exists for OpenCode, whose CLI waits
-indefinitely for background shell jobs; OMP and pi do not pass the hook.
+indefinitely for background shell jobs; OMP and pi pass the hook only to
+record turn steps and never return a delay.
 
 The timer is a separate thread because the main loop blocks in
 ``proc.wait()``; it cannot observe a deadline that the stdout drain thread

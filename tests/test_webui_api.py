@@ -26,6 +26,7 @@ from symphony_linear.local_tracker import (
 )
 from symphony_linear.presence import TicketPresence
 from symphony_linear.state import TicketStatus
+from symphony_linear.turn_activity import AgentStep, TurnActivity
 from tests.test_webui_server import _origin, _request, _state_entry
 from tests.test_webui_ticket import _MODELS, _server, _ticket
 
@@ -356,6 +357,122 @@ class TestTicketPoll:
 
         assert presence.is_active(watched.id)
         assert not presence.is_active(other.id)
+
+
+class TestTicketStepsPoll:
+    """The running turn's steps ride in the ticket poll, cursor and all."""
+
+    def test_a_matching_cursor_appends_and_an_unknown_one_replaces(
+        self, tmp_path: Path
+    ) -> None:
+        activity = TurnActivity()
+        with _server(tmp_path, turn_activity=activity) as (port, tracker, _s, _w):
+            ticket = _ticket(tracker.store, state=STATE_IN_PROGRESS)
+            activity.record_step(ticket.id, AgentStep(kind="text", text="Looking."))
+
+            # No cursor: the block's first fill.
+            first = _get_json(port, f"/api/tickets/{ticket.id}")
+            cursor = f"turn={first['steps_turn']}&step={first['steps_last']}"
+            activity.record_step(
+                ticket.id, AgentStep(kind="tool", tool="bash", text="pytest -q")
+            )
+            appended = _get_json(port, f"/api/tickets/{ticket.id}?{cursor}")
+            unchanged = _get_json(
+                port,
+                f"/api/tickets/{ticket.id}?turn={appended['steps_turn']}"
+                f"&step={appended['steps_last']}",
+            )
+            unknown = _get_json(port, f"/api/tickets/{ticket.id}?turn=nope&step=1")
+
+        assert first["steps_replace"] is True
+        assert first["steps_total"] == 1
+        assert first["steps_last"] == 1
+        assert first["steps_turn"]
+
+        # The append carries only the new step, and moves the cursor.
+        assert appended["steps_replace"] is False
+        assert appended["steps_total"] == 2
+        assert appended["steps_last"] == 2
+        assert "pytest -q" in appended["steps_html"]
+        assert "Looking." not in appended["steps_html"]
+
+        # An empty append repeats the cursor instead of resetting it, so the
+        # next poll does not ask for the whole window again.
+        assert unchanged["steps_html"] == ""
+        assert unchanged["steps_replace"] is False
+        assert unchanged["steps_last"] == 2
+
+        # A turn the page never saw replays everything and resets the cursor.
+        assert unknown["steps_replace"] is True
+        assert unknown["steps_turn"] == first["steps_turn"]
+        assert unknown["steps_last"] == 2
+        assert "Looking." in unknown["steps_html"]
+
+    def test_no_steps_when_the_ticket_is_not_in_progress(self, tmp_path: Path) -> None:
+        """Steps belong to the working line: without it there is no turn to
+        watch, even if a stale record survived."""
+        activity = TurnActivity()
+        with _server(tmp_path, turn_activity=activity) as (port, tracker, _s, _w):
+            ticket = _ticket(tracker.store, state=STATE_NEEDS_INPUT)
+            activity.record_step(ticket.id, AgentStep(kind="text", text="Left over."))
+
+            data = _get_json(port, f"/api/tickets/{ticket.id}?turn=abc&step=1")
+
+        assert data["working_html"] == ""
+        assert data["steps_html"] == ""
+        assert data["steps_total"] == 0
+        assert data["steps_replace"] is False
+
+    def test_a_lone_surrogate_in_a_step_does_not_break_the_poll(
+        self, tmp_path: Path
+    ) -> None:
+        """A tool that cuts a string mid-emoji leaves a lone surrogate, which
+        json.loads accepts; the poll still has to encode its response."""
+        activity = TurnActivity()
+        with _server(tmp_path, turn_activity=activity) as (port, tracker, _s, _w):
+            ticket = _ticket(tracker.store, state=STATE_IN_PROGRESS)
+            activity.record_step(
+                ticket.id,
+                AgentStep(kind="text", text="a cut emoji \ud83d here"),
+            )
+            activity.record_step(
+                ticket.id,
+                AgentStep(kind="tool", tool="bash\ud83d", text="ran \ud83d"),
+            )
+
+            data = _get_json(port, f"/api/tickets/{ticket.id}")
+
+        assert data["steps_total"] == 2
+        assert "\ud83d" not in data["steps_html"]
+        assert "a cut emoji" in data["steps_html"]
+        assert "bash" in data["steps_html"]
+
+    def test_text_is_plain_markdown_and_tools_are_escaped(self, tmp_path: Path) -> None:
+        activity = TurnActivity()
+        with _server(tmp_path, turn_activity=activity) as (port, tracker, _s, _w):
+            ticket = _ticket(tracker.store, state=STATE_IN_PROGRESS)
+            # A question callout in a step must stay a quote: question cards
+            # get answer controls from questions.js, and a step is not a
+            # question the human can answer.
+            activity.record_step(
+                ticket.id,
+                AgentStep(
+                    kind="text",
+                    text="**Bold**\n\n> [!QUESTION] Pick\n> - a\n> - b",
+                ),
+            )
+            activity.record_step(
+                ticket.id,
+                AgentStep(kind="tool", tool="<b>bash</b>", text="a & b"),
+            )
+
+            data = _get_json(port, f"/api/tickets/{ticket.id}")
+
+        html = data["steps_html"]
+        assert "<strong>Bold</strong>" in html
+        assert "qcard" not in html
+        assert "&lt;b&gt;bash&lt;/b&gt;" in html
+        assert "a &amp; b" in html
 
 
 # ---------------------------------------------------------------------------

@@ -67,7 +67,7 @@ symphony_linear/
   webpush.py        Web Push for the built-in tracker: VAPID pair + subscription store
                     (<workspace>/webpush.json) and the Needs Input sender
   presence.py       In-memory viewer presence shared by the web UI and the local tracker (Needs Input push gate)
-  turn_activity.py  In-memory record of each running turn's last agent output, shown as an age on the ticket page
+  turn_activity.py  In-memory record of each running turn's last output and steps, shown live on the ticket page
   webui/            Web UI for the built-in tracker: server.py (the single dispatch choke point),
                     routes.py (route table), api.py (JSON endpoints), views.py / editor.py /
                     ticket.py (list, editor and ticket pages), files.py (uploaded-file serving),
@@ -738,6 +738,43 @@ shutting down, or the ticket is no longer triggered — see `_is_still_triggered
   in In Progress and only after the first chunk, formatted like `working_for`
   (seconds under a minute, then minutes). Home rows deliberately do not show
   it: their poll fingerprint would change every tick.
+- **A running turn's steps are recorded in the same in-memory record.** Every
+  adapter's `run_initial`/`run_resume`/`_execute` takes an optional `on_step`
+  next to `on_output`, and `Orchestrator._step_callback` binds it to the
+  ticket id (again `None` without a `TurnActivity`, so Linear and GitHub
+  behave as before). Adapters turn a stdout line into zero or one
+  `turn_activity.AgentStep` and report it through `turn_activity.report_step`,
+  which catches `Exception` because it runs on the stdout drain thread on
+  agent-controlled JSON: an unanticipated shape must cost one step, not stall
+  the turn until the idle watchdog fires. OpenCode reuses its existing
+  `on_stdout_line` hook (the `background_wait` grace behaviour is unchanged);
+  the pi family passes `pi_protocol._step_line_hook`, only when `on_step` is
+  given, and never returns a delay. Its pre-filter looks for `"text_end"` and
+  `"tool_execution_start"`, because every token delta is a `message_update`
+  line too. `TurnActivity.record_step` mints a random turn identifier on the
+  first step after a clear, keeps the last 200 numbered steps, and cuts text
+  at 2000 characters with a `…`; `read_steps(ticket_id, cursor)` returns a
+  `StepPage` of `(turn_identifier, steps, total_steps, replace)` where a
+  missing cursor, a different identifier, or a cursor older than the oldest
+  kept step minus one means replace. `tool_step_summary` is the one summary
+  rule for all tools and agents: the input object's string values in its own
+  order, collapsed to one line and cut at 120 characters; no string values
+  gives `""`, so the page shows the tool name alone. OMP's `intent`, when
+  present, replaces that summary and gets the same collapse and cut.
+  Nothing is persisted and no config key controls it. On the page,
+  `snapshot` returns `steps_html` (list items only; the empty block is in the
+  template), `steps_turn`, `steps_last`, `steps_total` and `steps_replace`,
+  and takes the page's `turn`/`step` query parameters as its cursor. Only an
+  In Progress ticket gets any steps, so a ticket that leaves In Progress drops
+  them with its working line. Text steps go through `render_markdown` and
+  never `render_markdown_sections`: a step must not become a question card,
+  because `questions.js` attaches answer controls to cards. Tool lines are
+  escaped plain text (`<name>: <summary>`, or `<name>`), never marked safe. The
+  stylesheet shows the last five and the page's "Show all N steps" control
+  reveals the rest for the rest of the turn; the entries, the block and the
+  working line sit in that order, so appended entries land above the steps.
+  With OpenCode a tool line appears only when the tool ends and nothing
+  appears while a subagent works; pi and OMP report a tool when it starts.
 - **Reply summaries are generated only from the post path.** With
   `webui.anthropic_api_key` set, `cli._create_tracker` passes
   `webui/summary.py`'s `agent_reply_hook` as `LocalTracker`'s optional

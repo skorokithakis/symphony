@@ -606,6 +606,22 @@ body.sym { min-height: 100dvh; }
 .alert pre { margin-top: var(--s1); background: var(--paper); }
 .alert ul { list-style: disc; padding-left: 1.2em; font-family: var(--font-mono); font-size: var(--t-xs); }
 
+/* The running turn's steps, above the working line.  They are quiet secondary
+   content, not thread entries: no header, no card, one monospace column, so a
+   reader can tell the agent's activity from what it said.  Text steps carry
+   rendered Markdown, so .md's own block styling still applies inside them. */
+.steps { display: flex; flex-direction: column; align-items: flex-start; gap: var(--s2); padding-left: var(--s2); }
+.steps-list { list-style: none; display: flex; flex-direction: column; gap: var(--s2); min-width: 0; }
+.step { font: 400 var(--t-sm)/1.5 var(--font-mono); color: var(--ink-3); min-width: 0; overflow-wrap: anywhere; }
+.step .md { gap: var(--s2); }
+.step-tool { color: var(--ink-2); font-weight: 600; }
+.step-summary { color: var(--ink-3); }
+/* Last five steps only, until the reader asks for the rest.  Hiding in the
+   stylesheet keeps the whole list in the DOM, so a step arriving while the
+   list is open needs no re-render. */
+.steps:not(.steps--all) .step:nth-last-child(n + 6) { display: none; }
+.steps-more { color: var(--ink-3); font-size: var(--t-xs); }
+
 .working { display: flex; align-items: center; gap: 10px; font: 400 var(--t-sm)/1.4 var(--font-mono); color: var(--ink-2); }
 .working::before {
   content: ""; width: 10px; height: 10px; flex: none;
@@ -1281,7 +1297,7 @@ dialog.confirm:not([open]) { display: none; }
    design's own `display` rules would win over the browser's `[hidden]` rule,
    so restore it for them. */
 
-.conn[hidden], .saved[hidden], .jump[hidden], .alert[hidden], #repo-new-fields[hidden] { display: none; }
+.conn[hidden], .saved[hidden], .jump[hidden], .alert[hidden], .steps[hidden], .steps-more[hidden], #repo-new-fields[hidden] { display: none; }
 
 /* Dictation reuses .icon-btn / .btn; it is hidden until the script confirms a
    secure context and a microphone API, and its accent fill is the recording

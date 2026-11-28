@@ -139,9 +139,12 @@ bubblewrap and restart to get the sandbox back; nothing else needs to change.
   it is running. Comments you post mid-turn are not read: the daemon posts
   a short notice saying so, and you can comment again once the turn
   finishes.
-- **No live view of the agent's work.** The web UI shows the ticket's state
-  and how long it has been working, not the agent's steps, tool calls or
-  streamed output. You see the written reply when the turn ends.
+- **The live view is limited.** While a ticket is In Progress, its page shows
+  the running turn's steps: the agent's text between tool calls, and one line
+  per tool call. Only the web UI has this; Linear and GitHub do not. With
+  OpenCode, a tool line appears only when the tool finishes, and nothing
+  appears while a subagent works. The steps are kept in memory only while the
+  turn runs: they disappear when it ends, and a daemon restart loses them.
 - **No email or webhook notifications.** The web UI marks unread tickets in the
   list, puts a `(N) Symphony` count in the browser tab title, and pushes a
   browser notification for a ticket that reaches Needs Input once you allow it.

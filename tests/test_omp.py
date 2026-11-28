@@ -26,6 +26,7 @@ from symphony_linear.omp import (
     run_initial,
     run_resume,
 )
+from symphony_linear.turn_activity import AgentStep
 
 FIXTURE_PATH = Path(__file__).resolve().parent / "fixtures" / "omp_events.jsonl"
 ERROR_FIXTURE_PATH = (
@@ -397,3 +398,48 @@ def _run_initial() -> tuple[str, str, int | None]:
         idle_timeout_seconds=30,
         on_subprocess=lambda process: None,
     )
+
+
+class TestStepReporting:
+    """OMP passes a line hook only for steps, and it never arms a timer."""
+
+    def test_no_line_hook_without_on_step(self) -> None:
+        with patch(
+            "symphony_linear.omp.agent_runner.run",
+            return_value=(0, _fixture_text(), "", None, False),
+        ) as runner:
+            _run_initial()
+
+        assert runner.call_args.kwargs["on_stdout_line"] is None
+
+    def test_a_tool_start_reaches_on_step_through_the_line_hook(self) -> None:
+        steps: list[AgentStep] = []
+        with patch(
+            "symphony_linear.omp.agent_runner.run",
+            return_value=(0, _fixture_text(), "", None, False),
+        ) as runner:
+            run_initial(
+                workspace_path="/workspace",
+                tmp_path="/workspace/tmp",
+                prompt="do it",
+                timeout_seconds=60,
+                idle_timeout_seconds=30,
+                on_subprocess=lambda process: None,
+                on_step=steps.append,
+            )
+
+        hook = runner.call_args.kwargs["on_stdout_line"]
+        assert hook is not None
+        assert (
+            hook(
+                json.dumps(
+                    {
+                        "type": "tool_execution_start",
+                        "toolName": "bash",
+                        "intent": "Running\nthe tests",
+                    }
+                )
+            )
+            is None
+        )
+        assert steps == [AgentStep(kind="tool", tool="bash", text="Running the tests")]

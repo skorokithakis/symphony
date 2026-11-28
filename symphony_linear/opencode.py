@@ -64,7 +64,7 @@ is a single JSON object.  The events observed during testing were:
       }
     }
 
-**tool_use** – emitted when the assistant invokes a tool:
+**tool_use** – emitted when the assistant's tool call ends:
     {
       "type": "tool_use",
       "sessionID": "ses_...",
@@ -72,11 +72,12 @@ is a single JSON object.  The events observed during testing were:
         "id": "prt_...",
         "messageID": "msg_...",
         "sessionID": "ses_...",
-        "type": "tool-use",
+        "type": "tool",
         "tool": "bash",
         "state": {
-          "title": "Running shell command",
-          "status": "running"
+          "status": "completed",
+          "input": {"command": "ls -la", "description": "List files"},
+          "title": "bash"
         }
       }
     }
@@ -146,6 +147,17 @@ Key observations:
   other kind of job stays on the existing watchdogs.
 
 -------------------------------------------------------------------------------
+Steps
+-------------------------------------------------------------------------------
+
+While a turn runs, ``_step_from_line`` turns the two event types that describe
+progress into one step each for the web UI: a ``text`` event carries the whole
+part once that part ends, and a ``tool_use`` event arrives when the tool has
+finished, with the tool's name in ``part.tool`` and its summary built from
+``part.state.input``.  Everything else, including the tool's own output, is
+not a step.
+
+-------------------------------------------------------------------------------
 Context tokens
 -------------------------------------------------------------------------------
 
@@ -176,6 +188,7 @@ from typing import Callable
 
 from symphony_linear import agent_runner
 from symphony_linear.sandbox import SECRETS_ENV_VAR
+from symphony_linear.turn_activity import AgentStep, report_step, tool_step_summary
 
 logger = logging.getLogger(__name__)
 
@@ -234,6 +247,7 @@ def run_initial(
     idle_timeout_seconds: int,
     on_subprocess: Callable[[subprocess.Popen[bytes]], None],
     on_output: Callable[[], None] | None = None,
+    on_step: Callable[[AgentStep], None] | None = None,
     hide_paths: list[str] | None = None,
     extra_rw_paths: list[str] | None = None,
     attachments_path: str | None = None,
@@ -263,6 +277,9 @@ def run_initial(
         on_output: Optional callback invoked from the output drain threads
             on every chunk from stdout or stderr.  The web UI uses it to
             show how long ago the agent last wrote anything.
+        on_step: Optional callback invoked from the stdout drain thread with
+            each step parsed out of the event stream.  The web UI uses it to
+            show what the running turn is doing.
         hide_paths: Paths to conceal inside the sandbox.  Defaults to empty
             list (no extra hiding).
         extra_rw_paths: Additional host paths to bind read-write inside the
@@ -314,6 +331,7 @@ def run_initial(
         idle_timeout_seconds=idle_timeout_seconds,
         on_subprocess=on_subprocess,
         on_output=on_output,
+        on_step=on_step,
         hide_paths=hide_paths or [],
         extra_rw_paths=extra_rw_paths or [],
         attachments_path=attachments_path,
@@ -332,6 +350,7 @@ def run_resume(
     idle_timeout_seconds: int,
     on_subprocess: Callable[[subprocess.Popen[bytes]], None],
     on_output: Callable[[], None] | None = None,
+    on_step: Callable[[AgentStep], None] | None = None,
     hide_paths: list[str] | None = None,
     extra_rw_paths: list[str] | None = None,
     attachments_path: str | None = None,
@@ -362,6 +381,8 @@ def run_resume(
         on_subprocess: Called with the Popen handle immediately after launch.
         on_output: Optional callback invoked from the output drain threads
             on every chunk from stdout or stderr.
+        on_step: Optional callback invoked from the stdout drain thread with
+            each step parsed out of the event stream.
         hide_paths: Paths to conceal inside the sandbox.  Defaults to empty
             list (no extra hiding).
         extra_rw_paths: Additional host paths to bind read-write inside the
@@ -421,6 +442,7 @@ def run_resume(
         idle_timeout_seconds=idle_timeout_seconds,
         on_subprocess=on_subprocess,
         on_output=on_output,
+        on_step=on_step,
         hide_paths=hide_paths or [],
         extra_rw_paths=extra_rw_paths or [],
         attachments_path=attachments_path,
@@ -514,6 +536,45 @@ def _shell_job_titles(line: str) -> list[str] | None:
     return titles
 
 
+def _step_from_line(line: str) -> AgentStep | None:
+    """Return the step an OpenCode stdout line describes, or None.
+
+    Only ``text`` and ``tool_use`` are steps: text arrives once per part when
+    that part ends, and a tool call arrives once the tool has finished, so the
+    tool's own output never enters the list.  A missing or malformed shape is
+    simply not a step; :func:`symphony_linear.turn_activity.report_step`
+    guards the unexpected.
+    """
+    # The hook runs for every line of a turn, and most are step_start,
+    # step_finish or background_wait; skip the JSON parse for those.
+    if '"text"' not in line and '"tool_use"' not in line:
+        return None
+    try:
+        event = json.loads(line)
+    except json.JSONDecodeError:
+        return None
+    if not isinstance(event, dict):
+        return None
+    part = event.get("part")
+    if not isinstance(part, dict):
+        return None
+
+    if event.get("type") == "text":
+        text = part.get("text")
+        if not isinstance(text, str) or not text.strip():
+            return None
+        return AgentStep(kind="text", text=text)
+
+    if event.get("type") != "tool_use":
+        return None
+    tool = part.get("tool")
+    if not isinstance(tool, str) or not tool:
+        return None
+    state = part.get("state")
+    arguments = state.get("input") if isinstance(state, dict) else None
+    return AgentStep(kind="tool", tool=tool, text=tool_step_summary(arguments))
+
+
 def _single_line(text: str) -> str:
     """Collapse *text* into one truncated line for a tracker comment."""
     collapsed = " ".join(text.split())
@@ -550,6 +611,7 @@ def _execute(
     idle_timeout_seconds: int,
     on_subprocess: Callable[[subprocess.Popen[bytes]], None],
     on_output: Callable[[], None] | None = None,
+    on_step: Callable[[AgentStep], None] | None = None,
     hide_paths: list[str] | None = None,
     extra_rw_paths: list[str] | None = None,
     attachments_path: str | None = None,
@@ -570,9 +632,15 @@ def _execute(
         # timer: the session got another turn (a job finished and the agent is
         # working again), so the turn is alive after all.
         titles = _shell_job_titles(line)
+        if titles is not None:
+            stopped_jobs[:] = titles
+        # Step extraction shares the hook because the drain thread already
+        # frames whole lines here; an extra line hook would reassemble the
+        # same stream a second time.
+        if on_step is not None:
+            report_step(on_step, _step_from_line, line)
         if titles is None:
             return None
-        stopped_jobs[:] = titles
         return _BACKGROUND_WAIT_GRACE_SECONDS
 
     (

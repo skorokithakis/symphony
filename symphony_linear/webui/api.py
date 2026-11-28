@@ -229,7 +229,7 @@ def api_soniox_key(request: Request) -> Response:
 
 
 def api_ticket(request: Request) -> Response:
-    """Return the ticket's new entries plus the mutable header fragments."""
+    """Return the ticket's new entries, its steps and the mutable fragments."""
     ticket = _ticket(request)
     if ticket is None:
         return _error("Ticket not found.", status=404)
@@ -241,7 +241,18 @@ def api_ticket(request: Request) -> Response:
     if request.query.get("active", [""])[0] == "1" and request.app.presence is not None:
         request.app.presence.mark_active(ticket.id)
     after = request.query.get("after", [""])[0]
-    return _json(snapshot(request, ticket, after))
+    # The page's step cursor, or None after a reload or a new turn.  A turn id
+    # without a parsable number cannot be used, so it reads as "no cursor" and
+    # the response asks the page to replace its list.
+    turn = request.query.get("turn", [""])[0]
+    raw_step = request.query.get("step", [""])[0]
+    steps_cursor: tuple[str, int] | None = None
+    if turn and raw_step:
+        try:
+            steps_cursor = (turn, int(raw_step))
+        except ValueError:
+            steps_cursor = None
+    return _json(snapshot(request, ticket, after, steps_cursor))
 
 
 def api_draft_text(request: Request) -> Response:

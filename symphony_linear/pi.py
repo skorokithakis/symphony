@@ -17,10 +17,12 @@ from symphony_linear.pi_protocol import (
     _assemble_message,
     _extract_context_tokens,
     _parse_stream,
+    _step_line_hook,
     _token_count as _token_count,
     _validate_final_turn,
 )
 from symphony_linear.sandbox import SECRETS_ENV_VAR
+from symphony_linear.turn_activity import AgentStep
 
 logger = logging.getLogger(__name__)
 
@@ -39,6 +41,7 @@ def run_initial(
     idle_timeout_seconds: int,
     on_subprocess: Callable[[subprocess.Popen[bytes]], None],
     on_output: Callable[[], None] | None = None,
+    on_step: Callable[[AgentStep], None] | None = None,
     hide_paths: list[str] | None = None,
     extra_rw_paths: list[str] | None = None,
     attachments_path: str | None = None,
@@ -79,6 +82,7 @@ def run_initial(
         idle_timeout_seconds=idle_timeout_seconds,
         on_subprocess=on_subprocess,
         on_output=on_output,
+        on_step=on_step,
         hide_paths=hide_paths or [],
         extra_rw_paths=extra_rw_paths or [],
         attachments_path=attachments_path,
@@ -97,6 +101,7 @@ def run_resume(
     idle_timeout_seconds: int,
     on_subprocess: Callable[[subprocess.Popen[bytes]], None],
     on_output: Callable[[], None] | None = None,
+    on_step: Callable[[AgentStep], None] | None = None,
     hide_paths: list[str] | None = None,
     extra_rw_paths: list[str] | None = None,
     attachments_path: str | None = None,
@@ -142,6 +147,7 @@ def run_resume(
         idle_timeout_seconds=idle_timeout_seconds,
         on_subprocess=on_subprocess,
         on_output=on_output,
+        on_step=on_step,
         hide_paths=hide_paths or [],
         extra_rw_paths=extra_rw_paths or [],
         attachments_path=attachments_path,
@@ -160,6 +166,7 @@ def _execute(
     idle_timeout_seconds: int,
     on_subprocess: Callable[[subprocess.Popen[bytes]], None],
     on_output: Callable[[], None] | None = None,
+    on_step: Callable[[AgentStep], None] | None = None,
     hide_paths: list[str] | None = None,
     extra_rw_paths: list[str] | None = None,
     attachments_path: str | None = None,
@@ -185,6 +192,7 @@ def _execute(
         on_subprocess=on_subprocess,
         env=env,
         on_output=on_output,
+        on_stdout_line=_step_line_hook(on_step),
         hide_paths=hide_paths,
         extra_rw_paths=extra_rw_paths or [],
         attachments_path=attachments_path,

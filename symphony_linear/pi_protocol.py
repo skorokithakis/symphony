@@ -4,6 +4,14 @@ from __future__ import annotations
 
 import json
 import logging
+from typing import Callable
+
+from symphony_linear.turn_activity import (
+    AgentStep,
+    one_line_summary,
+    report_step,
+    tool_step_summary,
+)
 
 logger = logging.getLogger(__name__)
 
@@ -40,6 +48,68 @@ def _parse_stream(stdout_text: str) -> tuple[str | None, list[dict]]:
         parsed_events.append(event)
 
     return session_id, parsed_events
+
+
+def _step_line_hook(
+    on_step: Callable[[AgentStep], None] | None,
+) -> Callable[[str], None] | None:
+    """Return the stdout line hook that reports steps, or None without one.
+
+    The pi family arms no grace timer, so this hook exists only to turn lines
+    into steps.  Returning None when *on_step* is absent keeps the runner from
+    framing stdout into lines for adapters that do not use them.
+    """
+    if on_step is None:
+        return None
+    return lambda line: report_step(on_step, _step_from_line, line)
+
+
+def _step_from_line(line: str) -> AgentStep | None:
+    """Return the step a pi-family stdout line describes, or None.
+
+    ``message_update`` is a step only when it ends a text part, and
+    ``tool_execution_start`` is a step once the tool starts (unlike OpenCode,
+    whose tool event arrives at the end).  OMP sometimes knows why a tool is
+    called and puts that one-line intent on the event; when it does, that is a
+    better summary than the arguments, which can be a whole file.
+    """
+    # Most lines are deltas, turn framing or tool progress; skip the JSON
+    # parse unless the line is one of the two events that is a step.  The
+    # filter looks for "text_end" rather than "message_update": every token
+    # delta is a message_update line too, and those are the bulk of a turn.
+    if '"tool_execution_start"' not in line and '"text_end"' not in line:
+        return None
+    try:
+        event = json.loads(line)
+    except json.JSONDecodeError:
+        return None
+    if not isinstance(event, dict):
+        return None
+
+    if event.get("type") == "message_update":
+        assistant_event = event.get("assistantMessageEvent")
+        if not isinstance(assistant_event, dict):
+            return None
+        if assistant_event.get("type") != "text_end":
+            return None
+        content = assistant_event.get("content")
+        if not isinstance(content, str) or not content.strip():
+            return None
+        return AgentStep(kind="text", text=content)
+
+    if event.get("type") != "tool_execution_start":
+        return None
+    tool_name = event.get("toolName")
+    if not isinstance(tool_name, str) or not tool_name:
+        return None
+    intent = event.get("intent")
+    if isinstance(intent, str) and intent.strip():
+        return AgentStep(kind="tool", tool=tool_name, text=one_line_summary(intent))
+    return AgentStep(
+        kind="tool",
+        tool=tool_name,
+        text=tool_step_summary(event.get("args")),
+    )
 
 
 def _validate_final_turn(events: list[dict], error_type: type[Exception]) -> None:

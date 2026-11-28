@@ -62,6 +62,14 @@
   var formsHtml = null;
   var workingHtml = null;
 
+  /* The steps block's cursor and display state.  The turn identifier changes
+   * when a new turn starts, and the block then starts its list over.  A turn
+   * that ends clears all of it, so the next turn never shows stale steps. */
+  var stepsTurn = "";
+  var stepsLast = 0;
+  var stepsTotal = 0;
+  var stepsExpanded = false;
+
   var timer = null;
   var polling = false;
   var pollQueued = false;
@@ -647,9 +655,12 @@
 
   function appendEntries(html) {
     var wasAtBottom = nearBottom();
-    var working = document.getElementById("working");
-    if (working) {
-      working.insertAdjacentHTML("beforebegin", html);
+    // Entries land above the steps block, which sits above the working line:
+    // what the agent said, then what it is doing now.
+    var anchor =
+      document.getElementById("steps") || document.getElementById("working");
+    if (anchor) {
+      anchor.insertAdjacentHTML("beforebegin", html);
     } else {
       thread.insertAdjacentHTML("beforeend", html);
     }
@@ -658,6 +669,83 @@
       scrollToBottom();
     } else {
       showJump(true);
+    }
+  }
+
+  /* ---------- the running turn's steps ---------- */
+
+  /* Last five unless the reader asked for all; the stylesheet does the
+   * hiding, so a step arriving while the list is open needs no re-render. */
+  var STEPS_PREVIEW = 5;
+
+  function renderStepsControl() {
+    var more = document.getElementById("steps-more");
+    if (!more) {
+      return;
+    }
+    // With five or fewer there is nothing to reveal, and once the reader asked
+    // for everything the control has no other job: it is not a toggle, because
+    // the open list stays open until the turn ends.
+    more.hidden = stepsExpanded || stepsTotal <= STEPS_PREVIEW;
+    var label = "Show all " + stepsTotal + " steps";
+    if (more.textContent !== label) {
+      more.textContent = label;
+    }
+  }
+
+  function resetSteps() {
+    var block = document.getElementById("steps");
+    var list = document.getElementById("steps-list");
+    if (list) {
+      list.innerHTML = "";
+    }
+    if (block) {
+      block.classList.remove("steps--all");
+      block.hidden = true;
+    }
+    stepsTurn = "";
+    stepsLast = 0;
+    stepsTotal = 0;
+    stepsExpanded = false;
+    renderStepsControl();
+  }
+
+  function applySteps(data) {
+    if (!data.working_html) {
+      // The turn ended or the ticket left In Progress: its steps go with it.
+      resetSteps();
+      return;
+    }
+    var block = document.getElementById("steps");
+    var list = document.getElementById("steps-list");
+    if (!block || !list) {
+      return;
+    }
+    // Same rule as the working line: keep a reader at the bottom there, never
+    // move one who scrolled up.  Steps have no "Jump to latest" of their own.
+    var wasAtBottom = nearBottom();
+    if (data.steps_replace) {
+      // A new turn, or a cursor too old to fill by appending.  A replace for
+      // the same turn is a tab that slept past the window, so the reader's
+      // "show all" choice still holds; a new turn starts collapsed.
+      var sameTurn = Boolean(stepsTurn) && data.steps_turn === stepsTurn;
+      list.innerHTML = data.steps_html;
+      if (!sameTurn) {
+        stepsExpanded = false;
+        block.classList.remove("steps--all");
+      }
+    } else if (data.steps_html) {
+      list.insertAdjacentHTML("beforeend", data.steps_html);
+    } else {
+      return;
+    }
+    stepsTurn = data.steps_turn || "";
+    stepsLast = data.steps_last || 0;
+    stepsTotal = data.steps_total || 0;
+    block.hidden = stepsTotal === 0;
+    renderStepsControl();
+    if (wasAtBottom) {
+      scrollToBottom();
     }
   }
 
@@ -756,6 +844,10 @@
       }
     }
 
+    // After the working line, so a turn that just ended has already dropped
+    // its steps from the page.
+    applySteps(data);
+
     // The cursor only moves forward, and only past entries this page has
     // actually rendered.  An empty delta on an unknown anchor must not move
     // it: that would skip or replay comments.
@@ -768,8 +860,8 @@
       lastCommentId = data.last_comment_id;
     }
     /* The poll can append an agent reply or a human entry, and it replaces the
-     * action bar the answer count sits in.  Re-evaluate the active cards after
-     * either change, without a reload. */
+     * action bar.  Re-evaluate the active cards after either change, without a
+     * reload. */
     questionCards.refresh();
     markSeen(lastCommentId);
   }
@@ -794,6 +886,10 @@
     }
     polling = true;
     var url = pollUrl + "?after=" + encodeURIComponent(lastCommentId);
+    if (stepsTurn) {
+      url +=
+        "&turn=" + encodeURIComponent(stepsTurn) + "&step=" + stepsLast;
+    }
     if (pageActive()) {
       url += "&active=1";
     }
@@ -910,6 +1006,20 @@
 
   if (jump) {
     jump.addEventListener("click", scrollToBottom);
+  }
+
+  /* "Show all N steps": reveal the whole list for the rest of the turn.  The
+   * block is always in the page, so one listener at load is enough. */
+  var stepsMore = document.getElementById("steps-more");
+  if (stepsMore) {
+    stepsMore.addEventListener("click", function () {
+      var block = document.getElementById("steps");
+      stepsExpanded = true;
+      if (block) {
+        block.classList.add("steps--all");
+      }
+      renderStepsControl();
+    });
   }
 
   if (sizeButton) {

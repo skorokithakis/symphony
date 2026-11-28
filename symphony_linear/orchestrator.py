@@ -38,7 +38,7 @@ from symphony_linear.tracker import (
     is_bot_comment,
     model_for_issue,
 )
-from symphony_linear.turn_activity import TurnActivity
+from symphony_linear.turn_activity import AgentStep, TurnActivity
 from symphony_linear.webhook import WebhookServer
 from symphony_linear.workspace import (
     ServeScriptMissing,
@@ -261,8 +261,9 @@ class Orchestrator:
         self._workspace = workspace
         self._webhook_server = webhook_server
         # Shared with the web UI, which shows how long ago each running turn
-        # last wrote output.  None when there is no web UI (Linear and GitHub
-        # backends, tests): adapters then get no on_output callback.
+        # last wrote output and what its steps are.  None when there is no web
+        # UI (Linear and GitHub backends, tests): adapters then get neither
+        # the on_output nor the on_step callback.
         self._turn_activity = turn_activity
 
         self._executor = ThreadPoolExecutor(max_workers=5)
@@ -1808,6 +1809,18 @@ class Orchestrator:
         activity = self._turn_activity
         return lambda: activity.record_output(ticket_id)
 
+    def _step_callback(self, ticket_id: str) -> Callable[[AgentStep], None] | None:
+        """Return the turn-step callback for *ticket_id*, if there is one.
+
+        None when no ``TurnActivity`` was supplied, exactly as for
+        :meth:`_output_callback`.  The callback runs on the adapter's stdout
+        drain thread; ``record_step`` takes its own lock.
+        """
+        if self._turn_activity is None:
+            return None
+        activity = self._turn_activity
+        return lambda step: activity.record_step(ticket_id, step)
+
     # ==================================================================
     # Cancellation (B1 + S1)
     # ==================================================================
@@ -2448,6 +2461,7 @@ class Orchestrator:
             # thing the metric covers.
             hide_paths = self._sandbox_hide_paths_for(issue.identifier)
             on_output = self._output_callback(tid)
+            on_step = self._step_callback(tid)
             with metrics.record_turn(self._config.agent, "initial"):
                 session_id, final_message, _context_tokens = agent_run_initial(
                     workspace_path=workspace_path,
@@ -2461,6 +2475,7 @@ class Orchestrator:
                     # Only agent turns count; .symphony/setup and the QA serve
                     # run outside the adapter and never report output.
                     on_output=on_output,
+                    on_step=on_step,
                     hide_paths=hide_paths,
                     extra_rw_paths=self._config.sandbox.extra_rw_paths,
                     attachments_path=host_attachments_dir,
@@ -2814,6 +2829,7 @@ class Orchestrator:
                 ticket_state.ticket_identifier, ticket_state.workspace_path
             )
             on_output = self._output_callback(tid)
+            on_step = self._step_callback(tid)
             with metrics.record_turn(self._config.agent, "resume"):
                 final_message, _context_tokens = agent_run_resume(
                     workspace_path=ticket_state.workspace_path,
@@ -2826,6 +2842,7 @@ class Orchestrator:
                         None,
                     )[1],
                     on_output=on_output,
+                    on_step=on_step,
                     hide_paths=hide_paths,
                     extra_rw_paths=self._config.sandbox.extra_rw_paths,
                     attachments_path=host_attachments_dir,

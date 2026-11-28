@@ -7,6 +7,7 @@ they never invoke the real ``pi`` binary or an LLM.
 from __future__ import annotations
 
 import inspect
+import json
 from pathlib import Path
 from unittest.mock import patch
 
@@ -14,6 +15,7 @@ import pytest
 
 from symphony_linear import agent_runner, opencode, pi, pi_protocol
 from symphony_linear.pi import PiCancelled, PiError, PiTimeout, run_initial, run_resume
+from symphony_linear.turn_activity import AgentStep
 
 FIXTURE_PATH = Path(__file__).resolve().parent / "fixtures" / "omp_events.jsonl"
 ERROR_FIXTURE_PATH = (
@@ -246,3 +248,143 @@ class TestExceptionAliases:
         assert PiError is agent_runner.AgentError
         assert PiTimeout is agent_runner.AgentTimeout
         assert PiCancelled is agent_runner.AgentCancelled
+
+
+class TestStepExtraction:
+    """pi's two step events, through the parser it shares with OMP."""
+
+    def test_text_end_carries_the_whole_text_part(self) -> None:
+        event = {
+            "type": "message_update",
+            "assistantMessageEvent": {
+                "type": "text_end",
+                "contentIndex": 0,
+                "content": "Here is what I found.",
+            },
+        }
+
+        assert pi_protocol._step_from_line(json.dumps(event)) == AgentStep(
+            kind="text", text="Here is what I found."
+        )
+
+    def test_tool_start_prefers_a_one_line_intent(self) -> None:
+        event = {
+            "type": "tool_execution_start",
+            "toolName": "bash",
+            "intent": "Searching\nthe tests",
+            "args": {"command": "rg foo"},
+        }
+
+        assert pi_protocol._step_from_line(json.dumps(event)) == AgentStep(
+            kind="tool", tool="bash", text="Searching the tests"
+        )
+
+    def test_tool_start_without_intent_summarises_the_arguments(self) -> None:
+        event = {
+            "type": "tool_execution_start",
+            "toolName": "read",
+            "args": {"path": "README.md", "limit": 20},
+        }
+
+        assert pi_protocol._step_from_line(json.dumps(event)) == AgentStep(
+            kind="tool", tool="read", text="README.md"
+        )
+
+    def test_tool_start_without_intent_or_string_arguments_gives_no_summary(
+        self,
+    ) -> None:
+        event = {
+            "type": "tool_execution_start",
+            "toolName": "read",
+            "args": {"limit": 20},
+        }
+
+        assert pi_protocol._step_from_line(json.dumps(event)) == AgentStep(
+            kind="tool", tool="read", text=""
+        )
+
+    def test_a_long_intent_is_cut_like_any_other_summary(self) -> None:
+        event = {
+            "type": "tool_execution_start",
+            "toolName": "bash",
+            "intent": "x" * 500,
+        }
+
+        step = pi_protocol._step_from_line(json.dumps(event))
+
+        assert step is not None
+        assert step.text.endswith("…")
+        assert len(step.text) == 120
+
+    @pytest.mark.parametrize(
+        "line",
+        [
+            json.dumps(
+                {
+                    "type": "message_update",
+                    "assistantMessageEvent": {
+                        "type": "text_delta",
+                        "delta": "Wor",
+                    },
+                }
+            ),
+            json.dumps({"type": "tool_execution_end", "toolName": "bash"}),
+            json.dumps({"type": "session", "id": "pi-1"}),
+            "not json",
+        ],
+        ids=["text_delta", "tool_execution_end", "session", "corrupt"],
+    )
+    def test_other_lines_are_not_steps(self, line: str) -> None:
+        assert pi_protocol._step_from_line(line) is None
+
+
+class TestStepReporting:
+    """pi passes a line hook only for steps; it exists for no other reason."""
+
+    def test_no_line_hook_without_on_step(self) -> None:
+        with patch(
+            "symphony_linear.pi.agent_runner.run",
+            return_value=(0, _fixture_text(), "", None, False),
+        ) as runner:
+            run_initial(
+                workspace_path="/workspace",
+                tmp_path="/workspace/tmp",
+                prompt="do it",
+                timeout_seconds=60,
+                idle_timeout_seconds=30,
+                on_subprocess=lambda process: None,
+            )
+
+        assert runner.call_args.kwargs["on_stdout_line"] is None
+
+    def test_a_text_end_reaches_on_step_through_the_line_hook(self) -> None:
+        steps: list[AgentStep] = []
+        with patch(
+            "symphony_linear.pi.agent_runner.run",
+            return_value=(0, _fixture_text(), "", None, False),
+        ) as runner:
+            run_initial(
+                workspace_path="/workspace",
+                tmp_path="/workspace/tmp",
+                prompt="do it",
+                timeout_seconds=60,
+                idle_timeout_seconds=30,
+                on_subprocess=lambda process: None,
+                on_step=steps.append,
+            )
+
+        hook = runner.call_args.kwargs["on_stdout_line"]
+        assert hook is not None
+        hook(
+            json.dumps(
+                {
+                    "type": "message_update",
+                    "assistantMessageEvent": {
+                        "type": "text_end",
+                        "contentIndex": 0,
+                        "content": "Done.",
+                    },
+                }
+            )
+        )
+        assert steps == [AgentStep(kind="text", text="Done.")]

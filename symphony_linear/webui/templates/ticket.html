@@ -1,5 +1,5 @@
 {% extends "base.html" %}
-{% from "_macros.html" import composer_actions, dock, entry, needs_input_dot, pending_files, push_bell, saved_indicator, state_forms, state_tag, working %}
+{% from "_macros.html" import composer_actions, dock, entry, needs_input_dot, pending_files, push_bell, saved_indicator, state_forms, state_tag, steps_block, working %}
 
 {% block title %}{{ page.ticket.id }} · {{ page.title }} · symphony{% endblock %}
 
@@ -50,6 +50,7 @@
 
   <div class="thread" id="thread" data-last-comment-id="{{ page.last_comment_id }}" data-seen-comment-id="{{ page.seen_comment_id or '' }}">
     {% for item in page.entries %}{{ entry(item) }}{% endfor %}
+    {{ steps_block() }}
     {% if page.working_for %}{{ working(page) }}{% endif %}
   </div>
 

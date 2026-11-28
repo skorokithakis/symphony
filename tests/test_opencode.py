@@ -27,12 +27,15 @@ from symphony_linear.opencode import (
     OpenCodeTimeout,
     _assemble_final_reply,
     _assemble_message,
+    _BACKGROUND_WAIT_GRACE_SECONDS,
     _extract_context_tokens,
     _parse_stream,
+    _step_from_line,
     _stopped_jobs_line,
     run_initial,
     run_resume,
 )
+from symphony_linear.turn_activity import AgentStep
 
 # ---------------------------------------------------------------------------
 # Helpers
@@ -271,6 +274,126 @@ class TestAssembleFinalReply:
             )
         assert session_id == "ses_main"
         assert final_message == "Done. The answer is 42."
+
+
+# ---------------------------------------------------------------------------
+# Unit: steps for the web UI's live turn view
+# ---------------------------------------------------------------------------
+
+
+def _completed_tool_use(
+    tool: str,
+    arguments: dict[str, Any] | None,
+    *,
+    title: str | None = None,
+) -> dict[str, Any]:
+    """Build an OpenCode 2.3.2 ``tool_use`` event, emitted when the tool ends."""
+    state: dict[str, Any] = {"status": "completed"}
+    if arguments is not None:
+        state["input"] = arguments
+    if title is not None:
+        state["title"] = title
+    return {
+        "type": "tool_use",
+        "sessionID": "ses_main",
+        "part": {
+            "type": "tool",
+            "tool": tool,
+            "state": state,
+        },
+    }
+
+
+class TestStepExtraction:
+    """Each stdout line yields at most one step, and only for real events."""
+
+    def test_text_event_carries_the_whole_part(self) -> None:
+        event = _make_text("Let me check that for you.")
+
+        step = _step_from_line(json.dumps(event))
+
+        assert step == AgentStep(kind="text", text="Let me check that for you.")
+
+    def test_completed_tool_use_carries_the_tool_and_its_input_summary(self) -> None:
+        event = _completed_tool_use(
+            "bash",
+            {"command": "ls -la", "description": "List the files"},
+            title="bash",
+        )
+
+        step = _step_from_line(json.dumps(event))
+
+        assert step == AgentStep(
+            kind="tool", tool="bash", text="ls -la, List the files"
+        )
+
+    def test_a_tool_use_without_string_input_gives_an_empty_summary(self) -> None:
+        step = _step_from_line(json.dumps(_completed_tool_use("read", {"limit": 20})))
+
+        # The page shows the name alone; "read: read" would be noise.
+        assert step == AgentStep(kind="tool", tool="read", text="")
+
+    @pytest.mark.parametrize(
+        "line",
+        [
+            json.dumps({"type": "step_start", "sessionID": "ses_main", "part": {}}),
+            json.dumps({"type": "step_finish", "sessionID": "ses_main", "part": {}}),
+            json.dumps(
+                {
+                    "type": "background_wait",
+                    "sessionID": "ses_main",
+                    "jobs": [{"id": "sh_0", "kind": "shell", "title": "sleep 400"}],
+                }
+            ),
+            json.dumps({"type": "text", "part": {"text": "   "}}),
+            "not json",
+            "null",
+        ],
+        ids=[
+            "step_start",
+            "step_finish",
+            "background_wait",
+            "blank_text",
+            "corrupt",
+            "null",
+        ],
+    )
+    def test_other_lines_are_not_steps(self, line: str) -> None:
+        assert _step_from_line(line) is None
+
+    def test_run_initial_reports_steps_and_keeps_the_grace_stop(self) -> None:
+        """The step hook and the background-wait grace share one line hook:
+        reporting a step must not disturb the timer."""
+        steps: list[AgentStep] = []
+        stdout = json.dumps({"type": "step_start", "sessionID": "ses_main", "part": {}})
+        with patch(
+            "symphony_linear.opencode.agent_runner.run",
+            return_value=(0, stdout, "", None, False),
+        ) as runner:
+            run_initial(
+                workspace_path="/ws",
+                tmp_path="/ws/tmp",
+                prompt="do it",
+                timeout_seconds=10,
+                idle_timeout_seconds=10,
+                on_subprocess=lambda process: None,
+                on_step=steps.append,
+            )
+
+        hook = runner.call_args.kwargs["on_stdout_line"]
+        assert hook is not None
+        hook(json.dumps(_make_text("Here is the plan.")))
+        hook(json.dumps(_completed_tool_use("bash", {"command": "pytest -q"})))
+        assert steps == [
+            AgentStep(kind="text", text="Here is the plan."),
+            AgentStep(kind="tool", tool="bash", text="pytest -q"),
+        ]
+        assert (
+            hook(json.dumps(_background_wait(("shell", "sleep 400"))))
+            == _BACKGROUND_WAIT_GRACE_SECONDS
+        )
+        # The wait line is not a step, so it added nothing.
+        assert len(steps) == 2
 
 
 # ---------------------------------------------------------------------------
