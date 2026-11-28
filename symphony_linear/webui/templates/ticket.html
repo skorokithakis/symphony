@@ -1,5 +1,5 @@
 {% extends "base.html" %}
-{% from "_macros.html" import composer_actions, dock, entry, needs_input_dot, pending_files, push_bell, saved_indicator, state_forms, state_tag, steps_block, working %}
+{% from "_macros.html" import composer_actions, dock, entry, needs_input_dot, pending_files, push_bell, saved_indicator, state_forms, state_menu, state_tag, steps_block, working %}
 
 {% block title %}{{ page.ticket.id }} · {{ page.title }} · symphony{% endblock %}
 
@@ -19,6 +19,7 @@
       data-api-retry="/api/tickets/{{ page.ticket.id }}/retry"
       data-api-draft="/api/tickets/{{ page.ticket.id }}/draft"
       data-api-upload="/api/tickets/{{ page.ticket.id }}/files"
+      data-retry-flag="{{ 1 if page.retry else 0 }}"
       data-reply-answers="{{ page.reply_answers_json }}">
   <header class="thead">
     <div class="thead-top">
@@ -90,6 +91,7 @@
           {% for alias in page.composer_models %}<option value="{{ alias }}"{% if alias == page.composer_model %} selected{% endif %}>{{ alias }}</option>{% endfor %}
         </select>
         {% endif %}
+        <div class="state-menu-wrap" id="state-menu-wrap">{{ state_menu(page) }}</div>
         {{ saved_indicator(page.reply_draft_saved_at) }}
       </div>
       <div class="composer-actions" id="composer-actions">{{ composer_actions(page) }}</div>

@@ -324,6 +324,9 @@ class TestTicketPage:
         assert "The agent is working" not in text
         assert 'value="stop"' in text
         assert "state--progress" in text
+        # The Change state menu has nothing to offer while a turn runs.
+        assert 'id="state-menu-button"' not in text
+        assert 'id="state-menu"' not in text
 
     def test_working_line_shows_the_age_of_the_last_agent_output(
         self, tmp_path: Path
@@ -586,24 +589,38 @@ class TestRetry:
             in_qa = _ticket(tracker.store, state=STATE_QA, title="In QA")
             state.upsert(_state_entry(in_qa.id, status=TicketStatus.failed))
 
-            texts = {
-                name: _page(port, ticket.id)
-                for name, ticket in (
-                    ("failed", failed),
-                    ("setup_failed", setup_failed),
-                    ("healthy", healthy),
-                    ("untracked", untracked),
-                    ("running", running),
-                    ("in_qa", in_qa),
-                )
-            }
+            texts = {}
+            for name, ticket in (
+                ("failed", failed),
+                ("setup_failed", setup_failed),
+                ("healthy", healthy),
+                ("untracked", untracked),
+                ("running", running),
+                ("in_qa", in_qa),
+            ):
+                # Every page has an error alert, so presence alone cannot make
+                # the test pass: only the flag and the visibility may differ.
+                tracker.post_comment(ticket.id, "The turn failed.", "error")
+                texts[name] = _page(port, ticket.id)
 
-        assert 'id="act-retry"' in texts["failed"]
-        assert 'id="act-retry"' in texts["setup_failed"]
-        assert 'id="act-retry"' not in texts["healthy"]
-        assert 'id="act-retry"' not in texts["untracked"]
-        assert 'id="act-retry"' not in texts["running"]
-        assert 'id="act-retry"' not in texts["in_qa"]
+        for name in ("failed", "setup_failed"):
+            assert 'data-retry-flag="1"' in texts[name]
+            assert "data-retry>" in texts[name]
+        for name in ("healthy", "untracked", "running", "in_qa"):
+            assert 'data-retry-flag="0"' in texts[name]
+            assert "data-retry>" not in texts[name]
+            assert "data-retry hidden>" in texts[name]
+
+    def test_only_the_newest_error_alert_shows_retry(self, tmp_path: Path) -> None:
+        with _server(tmp_path) as (port, tracker, state, _wake):
+            ticket = _ticket(tracker.store)
+            state.upsert(_state_entry(ticket.id, status=TicketStatus.failed))
+            tracker.post_comment(ticket.id, "Older failure.", "error")
+            tracker.post_comment(ticket.id, "Newest failure.", "error")
+            text = _page(port, ticket.id)
+
+        assert text.count("data-retry>") == 1
+        assert text.count("data-retry hidden>") == 1
 
     def test_the_button_submits_the_composer_form_to_the_retry_route(
         self, tmp_path: Path
@@ -611,6 +628,7 @@ class TestRetry:
         with _server(tmp_path) as (port, tracker, state, _wake):
             ticket = _ticket(tracker.store)
             state.upsert(_state_entry(ticket.id, status=TicketStatus.failed))
+            tracker.post_comment(ticket.id, "The turn failed.", "error")
             text = _page(port, ticket.id)
 
         assert f'formaction="/tickets/{ticket.id}/retry"' in text

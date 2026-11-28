@@ -107,7 +107,10 @@
 {% elif entry.kind == "error" %}
 <div class="alert alert--error" role="alert">
   <svg class="ic" viewBox="0 0 20 20" aria-hidden="true"><path d="M10 3l8 14H2zM10 8.5v4M10 15v.2"></path></svg>
-  <p class="alert-t">Symphony error {{ new_badge(entry) }}</p>
+  <div class="alert-h">
+    <p class="alert-t">Symphony error {{ new_badge(entry) }}</p>
+    {% if entry.retry_action %}<button class="btn retry-btn" type="submit" form="composer" formaction="{{ entry.retry_action }}" formnovalidate data-retry{% if not entry.retry_visible %} hidden{% endif %}>Retry</button>{% endif %}
+  </div>
   {% if entry.html %}<div class="md">{{ entry.html|safe }}</div>{% endif %}
   {% if entry.long %}
   <details><summary>Show details</summary><div class="md">{{ entry.detail_html|safe }}</div></details>
@@ -166,6 +169,29 @@
 <span class="reason" id="send-reason" hidden></span>
 {%- endmacro %}
 
+{# The state menu lives in the composer tools, to the right of the Model
+   select.  The poll replaces its wrapper, so the button disappears in In
+   Progress and the items follow the ticket's state without a reload.  The
+   items keep their form targets, ids and shortcuts; a hidden item still means
+   the server offers that action, which is why app.js lets a shortcut activate
+   one without the visibility check. #}
+{% macro state_menu(page) -%}
+{% if page.ticket.state == "Needs Input" or page.ticket.state == "QA" %}
+<button class="icon-btn" type="button" id="state-menu-button" aria-haspopup="menu" aria-expanded="false" aria-controls="state-menu" aria-label="Change state" title="Change state">
+  <svg class="ic" viewBox="0 0 20 20" aria-hidden="true"><path d="M4 7h12M13 4l3 3-3 3M16 13H4M7 10l-3 3 3 3"></path></svg>
+</button>
+<div class="state-menu" id="state-menu" role="menu" aria-labelledby="state-menu-button" data-shortcut-menu hidden>
+  {% if page.ticket.state == "Needs Input" %}
+  <button class="btn menu-item" type="submit" form="ticket-state-done" role="menuitem" id="act-done" data-shortcut="sd" data-shortcut-key="d" title="Done (s d)">Done</button>
+  <button class="btn menu-item" type="submit" form="ticket-state-qa" role="menuitem" id="act-qa" data-shortcut="sq" data-shortcut-key="q" title="Send to QA (s q)">Send to QA</button>
+  {% elif page.ticket.state == "QA" %}
+  <button class="btn menu-item" type="submit" form="ticket-state-done" role="menuitem" id="act-done" data-shortcut="sd" data-shortcut-key="d" title="Done (s d)">Done</button>
+  <button class="btn menu-item" type="submit" form="ticket-state-needs-input" role="menuitem" id="act-needs-input" data-shortcut="sn" data-shortcut-key="n" title="Back to Needs Input (s n)">Back to Needs Input</button>
+  {% endif %}
+</div>
+{% endif %}
+{%- endmacro %}
+
 {% macro composer_actions(page) -%}
   {% if page.ticket.state == "In Progress" %}
   {# Stop takes Send's place and its primary styling while a turn runs.  Send
@@ -173,20 +199,7 @@
      posted, and the page script reads this absence as the disabled state. #}
   {{ send_reason() }}
   <button class="btn btn--primary" type="submit" form="ticket-state-stop" id="act-stop" data-shortcut="sn" data-shortcut-key="n" title="Stop (s n)"><svg class="ic ic--sm" viewBox="0 0 20 20" aria-hidden="true"><path d="M6 6h8v8H6z"></path></svg>Stop</button>
-  {% elif page.ticket.state == "Needs Input" %}
-  <button class="btn" type="submit" form="ticket-state-done" id="act-done" data-shortcut="sd" data-shortcut-key="d" title="Done (s d)">Done</button>
-  <button class="btn" type="submit" form="ticket-state-qa" id="act-qa" data-shortcut="sq" data-shortcut-key="q" title="Send to QA (s q)">Send to QA</button>
-  {#- Retry posts the fixed "Retry." comment instead of the composer text.
-      formaction keeps the composer form's token and Model choice, and
-      formnovalidate lets it fire with an empty textarea, which the composer's
-      required attribute would otherwise block.  It has no keyboard shortcut
-      by design, so it carries no data-shortcut attributes. #}
-  {% if page.retry %}<button class="btn" type="submit" formaction="/tickets/{{ page.ticket.id }}/retry" formnovalidate id="act-retry">Retry</button>{% endif %}
-  {{ send_reason() }}
-  <button class="btn btn--primary" type="submit" id="act-send" title="Send (Ctrl+Enter)">Send</button>
-  {% elif page.ticket.state == "QA" %}
-  <button class="btn" type="submit" form="ticket-state-done" id="act-done" data-shortcut="sd" data-shortcut-key="d" title="Done (s d)">Done</button>
-  <button class="btn" type="submit" form="ticket-state-needs-input" id="act-needs-input" data-shortcut="sn" data-shortcut-key="n" title="Back to Needs Input (s n)">Back to Needs Input</button>
+  {% else %}
   {{ send_reason() }}
   <button class="btn btn--primary" type="submit" id="act-send" title="Send (Ctrl+Enter)">Send</button>
   {% endif %}

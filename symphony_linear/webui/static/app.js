@@ -411,7 +411,9 @@
   /* ``visible`` is false for the dock's links on the ticket and editor pages,
      whose layout hides the dock: "g" sequences must still work there.  The
      state buttons are checked because a hidden button is how the server
-     declines an action. */
+     declines an action.  The state menu's items are exempt: the list is
+     collapsed, not declined, and the server only renders the actions the
+     current state allows. */
   function activate(name, mustBeVisible) {
     var element = document.querySelector('[data-shortcut="' + name + '"]');
     if (!element || element.disabled) {
@@ -421,7 +423,13 @@
       return false;
     }
     if (mustBeVisible && element.getClientRects().length === 0) {
-      return false;
+      var menu = element.closest("[data-shortcut-menu]");
+      // A menu item has no boxes while its menu is collapsed; that is not a
+      // declined action.  A hidden button inside an open (or collapsed) menu
+      // still is, so the item's own hidden state is checked too.
+      if (!menu || !menu.hidden || element.hidden) {
+        return false;
+      }
     }
     element.click();
     return true;

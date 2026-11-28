@@ -27,6 +27,7 @@
   var thread = document.getElementById("thread");
   var titleEl = document.getElementById("ticket-title");
   var actionsEl = document.getElementById("composer-actions");
+  var stateMenuWrap = document.getElementById("state-menu-wrap");
   var formsEl = document.getElementById("state-forms");
   var composer = document.getElementById("composer");
   var reply = document.getElementById("reply");
@@ -55,10 +56,24 @@
    * kept separately so a busy upload can disable Send without re-enabling it
    * afterwards.  There is no Send at all on an In Progress ticket. */
   var stateSendDisabled = false;
+  var retryFlag = main.getAttribute("data-retry-flag") === "1";
+
+  /* Fragments compared across the initial DOM and the poll's raw template
+     markup must be serialized the same way: the browser turns a bare
+     attribute such as `hidden` into `hidden=""`, so comparing raw markup with
+     innerHTML would re-render an unchanged fragment on the first poll. */
+  var fragmentTemplate = document.createElement("template");
+  function normalizedFragment(html) {
+    fragmentTemplate.innerHTML = html;
+    return fragmentTemplate.innerHTML;
+  }
 
   // Fragments last written to the DOM, so an unchanged poll is a no-op.
   var stateHtml = null;
   var actionsHtml = null;
+  var stateMenuHtml = stateMenuWrap
+    ? normalizedFragment(stateMenuWrap.innerHTML)
+    : null;
   var formsHtml = null;
   var workingHtml = null;
 
@@ -334,10 +349,6 @@
     return document.getElementById("act-send");
   }
 
-  function retryButton() {
-    return document.getElementById("act-retry");
-  }
-
   function modelSelect() {
     return document.getElementById("composer-model");
   }
@@ -366,23 +377,23 @@
   function applyBusyState() {
     /* Dictation owns the state actions and Retry: Send is what ends a
      * recording and posts the final text, so it keeps its own rule.  The poll
-     * replaces the actions fragment, which is why this runs after every
-     * replacement and again whenever dictation.js reports a start or an end,
-     * reading the buttons currently in the DOM rather than a snapshot. */
+     * replaces the action and menu fragments, which is why this runs after
+     * every replacement and again whenever dictation.js reports a start or an
+     * end, reading the buttons currently in the DOM rather than a snapshot. */
     var dictating = Sym.dictation.active;
     var busy = uploadBusy || sending;
     // The state actions are only ever gated by a recording: the server renders
     // them enabled, while Send, the one control with a server-side disabled
     // state, is skipped here and handled below.
-    if (actionsEl) {
-      actionsEl
-        .querySelectorAll("button[type=submit]")
-        .forEach(function (control) {
-          if (control.id !== "act-send") {
-            control.disabled = dictating;
-          }
-        });
-    }
+    document
+      .querySelectorAll(
+        "#composer-actions button[type=submit], #state-menu button[type=submit]"
+      )
+      .forEach(function (control) {
+        if (control.id !== "act-send") {
+          control.disabled = dictating;
+        }
+      });
     var button = sendButton();
     if (button) {
       button.disabled = busy || stateSendDisabled;
@@ -394,10 +405,11 @@
     if (select) {
       select.disabled = busy || stateSendDisabled;
     }
-    var retry = retryButton();
-    if (retry) {
-      retry.disabled = busy || dictating;
-    }
+    // Retry is the error alert's own action now; every copy follows the same
+    // rule whether or not the page currently shows it.
+    document.querySelectorAll("[data-retry]").forEach(function (control) {
+      control.disabled = busy || dictating;
+    });
     var reason = reasonElement();
     if (!reason) {
       return;
@@ -597,14 +609,22 @@
    * posted), and the reverse must not happen either.  Double taps are still
    * blocked by the shared sending flag and the disabled button.  The textarea
    * and pending files are deliberately untouched. */
-  function retryReply(event) {
+  function retryReply(event, button) {
     if (event) {
       event.preventDefault();
     }
     if (!composer || sending) {
       return;
     }
-    var button = retryButton();
+    /* The button may be a fresh one the poll appended: its disabled state can
+     * be stale, so the live gates are checked here too. */
+    if (uploadBusy || Sym.dictation.active) {
+      return;
+    }
+    var alert = button ? button.closest(".alert--error") : null;
+    if (alert && alert.hasAttribute("data-retried")) {
+      return;
+    }
     if (button && button.disabled) {
       return;
     }
@@ -622,6 +642,13 @@
           tokenField.value = data.retry_token;
         }
         Sym.clearError();
+        // This alert has had its retry; a poll that still reports the failed
+        // turn must not offer it again.  A newer error alert is unmarked and
+        // will offer it when the flag is true.
+        if (alert) {
+          alert.setAttribute("data-retried", "");
+        }
+        syncRetry();
         // Same as Send: the user should see the Retry comment they posted.
         scrollToBottom();
         poll();
@@ -764,6 +791,63 @@
     copy.textContent = source.textContent;
   }
 
+  /* The state menu is a disclosure: one icon button toggles a small list of
+   * the actions the server offers for the current state.  The list is
+   * replaced by the poll, so its open state never outlives the state it
+   * described.  The items stay out of the visibility check in app.js: a closed
+   * menu still means the server offers that action, and the shortcut must not
+   * depend on whether the list is painted. */
+  function closeStateMenu(focusButton) {
+    var menu = document.getElementById("state-menu");
+    var button = document.getElementById("state-menu-button");
+    if (!menu || menu.hidden) {
+      return;
+    }
+    menu.hidden = true;
+    if (button) {
+      button.setAttribute("aria-expanded", "false");
+      if (focusButton) {
+        button.focus();
+      }
+    }
+  }
+
+  function toggleStateMenu() {
+    var menu = document.getElementById("state-menu");
+    var button = document.getElementById("state-menu-button");
+    if (!menu || !button) {
+      return;
+    }
+    var open = menu.hidden;
+    menu.hidden = !open;
+    button.setAttribute("aria-expanded", open ? "true" : "false");
+    if (open) {
+      var first = menu.querySelector("button");
+      if (first) {
+        first.focus();
+      }
+    }
+  }
+
+  /* Retry is offered by the newest error alert only.  Entries are appended,
+   * never re-rendered, so an alert that used to be the newest keeps its
+   * button; this runs after every poll and shows exactly one.  An alert that
+   * has already been retried keeps its marker and never offers it again, even
+   * if the daemon has not transitioned yet and the flag is still true; a
+   * newer error appended later is unmarked and gets the button again. */
+  function syncRetry() {
+    var alerts = thread.querySelectorAll(".alert--error");
+    var newest = alerts.length ? alerts[alerts.length - 1] : null;
+    document.querySelectorAll("[data-retry]").forEach(function (button) {
+      var offered =
+        retryFlag &&
+        newest &&
+        button.closest(".alert--error") === newest &&
+        !newest.hasAttribute("data-retried");
+      button.hidden = !offered;
+    });
+  }
+
   function apply(data) {
     baseTitle = data.page_title || baseTitle;
     Sym.setTitle(baseTitle, data.needs_input_count || 0);
@@ -774,6 +858,9 @@
       window.location.reload();
       return;
     }
+
+    retryFlag = Boolean(data.retry);
+    main.setAttribute("data-retry-flag", retryFlag ? "1" : "0");
 
     if (data.title && titleEl && titleEl.textContent !== data.title) {
       titleEl.textContent = data.title;
@@ -824,6 +911,18 @@
       formsHtml = data.state_forms_html;
     }
 
+    if (stateMenuWrap) {
+      var nextMenu = normalizedFragment(data.state_menu_html);
+      if (nextMenu !== stateMenuHtml) {
+        // Replacing the wrapper closes any open menu and drops the old
+        // state's items in one go; the new items are disabled again below if
+        // a recording is running.
+        stateMenuWrap.innerHTML = data.state_menu_html;
+        stateMenuHtml = nextMenu;
+        applyBusyState();
+      }
+    }
+
     if (data.working_html !== workingHtml) {
       workingHtml = data.working_html;
       // The indicator follows the same rule as appended entries: it keeps a
@@ -860,9 +959,12 @@
       lastCommentId = data.last_comment_id;
     }
     /* The poll can append an agent reply or a human entry, and it replaces the
-     * action bar.  Re-evaluate the active cards after either change, without a
-     * reload. */
+     * action and menu bars.  Re-evaluate the active cards, the one Retry and
+     * the busy/dictation gates after any of it, without a reload: an appended
+     * error alert carries a fresh Retry button that has not been gated. */
     questionCards.refresh();
+    syncRetry();
+    applyBusyState();
     markSeen(lastCommentId);
   }
 
@@ -922,10 +1024,10 @@
       return;
     }
     if (form === composer) {
-      // Retry is a submit button inside the composer form with its own
-      // formaction; the submitter is what tells the two requests apart.
-      if (event.submitter && event.submitter.id === "act-retry") {
-        retryReply(event);
+      // Retry is a submit button in an error alert, associated with the
+      // composer form; the submitter is what tells the two requests apart.
+      if (event.submitter && event.submitter.hasAttribute("data-retry")) {
+        retryReply(event, event.submitter);
       } else {
         sendReply(event);
       }
@@ -942,6 +1044,9 @@
     if (Sym.dictation.active) {
       return;
     }
+    // The menu item that fired this is about to be replaced with the new
+    // state's items; leaving it open would flash the old choices.
+    closeStateMenu(false);
     var actionField = form.querySelector('input[name="action"]');
     var action = actionField ? actionField.value : "";
     Sym.postJSON(url, { action: action })
@@ -952,6 +1057,31 @@
       .catch(function (error) {
         Sym.showError(error.message);
       });
+  });
+
+  /* The menu opens on its button and closes on an outside click or Escape.
+     Type-to-reply is untouched: with the menu open a plain key still reaches
+     app.js, which focuses the reply box as it does on any page. */
+  document.addEventListener("click", function (event) {
+    if (event.target.closest("#state-menu-button")) {
+      event.preventDefault();
+      toggleStateMenu();
+      return;
+    }
+    if (!event.target.closest("#state-menu-wrap")) {
+      closeStateMenu(false);
+    }
+  });
+
+  document.addEventListener("keydown", function (event) {
+    if (event.key !== "Escape") {
+      return;
+    }
+    var menu = document.getElementById("state-menu");
+    if (menu && !menu.hidden) {
+      event.preventDefault();
+      closeStateMenu(true);
+    }
   });
 
   if (reply) {
@@ -999,6 +1129,9 @@
    * indicator cover the answers, which ride with the text in one request. */
   questionCards.onChange = scheduleDraft;
   questionCards.refresh();
+  // The server already marked the initial newest error alert; this also
+  // normalizes a page whose flag is false.
+  syncRetry();
   /* A recording blocks the state actions and Retry; dictation.js calls this
    * when one starts and when it ends, and re-deriving the gate from the live
    * buttons is what keeps a poll's fresh render blocked mid-recording. */

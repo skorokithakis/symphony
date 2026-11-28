@@ -97,8 +97,8 @@ Tickets are in one of five fixed states:
 |---|---|---|
 | Draft | an idea in the editor; nothing has run | Start, Discard |
 | In Progress | the agent is working | Stop |
-| Needs Input | the agent has replied and is waiting for you | Send, Send to QA, Done, Retry (after a failed turn) |
-| QA | your `.symphony/serve` script is running | Send, Back to Needs Input, Done |
+| Needs Input | the agent has replied and is waiting for you | Send, Done and Send to QA in the Change state menu, Retry in the newest error alert (after a failed turn) |
+| QA | your `.symphony/serve` script is running | Send, Done and Back to Needs Input in the Change state menu |
 | Done | finished and archived | Reopen |
 
 - **Start** validates the editor and moves the Draft to In Progress. The
@@ -110,6 +110,11 @@ Tickets are in one of five fixed states:
   comment on Linear or GitHub.
 - **Stop** moves an In Progress ticket back to Needs Input. Any in-flight turn
   is killed on the next tick.
+- **Change state** is the button with two opposite arrows, to the right of the
+  Model select. It opens the ticket's other state actions: Done and Send to QA
+  in Needs Input, Done and Back to Needs Input in QA. It is absent in In
+  Progress, and the `s d`, `s q` and `s n` shortcuts work whether the menu is
+  open or closed.
 - **Send to QA** moves a Needs Input ticket to QA without posting the composer
   text. If the repo has a `.symphony/serve` script, the daemon starts it, as
   described under [Manual QA](configuration.md#manual-qa); QA is always enabled for this
@@ -150,12 +155,12 @@ sending resumes the agent, which pulls the ticket out of QA and stops the serve
 on the next tick.
 
 When a turn fails, or the ticket's workspace setup does, the ticket returns to
-Needs Input with an error comment and the composer grows a **Retry** button.
-Retry posts the fixed comment `Retry.`, which is exactly what resumes the
-agent; it deliberately does not use the composer's text or its pending
-attachments, so the reply you are writing stays where it is. A failed turn is
-never retried on its own, so Retry is the quick path when nothing needs to
-change in your instructions.
+Needs Input with an error comment. While the newest **Symphony error** alert
+can retry, it carries a **Retry** button. Retry posts the fixed comment
+`Retry.`, which is exactly what resumes the agent; it deliberately does not use
+the composer's text or its pending attachments, so the reply you are writing
+stays where it is. A failed turn is never retried on its own, so Retry is the
+quick path when nothing needs to change in your instructions.
 
 The composer's **Model** dropdown lists Default plus the aliases under the
 top-level `models:` map (the same control the editor has, and it is absent when

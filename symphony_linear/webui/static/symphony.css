@@ -589,6 +589,12 @@ body.sym { min-height: 100dvh; }
 }
 .alert > :not(.ic) { grid-column: 2; }
 .alert-t { font-weight: 700; font-size: var(--t-md); line-height: 1.35; }
+/* The error alert's title and its Retry, on one line; the button appears only
+   on the newest error alert while the ticket can retry. */
+.alert-h { display: flex; align-items: center; justify-content: space-between; gap: var(--s3); }
+.alert-h .alert-t { min-width: 0; }
+.alert-h .retry-btn { flex: none; }
+.alert-h .retry-btn[hidden] { display: none; }
 .alert--error { background: var(--danger-bg); border-color: color-mix(in srgb, var(--danger) 30%, transparent); }
 .alert--error .ic, .alert--error .alert-t { color: var(--danger); }
 .alert--warn { background: var(--accent); color: var(--on-accent); }
@@ -991,7 +997,14 @@ a.file:hover { border-color: var(--ink-3); background: var(--sunken); }
 .composer textarea:focus-visible { outline: 0; }
 .composer textarea::placeholder, .input::placeholder { color: var(--ink-3); opacity: 1; }
 .composer-foot { display: flex; flex-wrap: wrap; align-items: center; justify-content: space-between; gap: var(--s2) var(--s3); }
-.composer-tools { display: flex; align-items: center; gap: var(--s1); margin-left: -10px; }
+.composer-tools { display: flex; flex: 1 1 15rem; min-width: 0; align-items: center; gap: var(--s1); margin-left: -10px; }
+/* Tap targets keep their width: only the Model select gives way when the row
+   is tight, so a phone never renders a 20 px icon button.  The tools' 15rem
+   basis and the select's 4.75rem basis keep line breaking from measuring the
+   longest alias as the row's content: the select then grows into the free
+   space (up to 12rem, 5rem on a phone) instead of wrapping the row. */
+.composer-tools .icon-btn, .composer-tools .state-menu-wrap, .composer-tools .saved { flex: none; }
+.composer-tools .composer-model { flex: 1 1 4.75rem; min-width: 0; }
 .saved {
   display: inline-flex; align-items: center; gap: 6px;
   font: 400 var(--t-xs)/1 var(--font-mono); color: var(--ink-3);
@@ -1003,25 +1016,62 @@ a.file:hover { border-color: var(--ink-3); background: var(--sunken); }
    needed to beat the editor's full-width .input rule. */
 .composer .composer-model {
   width: auto; max-width: 12rem; min-height: 32px; padding: 0 var(--s2);
-  font-size: var(--t-xs);
+  font-size: var(--t-xs); text-overflow: ellipsis;
 }
-/* The actions take their own row in every state, deliberately.  The fullest
-   row (Needs Input with Retry) measures about 318 px at either control size,
-   and the tools row at its fullest (attach, dictation, Model select, Saved)
-   takes about 319 px of its row.  Side by side they need roughly 650 px,
-   which only the widest reading column offers (the composer's content box is
-   460 px at 800 px, 564 px at 1240 px and 718 px at 1440 px), and whether
-   they just fit must not decide the composer's height.  One row for every
-   state keeps the height independent of the state: all four states measure
-   209 px at a 390 px viewport and 194 px from 800 px up.  Below about 360 px
-   the fullest rows wrap onto a second line, so Needs Input with Retry and QA
-   are then one line taller; that is accepted.  justify-content keeps the
-   actions on the right, including an internal wrap. */
-.composer-actions { flex: 1 1 100%; display: flex; flex-wrap: wrap; align-items: center; justify-content: flex-end; gap: var(--s2); margin-left: auto; }
+/* One row: the tools and the single Send/Stop share the foot.  The right side
+   holds only the primary action; the state actions live in the Change state
+   menu inside the tools.  Measured with the seeded page, all four states are
+   157 px tall at a 390 px viewport and 150 px from 800 px up, each with one
+   foot row (44 px on the phone, 36 px on the desktop). */
+.composer-actions { position: relative; flex: 0 0 auto; display: flex; flex-wrap: nowrap; align-items: center; gap: var(--s2); margin-left: auto; }
 .composer-actions .btn { padding: 0 var(--s3); }
 .composer-actions .btn--primary { margin-left: auto; padding: 0 var(--s4); }
-.reason { flex: 1 1 8rem; font-size: var(--t-xs); line-height: 1.35; color: var(--ink-2); text-align: right; }
-.reason + .btn--primary { margin-left: 0; }
+/* The upload warning is transient and must not take width from the row: in the
+   composer it floats above the actions, right-aligned over the textarea.  The
+   editor's own reason stays a normal flex label. */
+.reason { flex: 1 1 8rem; min-width: 0; font-size: var(--t-xs); line-height: 1.35; color: var(--ink-2); text-align: right; }
+.composer-actions .reason {
+  position: absolute; right: 0; bottom: calc(100% + var(--s2)); z-index: 1;
+  flex: none; padding: 2px var(--s2); border-radius: var(--r1);
+  background: var(--surface); box-shadow: var(--shadow-1); white-space: nowrap;
+}
+
+/* The Change state control: an icon button with a small list above it.  The
+   list is inside the composer form, but its items are submit buttons for the
+   hidden state forms, so they keep working with script off once shown. */
+.state-menu-wrap { position: relative; display: inline-flex; }
+.state-menu {
+  position: absolute; right: 0; bottom: calc(100% + var(--s2)); z-index: 3;
+  display: flex; flex-direction: column; gap: 2px;
+  min-width: 10.5rem; padding: var(--s1);
+  background: var(--surface); border: 1px solid var(--rule-2); border-radius: var(--r2);
+  box-shadow: var(--shadow-2);
+}
+.state-menu[hidden] { display: none; }
+.state-menu .menu-item {
+  justify-content: flex-start; width: 100%;
+  border-color: transparent; background: transparent; box-shadow: none;
+}
+.state-menu .menu-item:hover { border-color: transparent; background: var(--sunken); }
+
+/* Phone density, placed after the rules it overrides.  A phone shows only the
+   saved-state icon (the text stays in the accessibility tree) and the row is
+   one line at 390: the tools' natural width is 286 px, 276 px after their
+   -10 px margin; with the 8 px gap and Send's 60 px that is 344 px of the
+   364 px content box, leaving 20 px.  A long Model alias is capped at 5rem so
+   it shrinks instead of wrapping the row; the same row still fits 375 px. */
+@container sym (max-width: 799px) {
+  .composer { padding-inline: var(--s3); }
+  .composer-foot { column-gap: var(--s2); }
+  .composer-tools { gap: 2px; }
+  .composer-tools .saved { min-width: 0; margin-left: var(--s1); }
+  .composer-actions .btn--primary { padding: 0 var(--s3); }
+  .composer-tools .composer-model { max-width: 5rem; text-overflow: ellipsis; }
+  .composer-tools .saved [data-saved-text] {
+    position: absolute; width: 1px; height: 1px; overflow: hidden;
+    clip-path: inset(50%); white-space: nowrap;
+  }
+}
 
 .jump {
   position: absolute; right: var(--s4); bottom: calc(100% + var(--s3));

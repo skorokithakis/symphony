@@ -148,6 +148,12 @@ class Entry:
     anchor: str = ""
     new: bool = False
     files: tuple[FileChip, ...] = ()
+    #: The retry form's action for an error entry, and whether this alert is
+    #: the newest one a Retry may be offered on.  The page script re-derives
+    #: both from the poll's retry flag, because entries are never re-rendered;
+    #: the server-side flag only makes the initial page usable without script.
+    retry_action: str = ""
+    retry_visible: bool = False
 
 
 @dataclass(frozen=True)
@@ -347,12 +353,14 @@ def _entry_body(comment: LocalComment, ticket_id: str) -> Entry:
 
     if kind == "error":
         text = _ERROR_PREFIX_RE.sub("", body.strip())
+        retry_action = f"/tickets/{ticket_id}/retry"
         if not _is_long(text):
             return Entry(
                 kind="error",
                 created_at=created_at,
                 clock=clock,
                 html=render_markdown(text),
+                retry_action=retry_action,
             )
         # Keep the lead line visible and hide the rest behind the toggle, like
         # the design mock.  A body that has no lead line (or starts with a
@@ -366,6 +374,7 @@ def _entry_body(comment: LocalComment, ticket_id: str) -> Entry:
                 html=render_markdown(head),
                 long=True,
                 detail_html=render_markdown(rest),
+                retry_action=retry_action,
             )
         return Entry(
             kind="error",
@@ -373,6 +382,7 @@ def _entry_body(comment: LocalComment, ticket_id: str) -> Entry:
             clock=clock,
             long=True,
             detail_html=render_markdown(text),
+            retry_action=retry_action,
         )
 
     text = body.strip()
@@ -423,6 +433,24 @@ def entry_for(comment: LocalComment, *, new: bool = False, ticket_id: str) -> En
     """Return the display entry for one stored comment."""
     entry = _entry_body(comment, ticket_id)
     return replace(entry, new=True) if new else entry
+
+
+def _retry_on_newest_error(entries: tuple[Entry, ...]) -> tuple[Entry, ...]:
+    """Mark the newest error alert as the only one offering Retry.
+
+    Entries are never re-rendered, so the poll cannot take the button away
+    from an older alert; the page script reconciles this on every poll.  Doing
+    it here too keeps the initial page correct without script, where the Retry
+    is the form's only fallback.
+    """
+    for index in range(len(entries) - 1, -1, -1):
+        if entries[index].kind == "error":
+            return (
+                entries[:index]
+                + (replace(entries[index], retry_visible=True),)
+                + entries[index + 1 :]
+            )
+    return entries
 
 
 def state_action_target(
@@ -503,6 +531,16 @@ def page_for(
     last_comment_id = ticket.comments[-1].id if ticket.comments else ""
     # An empty alias is not a selectable choice: "" is the Default option.
     composer_models = tuple(alias for alias in request.app.config.models if alias)
+    # Retry belongs to the newest error alert: only a Needs Input ticket whose
+    # last turn (or workspace setup) failed has anything to retry.  It is
+    # computed before the entries so the initial page can show the button
+    # without waiting for the script.
+    retry = ticket.state == STATE_NEEDS_INPUT and turn_failed(state_entry)
+    entries: tuple[Entry, ...] = ()
+    if include_entries:
+        entries = build_entries(ticket, unread_from=_seen_index(ticket))
+        if retry:
+            entries = _retry_on_newest_error(entries)
     page = TicketPage(
         ticket=ticket,
         title=title,
@@ -514,11 +552,7 @@ def page_for(
         model=ticket.model or "Default",
         workspace=state_entry.workspace_path if state_entry else None,
         session=state_entry.session_id if state_entry else None,
-        entries=(
-            build_entries(ticket, unread_from=_seen_index(ticket))
-            if include_entries
-            else ()
-        ),
+        entries=entries,
         working_for=working_for,
         last_output_ago=last_output_ago,
         # The token is the Send idempotency token.  It is rendered on every
@@ -547,9 +581,7 @@ def page_for(
             if ticket.model is not None and ticket.model in composer_models
             else ""
         ),
-        # Retry is the composer's recovery action: only a Needs Input ticket
-        # whose last turn (or workspace setup) failed has anything to retry.
-        retry=ticket.state == STATE_NEEDS_INPUT and turn_failed(state_entry),
+        retry=retry,
     )
     return page
 
@@ -631,9 +663,11 @@ def snapshot(
         "composer_model": page.composer_model,
         "state_html": render_macro("state_tag", page),
         "actions_html": render_macro("composer_actions", page),
+        "state_menu_html": render_macro("state_menu", page),
         "state_forms_html": render_macro("state_forms", page),
         "working_html": render_macro("working", page) if page.working_for else "",
         "has_composer": page.has_composer,
+        "retry": page.retry,
         "needs_input_count": page.needs_input_count,
         # The running turn's steps, as list items only: the block itself is
         # part of the full page.  ``steps_last`` is the page's next cursor.

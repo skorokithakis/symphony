@@ -271,6 +271,9 @@ class TestTicketPoll:
         assert data["has_composer"] is True
         assert data["page_title"] == f"{ticket.id} · A ticket · symphony"
         assert data["needs_input_count"] == 0
+        # In Progress has no state actions to put in the menu.
+        assert data["state_menu_html"].strip() == ""
+        assert data["retry"] is False
 
     def test_the_snapshot_carries_the_stored_model(self, tmp_path: Path) -> None:
         with _server(tmp_path, models=_MODELS) as (port, tracker, _state, _wake):
@@ -309,9 +312,16 @@ class TestTicketPoll:
         assert 'id="act-send"' in data["actions_html"]
         assert 'id="act-send" disabled' not in data["actions_html"]
         assert "The agent is working." not in data["actions_html"]
+        # The menu fragment follows the same state: Needs Input offers its two
+        # actions, and Done has no composer menu at all.
+        assert 'id="state-menu-button"' in data["state_menu_html"]
+        assert 'id="act-done"' in data["state_menu_html"]
+        assert 'id="act-qa"' in data["state_menu_html"]
+        assert data["retry"] is False
         assert data["working_html"] == ""
         assert done_status == 200
         assert done_data["has_composer"] is False
+        assert 'id="state-menu-button"' not in done_data["state_menu_html"]
         assert wake.call_count == 2
 
     def test_an_unread_marker_badges_only_older_entries(self, tmp_path: Path) -> None:
