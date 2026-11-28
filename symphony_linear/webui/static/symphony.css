@@ -555,6 +555,11 @@ body.sym { min-height: 100dvh; }
    Details one rather than the 44 px touch target, and the negative margin
    keeps it from growing the line. */
 .entry-tools .icon-btn { width: 28px; height: 28px; border-radius: var(--r1); margin: -6px 0; }
+/* The row's gap suits the text labels, but each 16 px glyph already has 6 px
+   of button around it, so two icon buttons with the gap between them sat 28 px
+   apart, more than a whole icon.  Cancelling the gap between adjacent icon
+   buttons leaves 12 px between the glyphs and keeps both 28 px targets. */
+.entry-tools .icon-btn + .icon-btn { margin-left: calc(-1 * var(--s4)); }
 .new {
   display: inline-flex; align-items: center; height: 18px; padding: 0 var(--s2);
   background: var(--accent); color: var(--on-accent); border-radius: var(--r-round);
