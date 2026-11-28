@@ -138,12 +138,15 @@ abandoned empty form leaves nothing behind.
 
 While a ticket is In Progress, its page shows the running turn's steps above
 the working line: the agent's text between tool calls, and one line per tool
-call with the tool's name and a short summary of its input. It shows the last
-five and a **Show all N steps** control reveals the rest until the turn ends.
-With OpenCode, a tool line appears only when the tool finishes, and nothing
-appears while a subagent works; pi and OMP show a tool when it starts. The
-steps are kept in memory for the length of the turn only, so a finished turn
-shows its reply and no steps.
+call with the tool's name and a short summary of its input. Consecutive tool
+calls share one line, which shows the newest call of the run; the agent's text
+ends a run. The page shows the last five steps and a **Show all N steps**
+control reveals the rest until the turn ends, where N counts the steps still on
+the page, so a call that a later call replaced is not counted and does not come
+back. With OpenCode, a tool line appears only when the tool finishes, and
+nothing appears while a subagent works; pi and OMP show a tool when it starts.
+The steps are kept in memory for the length of the turn only, so a finished
+turn shows its reply and no steps.
 
 ## Reply composer
 

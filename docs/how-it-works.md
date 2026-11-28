@@ -141,10 +141,11 @@ bubblewrap and restart to get the sandbox back; nothing else needs to change.
   finishes.
 - **The live view is limited.** While a ticket is In Progress, its page shows
   the running turn's steps: the agent's text between tool calls, and one line
-  per tool call. Only the web UI has this; Linear and GitHub do not. With
-  OpenCode, a tool line appears only when the tool finishes, and nothing
-  appears while a subagent works. The steps are kept in memory only while the
-  turn runs: they disappear when it ends, and a daemon restart loses them.
+  per tool call. Consecutive tool calls share one line, the newest call of the
+  run. Only the web UI has this; Linear and GitHub do not. With OpenCode, a
+  tool line appears only when the tool finishes, and nothing appears while a
+  subagent works. The steps are kept in memory only while the turn runs: they
+  disappear when it ends, and a daemon restart loses them.
 - **No email or webhook notifications.** The web UI marks unread tickets in the
   list, puts a `(N) Symphony` count in the browser tab title, and pushes a
   browser notification for a ticket that reaches Needs Input once you allow it.

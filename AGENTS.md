@@ -774,9 +774,13 @@ shutting down, or the ticket is no longer triggered — see `_is_still_triggered
   never `render_markdown_sections`: a step must not become a question card,
   because `questions.js` attaches answer controls to cards. Tool lines are
   escaped plain text (`<name>: <summary>`, or `<name>`), never marked safe. The
-  stylesheet shows the last five and the page's "Show all N steps" control
-  reveals the rest for the rest of the turn; the entries, the block and the
-  working line sit in that order, so appended entries land above the steps.
+  page removes every tool item that is directly followed by another, so a run
+  of consecutive tool calls shows only its newest call (text ends the run);
+  the stylesheet then shows the last five of the remaining items, and the
+  "Show all N steps" control counts the items on the page, so a replaced call
+  is neither counted nor revealed. Entries, the block and the working line sit
+  in that order, so appended entries land above the steps; the cursor still
+  follows the server's step numbers, because the removal is display only.
   With OpenCode a tool line appears only when the tool ends and nothing
   appears while a subagent works; pi and OMP report a tool when it starts.
 - **Reply summaries are generated only from the post path.** With

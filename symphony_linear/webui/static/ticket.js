@@ -82,7 +82,6 @@
    * that ends clears all of it, so the next turn never shows stale steps. */
   var stepsTurn = "";
   var stepsLast = 0;
-  var stepsTotal = 0;
   var stepsExpanded = false;
 
   var timer = null;
@@ -710,13 +709,38 @@
     if (!more) {
       return;
     }
+    // The control counts the lines still on the page, not the server's step
+    // count: a step a later tool call replaced is not there to reveal.
+    var count = stepsItemCount();
     // With five or fewer there is nothing to reveal, and once the reader asked
     // for everything the control has no other job: it is not a toggle, because
     // the open list stays open until the turn ends.
-    more.hidden = stepsExpanded || stepsTotal <= STEPS_PREVIEW;
-    var label = "Show all " + stepsTotal + " steps";
+    more.hidden = stepsExpanded || count <= STEPS_PREVIEW;
+    var label = "Show all " + count + " steps";
     if (more.textContent !== label) {
       more.textContent = label;
+    }
+  }
+
+  function stepsItemCount() {
+    var list = document.getElementById("steps-list");
+    return list ? list.children.length : 0;
+  }
+
+  /* A run of consecutive tool calls shows as its newest call: every tool item
+   * directly followed by another tool item is removed.  Scanned backwards so
+   * an earlier call sees the surviving end of its run, not a removed sibling.
+   * Text ends a run, and a replace starts from freshly rendered items. */
+  function collapseToolRuns(list) {
+    for (var index = list.children.length - 2; index >= 0; index -= 1) {
+      var item = list.children[index];
+      var next = list.children[index + 1];
+      if (
+        item.classList.contains("step--tool") &&
+        next.classList.contains("step--tool")
+      ) {
+        item.remove();
+      }
     }
   }
 
@@ -732,7 +756,6 @@
     }
     stepsTurn = "";
     stepsLast = 0;
-    stepsTotal = 0;
     stepsExpanded = false;
     renderStepsControl();
   }
@@ -766,10 +789,12 @@
     } else {
       return;
     }
+    collapseToolRuns(list);
+    // The cursor follows the server's step numbers even when an item was just
+    // removed: the page's own count is only for the control and the block.
     stepsTurn = data.steps_turn || "";
     stepsLast = data.steps_last || 0;
-    stepsTotal = data.steps_total || 0;
-    block.hidden = stepsTotal === 0;
+    block.hidden = stepsItemCount() === 0;
     renderStepsControl();
     if (wasAtBottom) {
       scrollToBottom();
