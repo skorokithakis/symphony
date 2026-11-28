@@ -870,7 +870,10 @@ shutting down, or the ticket is no longer triggered — see `_is_still_triggered
   visible one with an unanswered question once a card has changed or saved
   answers exist), and app.js arbitrates those keys through
   `SymQuestions.handleKey` so the `s`/`g` prefix sequences and type-to-reply
-  keep priority.
+  keep priority. Every `qcard-field` finishes typing on a bare Enter (focusing
+  the card's **Next** button when it has one, otherwise blurring, which closes
+  an Other or pencil input), Shift+Enter keeps only the free-text textarea's
+  newline, and Ctrl/Meta+Enter is swallowed so it neither sends nor inserts.
 - **The web UI server is wired in `cli.py`, not the orchestrator.**
   `cli.main` builds `WebUIServer` from the `LocalTracker`'s store and the
   shared `StateManager`, starts it just before `orchestrator.run()`, and stops

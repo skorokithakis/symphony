@@ -287,6 +287,14 @@
     button.className = "qcard-next";
     button.textContent = "Next";
     button.setAttribute("aria-label", "Next question");
+    /* Enter in a card's text field moves focus here, so a held Enter would
+     * auto-repeat onto the button and skip the question; only a fresh press
+     * may activate it. */
+    button.addEventListener("keydown", function (event) {
+      if (event.key === "Enter" && event.repeat) {
+        event.preventDefault();
+      }
+    });
     button.addEventListener("click", function (event) {
       event.preventDefault();
       if (locked) {
@@ -355,7 +363,10 @@
 
   /* ---------- editing ---------- */
 
-  function closeEdit(card, descriptor, focusPencil) {
+  /* Closing never moves focus: the field is removed or blurred by whatever
+   * the human did next, and taking focus back to the pencil would fight the
+   * Enter handler's move to the card's Next button. */
+  function closeEdit(card, descriptor) {
     if (!descriptor || !descriptor.editing) {
       return;
     }
@@ -371,17 +382,14 @@
     }
     descriptor.pick.appendChild(descriptor.textElement);
     descriptor.pick.hidden = false;
-    if (focusPencil) {
-      descriptor.pencil.focus();
-    }
   }
 
   function closeOpenEdit(card) {
     if (card.__qcardOther) {
-      closeEdit(card, card.__qcardOther, false);
+      closeEdit(card, card.__qcardOther);
     }
     (card.__qcardRows || []).forEach(function (descriptor) {
-      closeEdit(card, descriptor, false);
+      closeEdit(card, descriptor);
     });
   }
 
@@ -572,7 +580,7 @@
       if (!field.isConnected || field === document.activeElement) {
         return;
       }
-      closeEdit(card, descriptor, false);
+      closeEdit(card, descriptor);
     }
     if (pointerDown) {
       /* The press has not been released yet.  Closing now would shrink this
@@ -1278,6 +1286,14 @@
 
   thread.addEventListener("focusout", onFocusOut);
 
+  /* Every qcard-field finishes typing on a bare Enter: a field inside a
+   * tabbed panel's non-last card hands focus to its Next button, so a second
+   * Enter moves on, and every other field blurs, which closes an Other or
+   * pencil input through focusout and drops the phone keyboard on the
+   * textarea.  Shift+Enter keeps the textarea's newline; the one-line inputs
+   * have none, so it finishes typing there too.  Ctrl/Meta+Enter is swallowed
+   * because the ticket page's Send must never be reachable from inside a
+   * card.  A composing IME's Enter confirms the composition, not the field. */
   thread.addEventListener("keydown", function (event) {
     if (event.key !== "Enter" || event.isComposing) {
       return;
@@ -1286,15 +1302,32 @@
     if (!field.classList || !field.classList.contains("qcard-field")) {
       return;
     }
-    var row = field.closest(".qcard-opt");
+    if (event.ctrlKey || event.metaKey) {
+      event.preventDefault();
+      return;
+    }
+    if (event.altKey) {
+      return;
+    }
     var card = field.closest(".qcard");
+    if (!card) {
+      return;
+    }
+    var row = field.closest(".qcard-opt");
     var descriptor = row ? row.__qcardDescriptor : null;
-    if (!card || !descriptor) {
-      /* The free-text textarea keeps Enter for its own newline. */
+    if (event.shiftKey && !descriptor) {
+      /* Only the free-text textarea has a newline to keep. */
       return;
     }
     event.preventDefault();
-    closeEdit(card, descriptor, true);
+    var next = card.querySelector(".qcard-next");
+    if (next) {
+      /* Focus leaves the field, and focusout closes an edit without pulling
+       * focus back, so the button keeps it. */
+      next.focus();
+      return;
+    }
+    field.blur();
   });
 
   thread.addEventListener("focusin", function (event) {
