@@ -115,8 +115,8 @@ Tickets are in one of five fixed states:
   described under [Manual QA](configuration.md#manual-qa); QA is always enabled for this
   backend.
 - **Done** stops tracking the ticket and deletes its workspace. If the
-  workspace has uncommitted or unpushed work, the daemon refuses the first
-  time: it posts a comment telling you what is at risk and moves the ticket
+  workspace has uncommitted or unpushed work, or a stash, the daemon refuses
+  the first time: it posts a comment telling you what is at risk and moves the ticket
   back to Needs Input. Moving it to Done a second time deletes the workspace.
 - **Reopen** moves a Done ticket back to work. If the daemon still tracks the
   ticket, it goes to Needs Input, so a reply resumes the session through the

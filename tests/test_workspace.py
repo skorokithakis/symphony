@@ -1395,6 +1395,85 @@ class TestDirtySummary:
         assert summary is not None
         assert "1 commit not on any remote" in summary
 
+    def test_detached_head_commit_returns_summary(self, tmp_path: Path) -> None:
+        """A commit made on a detached HEAD is unsaved work even though no
+        branch points at it."""
+        _require_git()
+
+        source_repo = tmp_path / "source"
+        _make_source_repo(source_repo)
+
+        workspace = tmp_path / "ws"
+        subprocess.run(
+            ["git", "clone", str(source_repo), str(workspace)],
+            capture_output=True,
+            text=True,
+            check=True,
+        )
+
+        _run_git(["checkout", "--detach"], cwd=workspace)
+        (workspace / "detached.txt").write_text("detached work")
+        _run_git(["add", "detached.txt"], cwd=workspace)
+        _run_git(
+            [
+                "-c",
+                "user.email=test@test.com",
+                "-c",
+                "user.name=Test",
+                "commit",
+                "-m",
+                "detached commit",
+            ],
+            cwd=workspace,
+        )
+
+        summary = dirty_summary(
+            str(workspace), [], tmp_path=self._sandbox_tmp(tmp_path)
+        )
+        assert summary is not None
+        assert "1 commit not on any remote" in summary
+
+    def test_stash_only_returns_summary(self, tmp_path: Path) -> None:
+        """A stash entry is unsaved work even when the tree and branches are
+        clean, and the summary names it."""
+        _require_git()
+
+        source_repo = tmp_path / "source"
+        _make_source_repo(source_repo)
+
+        workspace = tmp_path / "ws"
+        subprocess.run(
+            ["git", "clone", str(source_repo), str(workspace)],
+            capture_output=True,
+            text=True,
+            check=True,
+        )
+
+        (workspace / "README.md").write_text("stashed content")
+        _run_git(["stash", "push", "-m", "unsaved work"], cwd=workspace)
+
+        summary = dirty_summary(
+            str(workspace), [], tmp_path=self._sandbox_tmp(tmp_path)
+        )
+        assert summary is not None
+        assert "0 uncommitted files" in summary
+        assert "0 commits not on any remote" in summary
+        assert "1 stash entry" in summary
+
+    def test_repository_without_commit_returns_none(self, tmp_path: Path) -> None:
+        """An empty repository has no HEAD, which must not fail the check and
+        must not read as unsaved work."""
+        _require_git()
+
+        workspace = tmp_path / "empty"
+        workspace.mkdir()
+        _run_git(["init", "-b", "main"], cwd=workspace)
+
+        assert (
+            dirty_summary(str(workspace), [], tmp_path=self._sandbox_tmp(tmp_path))
+            is None
+        )
+
     def test_untracked_file_dirty_with_showuntrackedfiles_no(
         self, tmp_path: Path
     ) -> None:

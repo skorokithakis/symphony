@@ -60,7 +60,9 @@ the host for a ticket. The agent can write to its checkout, `.git/config` and
 clone the daemon runs git there only inside the sandbox (to check for
 unsaved work and to switch branches) and never fetches. When a ticket starts
 again on a checkout that already exists, the daemon deletes it and clones
-again if a check finds no uncommitted or unpushed work in it. It keeps the
+again if a check finds no uncommitted or unpushed work and no stash in it.
+Unpushed work means commits on a local branch, or on a detached `HEAD`, that
+no remote branch holds. It keeps the
 checkout exactly as it is when the check finds such work, and also when the
 check itself fails. Note the narrowness of the credential point: HTTPS credential
 stores such as `~/.config/gh` stay readable on purpose, because the agent is

@@ -217,8 +217,8 @@ shutting down, or the ticket is no longer triggered — see `_is_still_triggered
   (all verified with git 2.47). Git's own manual says a `.git` directory from
   an untrusted source is not safe to run git in. A list of `-c` overrides was
   rejected because the set of such keys has no end (filter drivers have free
-  names). So `dirty_summary` (`git status`, `git rev-list`) and
-  `_git_switch_branch` go through `workspace._run_git_in_sandbox`, which
+  names). So `dirty_summary` (`git status`, `git rev-list`, `git stash list`)
+  and `_git_switch_branch` go through `workspace._run_git_in_sandbox`, which
   passes only the hide list and the ticket's `tmp/` (no `extra_rw_paths`,
   `dir_map`, secrets file env or attachments mount) and kills the command
   after `SANDBOX_GIT_TIMEOUT_SECONDS`, because `dirty_summary` runs on the
@@ -232,7 +232,14 @@ shutting down, or the ticket is no longer triggered — see `_is_still_triggered
   checkout: fetch needs the daemon's credentials, so it cannot move into the
   sandbox. When `clone_workspace` finds an existing checkout it deletes it
   and clones again if `dirty_summary` reports no unsaved work, and otherwise
-  (unsaved work, or a check that could not run) returns it unchanged;
+  (unsaved work, or a check that could not run) returns it unchanged.
+  Because that deletion is routine and has no second move to guard it,
+  `dirty_summary` counts more than uncommitted files and local-only branch
+  commits: `rev-list` also starts from `HEAD` (a detached one included;
+  `--ignore-missing` keeps a repository with no commit from failing the
+  check) and any stash entry counts. Commits reachable only from the reflog
+  are deliberately not counted: the reflog also holds every amended and
+  rebased commit, so nearly every checkout would read as unsaved;
   `_prepare_workspace` first stops a QA serve that this ticket owns
   (`_kill_active_serve(ticket_id=...)`, one lock acquisition, since this is a
   worker thread racing `_reconcile_serve`), because a serve that dies when

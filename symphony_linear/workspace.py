@@ -891,16 +891,17 @@ def dirty_summary(
 
     Returns ``None`` when there is nothing to protect: *path* is not a
     directory, or the workspace is clean — ``git status --porcelain`` is
-    empty **and** ``git rev-list --branches --not --remotes`` is empty (no
-    local-only commits that aren't mirrored on any remote).
+    empty, ``git rev-list --ignore-missing HEAD --branches --not --remotes``
+    is empty (no local-only commits on any branch or on a detached ``HEAD``)
+    and ``git stash list`` is empty.
 
     Otherwise returns a short human-readable summary suitable for a tracker
-    comment: counts of uncommitted files and commits not on any remote, plus
-    up to 10 ``git status --porcelain`` lines in a fenced block.
+    comment: counts of uncommitted files, commits not on any remote and stash
+    entries, plus up to 10 ``git status --porcelain`` lines in a fenced block.
 
-    Both commands run inside the sandbox through
+    All three commands run inside the sandbox through
     :func:`_run_git_in_sandbox`, because the checkout's ``core.fsmonitor``
-    program is agent-writable.  If either command fails or times out (e.g. the
+    program is agent-writable.  If any command fails or times out (e.g. the
     path is not a repository), the workspace is treated as dirty and the
     summary says so — conservative, since the caller can decide to override.
 
@@ -931,19 +932,28 @@ def dirty_summary(
         return _git_failure_summary("git status", result.stderr)
     dirty_files = [line for line in result.stdout.splitlines() if line.strip()]
 
-    # Check 2: local-only commits.  Check ALL local branches (--branches),
-    # not just HEAD — the agent may have committed to a side branch while
-    # HEAD sits on a remote-backed branch, and those commits would be the
-    # only copy of the work.  Compare against ALL remote-tracking refs
+    # Check 2: local-only commits.  List every local branch (--branches) plus
+    # an explicit HEAD, because the agent may commit to a side branch while
+    # HEAD sits on a remote-backed branch, or leave HEAD detached with commits
+    # no branch points at.  Compare against ALL remote-tracking refs
     # (--not --remotes), not just the current branch's upstream (@{u}).
-    # No --tags: a tag on a commit no remote branch holds is deliberate
-    # release tooling, not unmirrored work.  In no-push setups local-only
-    # commits are the only copy of the agent's work, so every local branch
-    # must be considered before we call the workspace clean.
+    # --ignore-missing keeps the command exit-0 with no output on a repository
+    # that has no commit yet, where HEAD does not resolve and rev-list would
+    # otherwise fail.  No --tags: a tag on a commit no remote branch holds is
+    # deliberate release tooling, not unmirrored work.  In no-push setups
+    # local-only commits are the only copy of the agent's work, so every local
+    # branch must be considered before we call the workspace clean.
     try:
         result = _run_git_in_sandbox(
             path,
-            ["rev-list", "--branches", "--not", "--remotes"],
+            [
+                "rev-list",
+                "--ignore-missing",
+                "HEAD",
+                "--branches",
+                "--not",
+                "--remotes",
+            ],
             hide_paths,
             tmp_path=tmp_path,
         )
@@ -954,7 +964,27 @@ def dirty_summary(
         return _git_failure_summary("git rev-list", result.stderr)
     unpushed_commits = [line for line in result.stdout.splitlines() if line.strip()]
 
-    if not dirty_files and not unpushed_commits:
+    # Check 3: stash entries.  A stash lives under refs/stash, which rev-list
+    # cannot reach through --branches or HEAD, so without this check a
+    # checkout whose only work is a stash would be deleted.  One output line
+    # is one entry; the count belongs in the summary so the human reading the
+    # refusal knows what is at risk.  A stash is not a commit, hence its own
+    # count rather than adding to the commit total.
+    try:
+        result = _run_git_in_sandbox(
+            path,
+            ["stash", "list"],
+            hide_paths,
+            tmp_path=tmp_path,
+        )
+    except Exception as exc:
+        logger.debug("git stash list failed during dirtiness check", exc_info=True)
+        return f"Could not verify workspace state (`git stash list` errored: {exc})."
+    if result.returncode != 0:
+        return _git_failure_summary("git stash list", result.stderr)
+    stashes = [line for line in result.stdout.splitlines() if line.strip()]
+
+    if not dirty_files and not unpushed_commits and not stashes:
         return None
 
     n_files = len(dirty_files)
@@ -963,6 +993,9 @@ def dirty_summary(
         f"{n_files} uncommitted file{'' if n_files == 1 else 's'}, "
         f"{n_commits} commit{'' if n_commits == 1 else 's'} not on any remote."
     )
+    if stashes:
+        n_stashes = len(stashes)
+        summary += f" {n_stashes} stash entr{'y' if n_stashes == 1 else 'ies'}."
     if dirty_files:
         block = "\n".join(dirty_files[:10])
         summary += f"\n\n```text\n{block}\n```"
