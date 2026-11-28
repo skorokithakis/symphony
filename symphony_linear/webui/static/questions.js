@@ -1141,8 +1141,11 @@
       if (count) {
         count.remove();
       }
-      /* Do not leave Send boxed in a group that no longer has a count. */
-      if (group && group.parentElement === actions) {
+      /* Do not leave Send boxed in a group that no longer has a count.  An In
+       * Progress action bar has no Send; the poll replaces the whole bar then,
+       * so there is no group to unwind, but the null check keeps a stale
+       * group's teardown from throwing. */
+      if (send && group && group.parentElement === actions) {
         actions.insertBefore(send, group);
         group.remove();
       }

@@ -134,15 +134,20 @@
 {% endfor %}
 {%- endmacro %}
 
-{% macro send_reason(page) -%}
-<span class="reason" id="send-reason"{% if not page.send_reason %} hidden{% endif %}>{{ page.send_reason or "" }}</span>
+{# An empty status slot beside the actions.  The page script fills it when an
+   upload is busy; it never carries server-rendered copy, but it stays in the
+   markup in every state so ticket.js needs no branch for its absence. #}
+{% macro send_reason() -%}
+<span class="reason" id="send-reason" hidden></span>
 {%- endmacro %}
 
 {% macro composer_actions(page) -%}
   {% if page.ticket.state == "In Progress" %}
-  <button class="btn" type="submit" form="ticket-state-stop" id="act-stop" data-shortcut="sn" data-shortcut-key="n" title="Stop (s n)"><svg class="ic ic--sm" viewBox="0 0 20 20" aria-hidden="true"><path d="M6 6h8v8H6z"></path></svg>Stop</button>
-  {{ send_reason(page) }}
-  <button class="btn btn--primary" type="submit" id="act-send" disabled aria-describedby="send-reason">Send</button>
+  {# Stop takes Send's place and its primary styling while a turn runs.  Send
+     is absent rather than disabled: a turn has to end before a reply can be
+     posted, and the page script reads this absence as the disabled state. #}
+  {{ send_reason() }}
+  <button class="btn btn--primary" type="submit" form="ticket-state-stop" id="act-stop" data-shortcut="sn" data-shortcut-key="n" title="Stop (s n)"><svg class="ic ic--sm" viewBox="0 0 20 20" aria-hidden="true"><path d="M6 6h8v8H6z"></path></svg>Stop</button>
   {% elif page.ticket.state == "Needs Input" %}
   <button class="btn" type="submit" form="ticket-state-done" id="act-done" data-shortcut="sd" data-shortcut-key="d" title="Done (s d)">Done</button>
   <button class="btn" type="submit" form="ticket-state-qa" id="act-qa" data-shortcut="sq" data-shortcut-key="q" title="Send to QA (s q)">Send to QA</button>
@@ -152,15 +157,13 @@
       required attribute would otherwise block.  It has no keyboard shortcut
       by design, so it carries no data-shortcut attributes. #}
   {% if page.retry %}<button class="btn" type="submit" formaction="/tickets/{{ page.ticket.id }}/retry" formnovalidate id="act-retry">Retry</button>{% endif %}
-  <span class="kbd-hint">Ctrl+Enter to send</span>
-  {{ send_reason(page) }}
-  <button class="btn btn--primary" type="submit" id="act-send">Send</button>
+  {{ send_reason() }}
+  <button class="btn btn--primary" type="submit" id="act-send" title="Send (Ctrl+Enter)">Send</button>
   {% elif page.ticket.state == "QA" %}
   <button class="btn" type="submit" form="ticket-state-done" id="act-done" data-shortcut="sd" data-shortcut-key="d" title="Done (s d)">Done</button>
   <button class="btn" type="submit" form="ticket-state-needs-input" id="act-needs-input" data-shortcut="sn" data-shortcut-key="n" title="Back to Needs Input (s n)">Back to Needs Input</button>
-  <span class="kbd-hint">Ctrl+Enter to send</span>
-  {{ send_reason(page) }}
-  <button class="btn btn--primary" type="submit" id="act-send">Send</button>
+  {{ send_reason() }}
+  <button class="btn btn--primary" type="submit" id="act-send" title="Send (Ctrl+Enter)">Send</button>
   {% endif %}
 {%- endmacro %}
 

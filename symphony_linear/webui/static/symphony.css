@@ -998,17 +998,29 @@ a.file:hover { border-color: var(--ink-3); background: var(--sunken); }
   width: auto; max-width: 12rem; min-height: 32px; padding: 0 var(--s2);
   font-size: var(--t-xs);
 }
-/* The actions always sit at the right edge, so Send keeps one place.  On a
-   wide page they share a row with the tools; when that row is too full they
-   wrap onto their own line, and without margin-left: auto the parent's
-   space-between would put a lone item at the left.  justify-content keeps
-   any internal wrap on the right too. */
+/* The actions take their own row in every state.  Measured with the seeded
+   page, the fullest row (Needs Input with Retry and the answer count beside
+   Send) is about 440 px, and the tools row at its fullest (attach, dictation,
+   Model select, Saved) about 330 px; sharing one line needs more than the
+   reading column's 720 px content width, and whether it just fits would also
+   change as soon as a draft is saved.  One row for every state keeps the
+   composer's height stable.  justify-content keeps the actions on the right,
+   including an internal wrap. */
 .composer-actions { flex: 1 1 100%; display: flex; flex-wrap: wrap; align-items: center; justify-content: flex-end; gap: var(--s2); margin-left: auto; }
 .composer-actions .btn { padding: 0 var(--s3); }
 .composer-actions .btn--primary { margin-left: auto; padding: 0 var(--s4); }
 .reason { flex: 1 1 8rem; font-size: var(--t-xs); line-height: 1.35; color: var(--ink-2); text-align: right; }
 .reason + .btn--primary { margin-left: 0; }
-.kbd-hint { display: none; margin-left: auto; font: 400 var(--t-xs)/1 var(--font-mono); color: var(--ink-3); }
+/* Below 500 px the fullest action row wraps onto a second line.  In Progress
+   then has one line and Needs Input two, which would resize the composer on
+   every state change, so reserve the second line here.  The limit comes from
+   the measured wrap: the fullest row is about 440 px, and below 800 px the
+   composer is the window minus its 34 px of padding.  The 26 px of headroom
+   covers a two-digit answer count.  align-content keeps a single line at the
+   bottom, where Send sits, so Stop stays in Send's place. */
+@container sym (max-width: 500px) {
+  .composer-actions { min-height: calc(2 * var(--tap) + var(--s2)); align-content: flex-end; }
+}
 
 .jump {
   position: absolute; right: var(--s4); bottom: calc(100% + var(--s3));
@@ -1056,9 +1068,6 @@ a.file:hover { border-color: var(--ink-3); background: var(--sunken); }
 .ticket[data-composer="large"] .composer textarea { flex: 1 1 0; min-height: 0; max-height: none; field-sizing: fixed; overflow-y: auto; }
 
 @container sym (min-width: 800px) {
-  .composer-actions { flex: 0 1 auto; }
-  .composer-actions .btn--primary { margin-left: 0; }
-  .kbd-hint { display: inline; margin-left: var(--s2); }
   .reason { flex: 0 1 auto; }
 }
 

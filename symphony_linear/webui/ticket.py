@@ -175,7 +175,6 @@ class TicketPage:
     #: (or the other way round), which would clear a reply that never posted.
     retry_token: str = ""
     has_composer: bool = False
-    send_reason: str | None = None
     state_actions: tuple[str, ...] = ()
     reply_draft: str = ""
     reply_draft_saved_at: str | None = None
@@ -515,11 +514,6 @@ def page_for(
         # next Send look like a duplicate (and clear the reply text).
         retry_token=secrets.token_urlsafe(24),
         has_composer=ticket.state != STATE_DONE,
-        send_reason=(
-            "The agent is working. You can send when it stops."
-            if ticket.state == STATE_IN_PROGRESS
-            else None
-        ),
         state_actions=tuple(STATE_ACTIONS.get(ticket.state, {})),
         reply_draft=ticket.reply_draft,
         reply_draft_saved_at=ticket.reply_draft_saved_at,

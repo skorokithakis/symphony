@@ -135,10 +135,10 @@ abandoned empty form leaves nothing behind.
 
 Every started ticket except a Done one has a reply box. It stays editable while
 the agent works, and its text is saved on the server, so a reload or another
-device sees the same draft. Only Send is unavailable while the ticket is In
-Progress; the page says so next to the disabled button and re-enables it when
-the turn finishes. In QA, sending resumes the agent, which pulls the ticket out
-of QA and stops the serve on the next tick.
+device sees the same draft. While the ticket is In Progress, **Stop** replaces
+Send as the primary action; Send returns when the turn finishes. In QA,
+sending resumes the agent, which pulls the ticket out of QA and stops the serve
+on the next tick.
 
 When a turn fails, or the ticket's workspace setup does, the ticket returns to
 Needs Input with an error comment and the composer grows a **Retry** button.

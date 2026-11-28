@@ -303,7 +303,7 @@ class TestTicketPage:
         assert "Reopen" in text
         assert "state--done" in text
 
-    def test_in_progress_page_shows_working_and_a_disabled_send(
+    def test_in_progress_page_shows_working_and_stop_in_sends_place(
         self, tmp_path: Path
     ) -> None:
         with _server(tmp_path) as (port, tracker, _state, _wake):
@@ -312,8 +312,16 @@ class TestTicketPage:
 
         assert 'class="working"' in text
         assert "Working, " in text
-        assert 'id="act-send" disabled' in text
-        assert "The agent is working. You can send when it stops." in text
+        # Send is absent, not disabled: posting a reply mid-turn is a no-op the
+        # daemon discards, so there is nothing to disable.
+        assert 'id="act-send"' not in text
+        assert (
+            'class="btn btn--primary" type="submit" form="ticket-state-stop" id="act-stop"'
+            in text
+        )
+        # The status slot stays for the upload warning.
+        assert 'id="send-reason"' in text
+        assert "The agent is working" not in text
         assert 'value="stop"' in text
         assert "state--progress" in text
 
@@ -353,6 +361,18 @@ class TestTicketPage:
         assert "state--qa" in text
         assert "Back to Needs Input" in text
         assert "Send to QA" not in _page_body(text)
+
+    def test_send_moves_the_keyboard_hint_into_its_title(self, tmp_path: Path) -> None:
+        """Both reply states hide the visible hint; the title carries it."""
+        with _server(tmp_path) as (port, tracker, _state, _wake):
+            texts = [
+                _page(port, _ticket(tracker.store, state=state).id)
+                for state in (STATE_NEEDS_INPUT, STATE_QA)
+            ]
+
+        for text in texts:
+            assert "kbd-hint" not in text
+            assert 'id="act-send" title="Send (Ctrl+Enter)"' in text
 
     @pytest.mark.parametrize(
         ("state", "buttons"),

@@ -53,9 +53,8 @@
   var uploadBusy = false;
   /* The last Send state the server rendered (disabled while the agent works),
    * kept separately so a busy upload can disable Send without re-enabling it
-   * afterwards. */
+   * afterwards.  There is no Send at all on an In Progress ticket. */
   var stateSendDisabled = false;
-  var baseSendReason = "";
 
   // Fragments last written to the DOM, so an unchanged poll is a no-op.
   var stateHtml = null;
@@ -349,11 +348,11 @@
 
   function captureServerSendState() {
     var button = sendButton();
-    if (button) {
-      stateSendDisabled = button.disabled;
-    }
-    var reason = reasonElement();
-    baseSendReason = reason ? reason.textContent : "";
+    /* No Send means a turn is running: the server renders Stop alone on an In
+     * Progress ticket.  Deriving the state from absence keeps the Model select
+     * disabled for the turn and re-enables it when the poll swaps in a Needs
+     * Input or QA action bar. */
+    stateSendDisabled = button ? button.disabled : true;
   }
 
   function applyBusyState() {
@@ -395,12 +394,11 @@
     if (!reason) {
       return;
     }
+    /* The upload warning is the slot's only content now: the server renders it
+     * empty and hidden in every state, and this is the one writer. */
     if (uploadBusy) {
       reason.hidden = false;
       reason.textContent = "Files are still uploading.";
-    } else if (baseSendReason) {
-      reason.hidden = false;
-      reason.textContent = baseSendReason;
     } else {
       reason.hidden = true;
       reason.textContent = "";
@@ -419,8 +417,10 @@
     if (!reply || sending) {
       return;
     }
+    /* A missing Send means the ticket is In Progress: the daemon would
+     * discard a reply posted now, so no entry point may start one. */
     var button = sendButton();
-    if (button && button.disabled) {
+    if (!button || button.disabled) {
       return;
     }
     /* Send is usable while dictation is recording: it stops the recording and
@@ -428,7 +428,8 @@
      * the transcription.  `sending` covers the wait as well, which is what
      * makes a second Send, or Ctrl+Enter, during the wait a no-op.  A failed
      * recording rejects: its error is already shown, the confirmed text stays
-     * in the box, and no reply is posted. */
+     * in the box, and no reply is posted.  submitReply rechecks Send after the
+     * wait, because a poll can swap the action bar for Stop in between. */
     var finishing =
       typeof Sym.finishDictation === "function" ? Sym.finishDictation() : null;
     if (!finishing) {
@@ -456,7 +457,7 @@
    * dictation has finished. */
   function submitReply() {
     var button = sendButton();
-    if (button && button.disabled) {
+    if (!button || button.disabled) {
       return;
     }
     var text = reply.value;
@@ -503,6 +504,15 @@
     var wait = draftInFlight || Promise.resolve();
     sendInFlight = wait
       .then(function () {
+        /* A poll can swap Send for Stop while the autosave or a dictation
+         * finishes.  Posting then would be a reply the daemon discards, so
+         * check that Send still exists right before the request.  It is
+         * disabled by this very send, so only its presence is meaningful. */
+        if (!sendButton()) {
+          sendAttempt = null;
+          draftDirty = true;
+          return null;
+        }
         var payload = {
           body: body,
           token: tokenField ? tokenField.value : "",
@@ -513,6 +523,9 @@
         return Sym.postJSON(replyUrl, payload);
       })
       .then(function (data) {
+        if (data === null) {
+          return;
+        }
         // On a duplicate, the committed reply is the first attempt's text,
         // not necessarily this request's body: clear only when the textarea
         // still holds exactly that.  Otherwise the edited text stays for the
@@ -855,8 +868,10 @@
       }
       if (event.key === "Enter" && (event.ctrlKey || event.metaKey)) {
         event.preventDefault();
+        /* In Progress has no Send, and a reply there would be discarded by the
+         * daemon: Ctrl+Enter is a no-op until Send exists and is enabled. */
         var button = sendButton();
-        if (!button || !button.disabled) {
+        if (button && !button.disabled) {
           sendReply();
         }
       }

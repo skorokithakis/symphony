@@ -261,8 +261,8 @@ class TestTicketPoll:
             data = _get_json(port, f"/api/tickets/{ticket.id}")
 
         assert 'class="state state--progress"' in data["state_html"]
-        assert 'id="act-send" disabled' in data["actions_html"]
-        assert "The agent is working." in data["actions_html"]
+        assert 'id="act-send"' not in data["actions_html"]
+        assert "The agent is working." not in data["actions_html"]
         # Shortcut targets live in composer_actions, so the poll's re-render of
         # the action bar keeps them.
         assert 'id="act-stop" data-shortcut="sn"' in data["actions_html"]
